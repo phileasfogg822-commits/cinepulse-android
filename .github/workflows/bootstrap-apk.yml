@@ -1,0 +1,52 @@
+name: CinePulse Android Bootstrap and APK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and unpack source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode .bootstrap/source.tar.xz.b64 > "${RUNNER_TEMP}/cinepulse-source.tar.xz"
+          echo "72a39cef688a52db80e19df2e1f7e11e0a094baa6035e82c78fecf5ccdb478f5  ${RUNNER_TEMP}/cinepulse-source.tar.xz" | sha256sum --check --status
+          tar --no-same-owner -xJf "${RUNNER_TEMP}/cinepulse-source.tar.xz" -C .
+          python3 tools/verify_source.py
+      - name: Publish extracted Android sources to repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md .gitignore settings.gradle build.gradle gradle.properties app docs tools .github/workflows/android-apk.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish native Android source and APK CI"
+            git push origin HEAD:main
+          fi
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Install Android SDK 35
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Build and test APK
+        run: gradle --no-daemon --stacktrace clean lintDebug testDebugUnitTest assembleDebug
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: CinePulse-Android-Galaxy-S9Plus-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

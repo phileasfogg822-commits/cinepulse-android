@@ -1,0 +1,331 @@
+package com.cinepulse.mobile;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.InputType;
+import android.view.Gravity;
+import android.view.WindowManager;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.ScrollView;
+import android.widget.Spinner;
+import android.widget.ArrayAdapter;
+import android.widget.TextView;
+import android.widget.Toast;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.text.DateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
+
+/** Single-activity, native Android Views shell; no WebView, analytics SDK, background service or polling. */
+public final class MainActivity extends Activity {
+    private static final int PICK_SRT=71, PICK_FOLDER=72;
+    private static final int BG=0xFF0B1021, CARD=0xFF151C32, STROKE=0xFF27314A;
+    private static final int MUTED=0xFFA9B5D0, PURPLE=0xFF8578FF, GREEN=0xFF39D3B2;
+    private static final int WHITE=0xFFF8FAFF;
+    private final ExecutorService io=Executors.newSingleThreadExecutor();
+    private final Handler handler=new Handler(Looper.getMainLooper());
+    private SecureTokenStore tokens;
+    private CloudApi api;
+    private LinearLayout root, content;
+    private JSONArray projects=new JSONArray(),workers=new JSONArray();
+    private String openedProject=null;
+    private String pendingFolderProject=null;
+    private boolean busy=false;
+
+    @Override public void onCreate(Bundle state){
+        super.onCreate(state);
+        getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        tokens=new SecureTokenStore(this);api=new CloudApi(tokens);
+        if(state!=null)openedProject=state.getString("openedProject");
+        renderHome();
+        io.execute(()->{
+            try{String t=tokens.load();handler.post(()->{if(t==null)showConnect();else refresh();});}
+            catch(Exception e){handler.post(()->showConnect());}
+        });
+    }
+    @Override protected void onSaveInstanceState(Bundle out){out.putString("openedProject",openedProject);super.onSaveInstanceState(out);}
+    @Override public void onBackPressed(){if(openedProject!=null){openedProject=null;renderHome();}else super.onBackPressed();}
+    @Override protected void onDestroy(){io.shutdownNow();handler.removeCallbacksAndMessages(null);super.onDestroy();}
+    private int dp(float d){return (int)(d*getResources().getDisplayMetrics().density+0.5f);}
+    private GradientDrawable shape(int color,int border,int radius){
+        GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));
+        if(border!=0)d.setStroke(dp(1),border);
+        return d;
+    }
+    private LinearLayout vertical(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;}
+    private LinearLayout horizontal(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.HORIZONTAL);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
+    private TextView text(String value,int size,int color,boolean bold){
+        TextView t=new TextView(this);t.setText(value);t.setTextColor(color);t.setTextSize(size);
+        t.setFontFeatureSettings("kern");if(bold)t.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
+        t.setLineSpacing(dp(2),1.04f);return t;
+    }
+    private void space(LinearLayout l,int height){View v=new View(this);l.addView(v,new LinearLayout.LayoutParams(1,dp(height)));}
+    private void pad(View v,int left,int top,int right,int bottom){v.setPadding(dp(left),dp(top),dp(right),dp(bottom));}
+    private Button action(String label,Runnable click,boolean primary){
+        Button b=new Button(this);b.setText(label);b.setAllCaps(false);b.setTextSize(13);
+        b.setTypeface(Typeface.DEFAULT,Typeface.BOLD);b.setTextColor(primary?WHITE:0xFFD8DBFF);
+        b.setBackground(shape(primary?0xFF6C59EA:0xFF242C47,primary?0:STROKE,12));
+        b.setMinHeight(dp(45));b.setMinimumHeight(dp(45));
+        b.setOnClickListener(v->click.run());return b;
+    }
+    private LinearLayout card(){LinearLayout c=vertical();pad(c,16,16,16,16);c.setBackground(shape(CARD,STROKE,18));return c;}
+    private LinearLayout.LayoutParams fullWithBottom(int bottom){LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.bottomMargin=dp(bottom);return p;}
+    private void begin(String eyebrow,String title,String summary){
+        root=vertical();root.setBackgroundColor(BG);setContentView(root);
+        LinearLayout header=vertical();pad(header,20,17,20,15);root.addView(header);
+        header.addView(text("C I N E P U L S   •   M O B I L E",11,GREEN,true));space(header,8);
+        header.addView(text(title,26,WHITE,true));space(header,7);
+        header.addView(text(summary,13,MUTED,false));
+        ScrollView scroll=new ScrollView(this);scroll.setFillViewport(false);scroll.setVerticalScrollBarEnabled(false);
+        root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        content=vertical();pad(content,18,12,18,40);scroll.addView(content);
+    }
+    private void showError(String message){
+        String safe=message==null?"Unexpected error":message;
+        // Never display untrusted token or signed URLs, even if server accidentally returns one.
+        safe=safe.replaceAll("(?i)Bearer\\s+[^\\s]+","Bearer [redacted]")
+                .replaceAll("(?i)([?&](sig|token)=)[^&\\s]+","$1[redacted]");
+        if(safe.length()>260)safe=safe.substring(0,260)+"…";
+        new AlertDialog.Builder(this).setTitle("CinePulse").setMessage(safe).setPositiveButton("OK",null).show();
+    }
+    private <T> void task(String status,Callable<T> work,Consumer<T> result){
+        if(busy){Toast.makeText(this,"Another operation is running",Toast.LENGTH_SHORT).show();return;}
+        busy=true;Toast.makeText(this,status,Toast.LENGTH_SHORT).show();
+        io.execute(()->{
+            try{T value=work.call();handler.post(()->{busy=false;result.accept(value);});}
+            catch(Exception e){handler.post(()->{busy=false;showError(e.getMessage());});}
+        });
+    }
+    private void showConnect(){
+        begin("CONNECT","Secure connection","Your CinePulse worker and movie data stay in Cloudflare. This phone holds only an encrypted access token.");
+        LinearLayout c=card();content.addView(c,fullWithBottom(14));
+        c.addView(text("Connect your existing workspace",19,WHITE,true));space(c,9);
+        c.addView(text("Cloudflare endpoint",12,MUTED,false));space(c,5);
+        c.addView(text(SecurityRules.BASE,12,GREEN,false));space(c,16);
+        c.addView(text("Administrator bearer token",13,WHITE,true));space(c,6);
+        EditText input=new EditText(this);input.setSingleLine(true);input.setTextColor(WHITE);input.setHintTextColor(MUTED);
+        input.setHint("Paste token privately");input.setTextSize(15);
+        input.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setAutofillHints();c.addView(input);space(c,12);
+        c.addView(action("Connect securely",()->{
+            String token=input.getText().toString().trim();input.setText("");
+            task("Checking connection",()->{
+                tokens.save(token);
+                try{return api.workers();}
+                catch(Exception e){tokens.clear();throw e;}
+            },j->refresh());
+        },true),fullWithBottom(10));
+        c.addView(text("Security note: the current Cloudflare API grants this token administrator access. Use only on your own protected phone; a future backend update should issue limited mobile-session tokens.",12,MUTED,false));
+    }
+    private void refresh(){
+        if(openedProject!=null){loadDetail(openedProject);return;}
+        task("Refreshing CinePulse",()->{
+            JSONObject p=api.projects();JSONObject w=api.workers();
+            return new JSONArray[]{p.getJSONArray("projects"),w.getJSONArray("workers")};
+        },values->{projects=values[0];workers=values[1];renderHome();});
+    }
+    private void renderHome(){
+        begin("WORKSPACE","Your movies","A light control center for Muse and CinePulse Windows.");
+        LinearLayout actions=horizontal();content.addView(actions,fullWithBottom(14));
+        Button add=action("+ New movie",this::chooseSrt,true);
+        actions.addView(add,new LinearLayout.LayoutParams(0,dp(48),1));
+        Button sync=action("Refresh",this::refresh,false);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(dp(110),dp(48));rp.leftMargin=dp(8);actions.addView(sync,rp);
+        LinearLayout info=card();content.addView(info,fullWithBottom(14));
+        info.addView(text("CLOUDFLARE PIPELINE",11,GREEN,true));space(info,6);
+        info.addView(text(projects.length()+" movie projects  •  "+workers.length()+" workers",20,WHITE,true));space(info,4);
+        info.addView(text("Movie AI production runs in Cloudflare/Muse. Video rendering remains on your Windows PC.",12,MUTED,false));
+        LinearLayout bar=horizontal();content.addView(bar,fullWithBottom(12));
+        bar.addView(text("PROJECTS",12,MUTED,true),new LinearLayout.LayoutParams(0,-2,1));
+        TextView settings=text("Connection settings",12,PURPLE,true);settings.setOnClickListener(v->confirmDisconnect());bar.addView(settings);
+        if(projects.length()==0){
+            LinearLayout c=card();content.addView(c,fullWithBottom(12));
+            c.addView(text("No projects listed yet",17,WHITE,true));space(c,8);
+            c.addView(text("Choose an original movie SRT to start a new Muse project, or tap Refresh to retrieve an existing Cloudflare project.",13,MUTED,false));
+        }
+        for(int i=0;i<projects.length();i++){
+            JSONObject p=projects.optJSONObject(i);if(p==null)continue;
+            String id=p.optString("id"),name=p.optString("title","Untitled"),status=p.optString("status","unknown");
+            LinearLayout c=card();content.addView(c,fullWithBottom(10));
+            LinearLayout row=horizontal();c.addView(row);
+            row.addView(text(name,17,WHITE,true),new LinearLayout.LayoutParams(0,-2,1));
+            TextView state=text(status.toUpperCase(),10,status.equals("ready")?GREEN:PURPLE,true);pad(state,8,5,8,5);
+            state.setBackground(shape(0xFF242C47,0,9));row.addView(state);
+            space(c,8);c.addView(text("#"+SecurityRules.shortId(id)+"  •  Retention "+p.optInt("retentionHours",48)+"h",12,MUTED,false));
+            space(c,12);Button open=action(status.equals("ready")?"View & download package →":"View progress →",()->loadDetail(id),false);
+            c.addView(open,new LinearLayout.LayoutParams(-1,dp(42)));
+        }
+        space(content,12);
+        content.addView(text("WORKERS",12,MUTED,true),fullWithBottom(11));
+        for(int i=0;i<workers.length();i++){
+            JSONObject w=workers.optJSONObject(i);if(w==null)continue;
+            LinearLayout c=card();content.addView(c,fullWithBottom(10));
+            c.addView(text(w.optString("label","Worker"),15,WHITE,true));space(c,4);
+            boolean paused=w.optBoolean("paused");
+            c.addView(text(paused?"Paused":"Available" ,12,paused?MUTED:GREEN,false));space(c,9);
+            String id=w.optString("id");c.addView(action(paused?"Resume worker":"Pause worker",()->toggleWorker(id,!paused),false));
+        }
+        content.addView(action("+ Create isolated Muse worker",this::createWorkerDialog,false),fullWithBottom(15));
+        content.addView(text("Designed for Android 8+ including Galaxy S9+. No background video rendering, continuous sync service or phone-wide file permissions.",12,MUTED,false));
+    }
+    private void confirmDisconnect(){new AlertDialog.Builder(this).setTitle("Disconnect this device?")
+        .setMessage("This deletes the encrypted token from this phone. Cloud projects and Windows data remain unchanged.")
+        .setNegativeButton("Cancel",null).setPositiveButton("Disconnect",(d,w)->{tokens.clear();projects=new JSONArray();workers=new JSONArray();openedProject=null;showConnect();}).show();}
+    private void toggleWorker(String id,boolean pause){
+        new AlertDialog.Builder(this).setTitle(pause?"Pause this worker?":"Resume this worker?")
+            .setMessage("Only this Cloudflare worker will be affected. Other movie projects remain untouched.")
+            .setNegativeButton("Cancel",null)
+            .setPositiveButton(pause?"Pause":"Resume",(d,w)->task("Updating worker",()->api.toggleWorker(id,pause),r->refresh())).show();
+    }
+    private void createWorkerDialog(){
+        EditText name=new EditText(this);name.setSingleLine(true);name.setHint("Movie worker name");
+        new AlertDialog.Builder(this).setTitle("New isolated worker")
+            .setMessage("Each worker has a separate Cloudflare queue. The worker secret is displayed only once and is not stored by this app.")
+            .setView(name).setNegativeButton("Cancel",null)
+            .setPositiveButton("Create",(d,w)->{
+                String label=name.getText().toString().trim();
+                if(label.isEmpty()||label.length()>120){showError("Choose a name under 120 characters");return;}
+                task("Creating worker",()->api.createWorker(label),r->{
+                    String secret=r.optString("token","");
+                    new AlertDialog.Builder(this).setTitle("Worker created")
+                        .setMessage("Save the pairing secret through your private Muse setup now. It will not appear again here.\n\n"+secret)
+                        .setPositiveButton("I saved it",(x,y)->refresh()).setCancelable(false).show();
+                });
+            }).show();
+    }
+    private void chooseSrt(){
+        if(workers.length()==0){showError("Create a Muse worker first, then choose the original movie SRT.");return;}
+        Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        pick.setType("*/*");pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.putExtra(Intent.EXTRA_MIME_TYPES,new String[]{"application/x-subrip","text/plain","application/octet-stream"});
+        startActivityForResult(pick,PICK_SRT);
+    }
+    private void submitSrt(Uri uri){
+        EditText name=new EditText(this);name.setSingleLine(true);name.setHint("Movie title");
+        String file=uri.getLastPathSegment();if(file!=null){String base=file.substring(file.lastIndexOf('/')+1);name.setText(base.replaceFirst("(?i)\\.srt$",""));}
+        List<String> labels=new ArrayList<>(),ids=new ArrayList<>();
+        for(int i=0;i<workers.length();i++){
+            JSONObject w=workers.optJSONObject(i);
+            if(w!=null && w.optBoolean("enabled",true) && !w.optBoolean("paused")){
+                labels.add(w.optString("label")+"  (#"+SecurityRules.shortId(w.optString("id"))+")");
+                ids.add(w.optString("id"));
+            }
+        }
+        if(ids.isEmpty()){showError("There are no active workers. Resume or create a worker first.");return;}
+        LinearLayout form=vertical();pad(form,24,0,24,0);
+        form.addView(text("Project title",13,Color.DKGRAY,true));form.addView(name);
+        form.addView(text("Processing worker",13,Color.DKGRAY,true));
+        Spinner spinner=new Spinner(this);
+        ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);
+        spinner.setAdapter(adapter);form.addView(spinner);
+        new AlertDialog.Builder(this).setTitle("Send movie to Muse")
+            .setMessage("Only the selected SRT text will be uploaded, never the source movie video. Worker queues stay isolated.")
+            .setView(form).setNegativeButton("Cancel",null)
+            .setPositiveButton("Submit",(d,w)->{
+                String title=name.getText().toString().trim();
+                if(title.isEmpty()||title.length()>160){showError("Enter a project title under 160 characters");return;}
+                String worker=ids.get(spinner.getSelectedItemPosition());
+                task("Uploading subtitle",()->{
+                    String srt=readSrt(uri);return api.createProject(title,worker,srt,48);
+                },r->{Toast.makeText(this,"Movie queued",Toast.LENGTH_LONG).show();refresh();});
+            }).show();
+    }
+    private String readSrt(Uri uri) throws Exception {
+        try(InputStream in=getContentResolver().openInputStream(uri);ByteArrayOutputStream bytes=new ByteArrayOutputStream()){
+            if(in==null)throw new IllegalArgumentException("Cannot read selected SRT");
+            int n,total=0;byte[] buf=new byte[8192];while((n=in.read(buf))!=-1){
+                total+=n;if(total>SecurityRules.MAX_SRT_BYTES)throw new IllegalArgumentException("SRT exceeds 2 MiB");
+                bytes.write(buf,0,n);
+            }
+            String srt=bytes.toString(StandardCharsets.UTF_8.name()).replace("\uFEFF", "").trim();
+            if(!srt.contains("-->")||srt.length()<15)throw new IllegalArgumentException("File does not appear to be an SRT subtitle");
+            return srt;
+        }
+    }
+    private void loadDetail(String projectId){
+        if(!SecurityRules.validUuid(projectId)){showError("Invalid project ID");return;}
+        openedProject=projectId;
+        task("Loading movie progress",()->api.project(projectId),this::renderDetail);
+    }
+    private void renderDetail(JSONObject document){
+        JSONObject project=document.optJSONObject("project");if(project==null){showError("Project response incomplete");return;}
+        String id=project.optString("id"),status=project.optString("status");
+        openedProject=id;
+        begin("MOVIE",project.optString("title","Movie"),"Project #"+SecurityRules.shortId(id)+"  ·  "+status.toUpperCase());
+        content.addView(action("← All movies",()->{openedProject=null;renderHome();},false),fullWithBottom(15));
+        LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
+        summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
+        summary.addView(text(status.equals("ready")?"Original JSON and both MP3 files are ready for verified download.":
+            "Keep Muse worker connected. This app only checks progress when you open or refresh it.",13,MUTED,false));
+        space(summary,12);
+        if(status.equals("ready"))summary.addView(action("Download Windows project + 2 MP3s",()->{
+            pendingFolderProject=id;
+            Intent folder=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            folder.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(folder,PICK_FOLDER);
+        },true));
+        else summary.addView(action("Refresh production stages",()->loadDetail(id),true));
+        JSONArray jobs=document.optJSONArray("jobs");
+        content.addView(text("PRODUCTION STAGES",12,MUTED,true),fullWithBottom(12));
+        if(jobs==null||jobs.length()==0)content.addView(text("No tasks reported yet",13,MUTED,false));
+        else for(int i=0;i<jobs.length();i++){
+            JSONObject job=jobs.optJSONObject(i);if(job==null)continue;
+            LinearLayout row=card();content.addView(row,fullWithBottom(8));
+            String step=job.optString("stepId","stage").replace('_',' '),result=job.optString("status","queued");
+            LinearLayout r=horizontal();row.addView(r);
+            r.addView(text((i+1)+".  "+step,14,WHITE,true),new LinearLayout.LayoutParams(0,-2,1));
+            r.addView(text(result.toUpperCase(),10,result.equals("done")?GREEN:result.equals("error")?0xFFFF9B9B:PURPLE,true));
+            if(job.optString("error").length()>0){space(row,6);row.addView(text(job.optString("error"),12,MUTED,false));}
+        }
+        content.addView(text("ASSETS",12,MUTED,true),fullWithBottom(12));
+        JSONArray assets=document.optJSONArray("assets");
+        if(assets!=null)for(int i=0;i<assets.length();i++){
+            JSONObject a=assets.optJSONObject(i);if(a==null)continue;
+            content.addView(text("✓  "+a.optString("kind")+"  ·  "+(a.optLong("bytes")/1024)+" KiB",13,MUTED,false),fullWithBottom(7));
+        }
+        space(content,16);content.addView(text("Scene matching and final video rendering are completed on CinePulse Windows, using the original movie file.",12,MUTED,false));
+    }
+    private void downloadProject(String id,Uri tree){
+        task("Downloading verified package",()->{
+            JSONObject detail=api.project(id),urls=api.downloads(id);
+            new VerifiedDownloads(getContentResolver(),getCacheDir()).download(id,detail,urls,tree,
+                step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
+            return "Package saved in your selected folder. Transfer that folder to Windows and import CinePulse_Project.json.";
+        },message->new AlertDialog.Builder(this).setTitle("Windows package ready")
+            .setMessage(message).setPositiveButton("Done",null).show());
+    }
+    @Override protected void onActivityResult(int request,int result,Intent data){
+        super.onActivityResult(request,result,data);
+        if(result!=RESULT_OK||data==null||data.getData()==null)return;
+        Uri uri=data.getData();
+        if(request==PICK_SRT)submitSrt(uri);
+        else if(request==PICK_FOLDER&&pendingFolderProject!=null){
+            String id=pendingFolderProject;pendingFolderProject=null;
+            try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);}
+            catch(SecurityException ignored){/* transient grant is enough for immediate download */}
+            downloadProject(id,uri);
+        }
+    }
+}

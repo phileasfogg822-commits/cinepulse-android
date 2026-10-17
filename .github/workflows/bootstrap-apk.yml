@@ -25,7 +25,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md .gitignore settings.gradle build.gradle gradle.properties app docs tools .github/workflows/android-apk.yml
+          git add README.md .gitignore settings.gradle build.gradle gradle.properties app docs tools
           if ! git diff --cached --quiet; then
             git commit -m "Publish native Android source and APK CI"
             git push origin HEAD:main

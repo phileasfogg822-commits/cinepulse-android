@@ -284,7 +284,23 @@ public final class MainActivity extends Activity {
     private void loadDetail(String projectId){
         if(!SecurityRules.validUuid(projectId)){showError("Invalid project ID");return;}
         openedProject=projectId;
-        task("Loading movie progress",()->api.project(projectId),this::renderDetail);
+        task("Loading movie progress",()->{
+            JSONObject data=api.project(projectId);
+            if(data.optJSONObject("worker")==null){
+                try {
+                    JSONObject list=api.workers();
+                    JSONArray found=list.optJSONArray("workers");
+                    String workerId=data.optJSONObject("project").optString("workerId");
+                    if(found!=null)for(int i=0;i<found.length();i++){
+                        JSONObject w=found.optJSONObject(i);
+                        if(w!=null&&workerId.equals(w.optString("id"))){data.put("worker",w);break;}
+                    }
+                } catch(Exception ignored) {
+                    // The project timeline remains available if worker status fails to refresh.
+                }
+            }
+            return data;
+        },this::renderDetail);
     }
     private void renderDetail(JSONObject document){
         JSONObject project=document.optJSONObject("project");if(project==null){showError("Project response incomplete");return;}
@@ -302,7 +318,10 @@ public final class MainActivity extends Activity {
         summary.addView(action("Refresh production stages",()->loadDetail(id),false));
         JSONArray jobs=document.optJSONArray("jobs");
         renderProjectClock(project,jobs);
-        renderStageTimeline(jobs,document.optJSONArray("assets"));
+        JSONObject worker=document.optJSONObject("worker");
+        JSONObject nudgePolicy=document.optJSONObject("nudgePolicy");
+        renderWorkerHealth(worker,nudgePolicy);
+        renderStageTimeline(jobs,document.optJSONArray("assets"),worker,nudgePolicy,id);
 
         int failures=0;
         if(jobs!=null)for(int i=0;i<jobs.length();i++){
@@ -357,7 +376,7 @@ public final class MainActivity extends Activity {
         if(raw instanceof String && ((String)raw).matches("[0-9]{1,6}"))return (String)raw;
         return "Not reported by backend";
     }
-    private void renderStageTimeline(JSONArray jobs,JSONArray assets){
+    private void renderStageTimeline(JSONArray jobs,JSONArray assets,JSONObject worker,JSONObject nudgePolicy,String projectId){
         content.addView(text("PRODUCTION TIMELINE",12,MUTED,true),fullWithBottom(12));
         if(jobs==null||jobs.length()==0){
             LinearLayout c=card();content.addView(c,fullWithBottom(10));
@@ -392,6 +411,8 @@ public final class MainActivity extends Activity {
                 c.addView(text("Pure Muse execution time unavailable until backend reports startedAt.",11,MUTED,false));
             }
             c.addView(text("Muse attempts: "+attemptsOf(j),12,MUTED,false));
+            if("queued".equalsIgnoreCase(state))renderQueuedNudge(c,j,worker,nudgePolicy,projectId);
+            else showNudgeHistory(c,j);
             String problem=j.optString("error","");
             if(!problem.isEmpty()){
                 space(c,6);
@@ -400,6 +421,91 @@ public final class MainActivity extends Activity {
             showBackendMilestones(c,j);
             if("digest".equals(name))renderDigestCheckpoints(c,j,assets);
         }
+    }
+    private static boolean workerRecentlyOnline(JSONObject worker,long now){
+        if(worker==null||!worker.optBoolean("enabled",true)||worker.optBoolean("paused"))return false;
+        long last=TimelineMetrics.time(worker,"lastSeen","last_seen");
+        return last>0 && now>=last && now-last<=180000L;
+    }
+    private void renderWorkerHealth(JSONObject worker,JSONObject policy){
+        LinearLayout c=card();content.addView(c,fullWithBottom(14));
+        c.addView(text("MUSE WORKER & QUEUE CONTROL",12,GREEN,true));space(c,8);
+        long now=System.currentTimeMillis();
+        long last=TimelineMetrics.time(worker,"lastSeen","last_seen");
+        String state=worker==null?"Worker status not available":
+            worker.optBoolean("paused")?"Paused":
+            !worker.optBoolean("enabled",true)?"Disabled":
+            workerRecentlyOnline(worker,now)?"Recently connected":"Offline / no recent queue poll";
+        c.addView(text("Worker: "+(worker==null?"Not reported":worker.optString("label","Muse worker")),14,WHITE,true));
+        c.addView(text("Status: "+state,12,workerRecentlyOnline(worker,now)?GREEN:MUTED,false));
+        c.addView(text("Last Cloudflare poll: "+TimelineMetrics.date(last),12,MUTED,false));
+        space(c,9);
+        if(policy!=null&&policy.optBoolean("enabled")){
+            c.addView(text("Manual Nudge at 10 minutes · automatic queue check every 5 minutes",12,GREEN,false));
+            c.addView(text("A nudge signals the connected worker; only a real Muse claim starts processing. Cooldown: 5 minutes.",11,MUTED,false));
+        }else{
+            c.addView(text("Muse nudge backend is not deployed or not reporting capability yet.",12,0xFFFFC47E,false));
+            c.addView(text("Install the updated Cloudflare Worker before expecting the Nudge button to start a task. Existing Muse processing continues normally.",11,MUTED,false));
+        }
+        space(c,8);c.addView(action("Refresh worker & queued tasks",()->loadDetail(openedProject),false));
+    }
+    private void renderQueuedNudge(LinearLayout c,JSONObject job,JSONObject worker,JSONObject policy,String projectId){
+        long queued=TimelineMetrics.time(job,"createdAt","created_at");
+        long elapsed=queued>0?Math.max(0,System.currentTimeMillis()-queued):0;
+        if(elapsed<600000L)return;
+        space(c,9);
+        boolean urgent=elapsed>=900000L;
+        c.addView(text((urgent?"QUEUED OVER 15 MINUTES":"QUEUED OVER 10 MINUTES")+
+            " · "+TimelineMetrics.duration(elapsed),12,urgent?0xFFFFC47E:PURPLE,true));
+        boolean available=workerRecentlyOnline(worker,System.currentTimeMillis());
+        if(worker!=null&&worker.optBoolean("paused"))c.addView(text("Muse worker paused. Resume from Workers, then refresh.",12,MUTED,false));
+        else if(!available)c.addView(text("Muse has not checked the cloud queue recently. Open/reconnect the dedicated Muse worker first.",12,MUTED,false));
+        else c.addView(text("Worker recently connected. Request a safe queue check without duplicating this job.",12,MUTED,false));
+        if(policy==null||!policy.optBoolean("enabled")){
+            c.addView(text("Backend update required for actual nudge requests.",11,0xFFFFC47E,false));
+        }else if(available){
+            space(c,7);
+            final String jobId=job.optString("id","");
+            if(SecurityRules.validUuid(jobId))
+                c.addView(action("Nudge Muse — check queued task",()->confirmNudge(jobId,projectId),true));
+        }
+        showNudgeHistory(c,job);
+    }
+    private void showNudgeHistory(LinearLayout card,JSONObject job){
+        JSONArray nudges=job.optJSONArray("nudges");
+        if(nudges==null||nudges.length()==0)return;
+        space(card,7);card.addView(text("NUDGE HISTORY",11,GREEN,true));
+        for(int i=0;i<Math.min(8,nudges.length());i++){
+            JSONObject n=nudges.optJSONObject(i);if(n==null)continue;
+            String state=n.optString("state","pending"),source=n.optString("source","manual");
+            long when=TimelineMetrics.time(n,"requestedAt");
+            String detail="claimed".equals(state)?"Worker claimed the task":
+                "observed".equals(state)?"Worker saw the signal (not claimed yet)":
+                "pending".equals(state)?"Signal waiting for worker poll":state;
+            card.addView(text(source+" · "+TimelineMetrics.date(when),11,MUTED,false));
+            card.addView(text(detail,12,"claimed".equals(state)?GREEN:PURPLE,false));
+        }
+    }
+    private void confirmNudge(String jobId,String projectId){
+        new AlertDialog.Builder(this)
+            .setTitle("Nudge this Muse task?")
+            .setMessage("This asks the assigned worker to check its existing Cloudflare queue. It does not restart, duplicate, or forcibly claim a task. A closed Muse session cannot be awakened.")
+            .setNegativeButton("Cancel",null)
+            .setPositiveButton("Send nudge",(dialog,which)->task("Sending safe Muse nudge",()->{
+                try{return api.nudge(jobId);}
+                catch(Exception e){
+                    String msg=e.getMessage()==null?"":e.getMessage();
+                    if(msg.contains("(404)"))throw new IllegalStateException("The Cloudflare Nudge endpoint is not deployed yet. Install the backend patch before using this control.");
+                    throw e;
+                }
+            },result->{
+                boolean accepted=result.optBoolean("accepted",false);
+                String message=result.optString("message","No server confirmation received");
+                new AlertDialog.Builder(this)
+                    .setTitle(accepted?"Nudge request recorded":"Muse nudge not accepted")
+                    .setMessage(message+"\n\nOnly a later worker claim changes the job to Working.")
+                    .setPositiveButton("Refresh status",(d,w)->loadDetail(projectId)).show();
+            })).show();
     }
     private void showBackendMilestones(LinearLayout card,JSONObject job){
         JSONObject progress=job.optJSONObject("progress");

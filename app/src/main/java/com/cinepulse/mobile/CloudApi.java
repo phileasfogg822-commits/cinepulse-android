@@ -58,6 +58,7 @@ final class CloudApi {
     JSONObject project(String id) throws Exception {return call("GET","/v1/projects/"+checked(id),null);}
     JSONObject downloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads",null);}
     JSONObject jobs() throws Exception {return call("GET","/v1/jobs",null);}
+    JSONObject nudge(String jobId) throws Exception {return call("POST","/v1/jobs/"+checked(jobId)+"/nudge",new JSONObject());}
     JSONObject toggleWorker(String id,boolean pause) throws Exception {
         return call("POST","/v1/workers/"+checked(id)+(pause?"/pause":"/resume"),new JSONObject());
     }

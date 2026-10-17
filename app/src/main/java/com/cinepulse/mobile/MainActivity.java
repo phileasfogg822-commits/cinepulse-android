@@ -2,6 +2,9 @@ package com.cinepulse.mobile;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -40,7 +43,7 @@ import java.util.function.Consumer;
 
 /** Single-activity, native Android Views shell; no WebView, analytics SDK, background service or polling. */
 public final class MainActivity extends Activity {
-    private static final int PICK_SRT=71, PICK_FOLDER=72;
+    private static final int PICK_SRT=71, STORAGE_PERMISSION=73;
     private static final int BG=0xFF0B1021, CARD=0xFF151C32, STROKE=0xFF27314A;
     private static final int MUTED=0xFFA9B5D0, PURPLE=0xFF8578FF, GREEN=0xFF39D3B2;
     private static final int WHITE=0xFFF8FAFF;
@@ -51,7 +54,7 @@ public final class MainActivity extends Activity {
     private LinearLayout root, content;
     private JSONArray projects=new JSONArray(),workers=new JSONArray();
     private String openedProject=null;
-    private String pendingFolderProject=null;
+    private String pendingDownloadProject=null;
     private boolean busy=false;
 
     @Override public void onCreate(Bundle state){
@@ -277,19 +280,16 @@ public final class MainActivity extends Activity {
         content.addView(action("← All movies",()->{openedProject=null;renderHome();},false),fullWithBottom(15));
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
         summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
-        summary.addView(text(status.equals("ready")?"Original JSON and both MP3 files are ready for verified download.":
-            "Keep Muse worker connected. This app only checks progress when you open or refresh it.",13,MUTED,false));
+        summary.addView(text(status.equals("ready")?"Original JSON and both MP3 files are ready. One tap downloads the verified package into Downloads/CinePulse.":
+            "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
         space(summary,12);
-        if(status.equals("ready"))summary.addView(action("Download Windows project + 2 MP3s",()->{
-            pendingFolderProject=id;
-            Intent folder=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-            folder.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-            startActivityForResult(folder,PICK_FOLDER);
-        },true));
-        else summary.addView(action("Refresh production stages",()->loadDetail(id),true));
+        if(status.equals("ready"))summary.addView(action("Download JSON + English/Urdu MP3s",()->startPackageDownload(id),true));
+        space(summary,7);
+        summary.addView(action("Refresh production stages",()->loadDetail(id),false));
         JSONArray jobs=document.optJSONArray("jobs");
         content.addView(text("PRODUCTION STAGES",12,MUTED,true),fullWithBottom(12));
-        if(jobs==null||jobs.length()==0)content.addView(text("No tasks reported yet",13,MUTED,false));
+        if(jobs==null||jobs.length()==0)
+            content.addView(text("No detailed job records returned by Cloudflare for this project. This does not indicate an error. Tap Refresh to check again.",13,MUTED,false),fullWithBottom(12));
         else for(int i=0;i<jobs.length();i++){
             JSONObject job=jobs.optJSONObject(i);if(job==null)continue;
             LinearLayout row=card();content.addView(row,fullWithBottom(8));
@@ -299,6 +299,18 @@ public final class MainActivity extends Activity {
             r.addView(text(result.toUpperCase(),10,result.equals("done")?GREEN:result.equals("error")?0xFFFF9B9B:PURPLE,true));
             if(job.optString("error").length()>0){space(row,6);row.addView(text(job.optString("error"),12,MUTED,false));}
         }
+        int failures=0;
+        if(jobs!=null)for(int i=0;i<jobs.length();i++){
+            JSONObject j=jobs.optJSONObject(i);
+            if(j!=null && ("error".equalsIgnoreCase(j.optString("status")) || "failed".equalsIgnoreCase(j.optString("status"))))failures++;
+        }
+        LinearLayout diagnostics=card();content.addView(diagnostics,fullWithBottom(15));
+        diagnostics.addView(text("ERRORS & RETRIES",12,GREEN,true));space(diagnostics,7);
+        diagnostics.addView(text(failures==0
+            ?"No failed jobs reported by the project API. Background processing depends on your remote Muse worker, not this phone."
+            :failures+" failed stage(s) reported above. Review the error and refresh to see backend-managed retry attempts.",13,MUTED,false));
+        space(diagnostics,8);
+        diagnostics.addView(action("Recheck jobs and retry status",()->loadDetail(id),false));
         content.addView(text("ASSETS",12,MUTED,true),fullWithBottom(12));
         JSONArray assets=document.optJSONArray("assets");
         if(assets!=null)for(int i=0;i<assets.length();i++){
@@ -307,13 +319,31 @@ public final class MainActivity extends Activity {
         }
         space(content,16);content.addView(text("Scene matching and final video rendering are completed on CinePulse Windows, using the original movie file.",12,MUTED,false));
     }
-    private void downloadProject(String id,Uri tree){
-        task("Downloading verified package",()->{
+    private void startPackageDownload(String id){
+        if(!SecurityRules.validUuid(id)){showError("Invalid movie project");return;}
+        if(Build.VERSION.SDK_INT<29 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)!=PackageManager.PERMISSION_GRANTED){
+            pendingDownloadProject=id;
+            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},STORAGE_PERMISSION);
+            return;
+        }
+        downloadProject(id);
+    }
+    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] grants){
+        super.onRequestPermissionsResult(request,permissions,grants);
+        if(request==STORAGE_PERMISSION){
+            String id=pendingDownloadProject;
+            pendingDownloadProject=null;
+            if(grants.length>0 && grants[0]==PackageManager.PERMISSION_GRANTED && id!=null)downloadProject(id);
+            else showError("Android 8/9 requires storage permission to save files in Downloads. You may enable it in Settings → Apps → CinePulse → Permissions.");
+        }
+    }
+    private void downloadProject(String id){
+        task("Downloading 3 files to Downloads/CinePulse",()->{
+            // Fresh signed links on every click; verify all files before publishing any.
             JSONObject detail=api.project(id),urls=api.downloads(id);
-            new VerifiedDownloads(getContentResolver(),getCacheDir()).download(id,detail,urls,tree,
-                step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
-            return "Package saved in your selected folder. Transfer that folder to Windows and import CinePulse_Project.json.";
-        },message->new AlertDialog.Builder(this).setTitle("Windows package ready")
+            return new VerifiedDownloads(getContentResolver(),getCacheDir()).downloadToDownloads(
+                id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
+        },message->new AlertDialog.Builder(this).setTitle("Verified Windows package downloaded")
             .setMessage(message).setPositiveButton("Done",null).show());
     }
     @Override protected void onActivityResult(int request,int result,Intent data){
@@ -321,11 +351,6 @@ public final class MainActivity extends Activity {
         if(result!=RESULT_OK||data==null||data.getData()==null)return;
         Uri uri=data.getData();
         if(request==PICK_SRT)submitSrt(uri);
-        else if(request==PICK_FOLDER&&pendingFolderProject!=null){
-            String id=pendingFolderProject;pendingFolderProject=null;
-            try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);}
-            catch(SecurityException ignored){/* transient grant is enough for immediate download */}
-            downloadProject(id,uri);
-        }
+
     }
 }

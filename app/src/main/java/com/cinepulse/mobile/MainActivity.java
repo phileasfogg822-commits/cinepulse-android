@@ -182,7 +182,16 @@ public final class MainActivity extends Activity {
             TextView state=text(status.toUpperCase(),10,status.equals("ready")?GREEN:PURPLE,true);pad(state,8,5,8,5);
             state.setBackground(shape(0xFF242C47,0,9));row.addView(state);
             space(c,8);c.addView(text("#"+SecurityRules.shortId(id)+"  •  Retention "+p.optInt("retentionHours",48)+"h",12,MUTED,false));
-            space(c,12);Button open=action(status.equals("ready")?"View & download package →":"View progress →",()->loadDetail(id),false);
+            long started=TimelineMetrics.time(p,"createdAt","created_at");
+            long finished=TimelineMetrics.time(p,"readyAt","ready_at","completedAt","finishedAt");
+            if(started>0){
+                space(c,6);
+                c.addView(text("Submitted "+TimelineMetrics.date(started),12,MUTED,false));
+                c.addView(text((finished>0?"Total project time: ":"Elapsed since submission: ")
+                    +TimelineMetrics.interval(started,finished,System.currentTimeMillis()),12,
+                    finished>0?GREEN:MUTED,false));
+            }
+            space(c,12);Button open=action(status.equals("ready")?"View & download package →":"View timeline →",()->loadDetail(id),false);
             c.addView(open,new LinearLayout.LayoutParams(-1,dp(42)));
         }
         space(content,12);
@@ -292,18 +301,9 @@ public final class MainActivity extends Activity {
         space(summary,7);
         summary.addView(action("Refresh production stages",()->loadDetail(id),false));
         JSONArray jobs=document.optJSONArray("jobs");
-        content.addView(text("PRODUCTION STAGES",12,MUTED,true),fullWithBottom(12));
-        if(jobs==null||jobs.length()==0)
-            content.addView(text("No detailed job records returned by Cloudflare for this project. This does not indicate an error. Tap Refresh to check again.",13,MUTED,false),fullWithBottom(12));
-        else for(int i=0;i<jobs.length();i++){
-            JSONObject job=jobs.optJSONObject(i);if(job==null)continue;
-            LinearLayout row=card();content.addView(row,fullWithBottom(8));
-            String step=job.optString("stepId","stage").replace('_',' '),result=job.optString("status","queued");
-            LinearLayout r=horizontal();row.addView(r);
-            r.addView(text((i+1)+".  "+step,14,WHITE,true),new LinearLayout.LayoutParams(0,-2,1));
-            r.addView(text(result.toUpperCase(),10,result.equals("done")?GREEN:result.equals("error")?0xFFFF9B9B:PURPLE,true));
-            if(job.optString("error").length()>0){space(row,6);row.addView(text(job.optString("error"),12,MUTED,false));}
-        }
+        renderProjectClock(project,jobs);
+        renderStageTimeline(jobs,document.optJSONArray("assets"));
+
         int failures=0;
         if(jobs!=null)for(int i=0;i<jobs.length();i++){
             JSONObject j=jobs.optJSONObject(i);
@@ -323,6 +323,161 @@ public final class MainActivity extends Activity {
             content.addView(text("✓  "+a.optString("kind")+"  ·  "+readableBytes(a.optLong("bytes", -1)),13,MUTED,false),fullWithBottom(7));
         }
         space(content,16);content.addView(text("Scene matching and final video rendering are completed on CinePulse Windows, using the original movie file.",12,MUTED,false));
+    }
+    /** Display real server timestamps. Queue+execution is never called pure Muse execution time. */
+    private void renderProjectClock(JSONObject p, JSONArray jobs){
+        long created=TimelineMetrics.time(p,"createdAt","created_at");
+        long finished=TimelineMetrics.time(p,"readyAt","ready_at","completedAt","finishedAt");
+        if(finished<=0 && "ready".equals(p.optString("status")) && jobs!=null){
+            for(int i=0;i<jobs.length();i++){
+                JSONObject job=jobs.optJSONObject(i);
+                if(job!=null && "done".equals(job.optString("status")))
+                    finished=Math.max(finished,TimelineMetrics.time(job,"finishedAt","finished_at"));
+            }
+        }
+        LinearLayout c=card();content.addView(c,fullWithBottom(14));
+        c.addView(text("PROJECT TIMING",12,GREEN,true));space(c,8);
+        c.addView(text("Submitted: "+TimelineMetrics.date(created),13,WHITE,false));
+        c.addView(text("Completed: "+TimelineMetrics.date(finished),13,MUTED,false));
+        if(created>0){
+            space(c,6);
+            c.addView(text((finished>0?"Total submission-to-completion: ":"Elapsed since submission: ")
+                +TimelineMetrics.interval(created,finished,System.currentTimeMillis()),
+                16,finished>0?GREEN:PURPLE,true));
+        }else c.addView(text("Total duration: not reported by Cloudflare",13,MUTED,false));
+        space(c,6);
+        c.addView(text("Times shown in your phone's timezone. Running durations update on Refresh; completed times are retained only while Cloudflare retains the project.",11,MUTED,false));
+    }
+    private static String attemptsOf(JSONObject job){
+        Object raw=job.opt("attemptCount");
+        if(raw==null||raw==JSONObject.NULL)raw=job.opt("attempt");
+        if(raw==null||raw==JSONObject.NULL)raw=job.opt("attempts");
+        if(raw instanceof JSONArray)return String.valueOf(((JSONArray)raw).length());
+        if(raw instanceof Number)return String.valueOf(((Number)raw).intValue());
+        if(raw instanceof String && ((String)raw).matches("[0-9]{1,6}"))return (String)raw;
+        return "Not reported by backend";
+    }
+    private void renderStageTimeline(JSONArray jobs,JSONArray assets){
+        content.addView(text("PRODUCTION TIMELINE",12,MUTED,true),fullWithBottom(12));
+        if(jobs==null||jobs.length()==0){
+            LinearLayout c=card();content.addView(c,fullWithBottom(10));
+            c.addView(text("No job records returned yet. Use Refresh to check the server.",13,MUTED,false));
+            return;
+        }
+        for(int i=0;i<jobs.length();i++){
+            JSONObject j=jobs.optJSONObject(i);if(j==null)continue;
+            String name=j.optString("stepId","stage"),state=j.optString("status","unknown");
+            long queued=TimelineMetrics.time(j,"createdAt","created_at","queuedAt");
+            long claimed=TimelineMetrics.time(j,"startedAt","started_at","claimedAt","claimed_at");
+            long ended=TimelineMetrics.time(j,"finishedAt","finished_at","completedAt");
+            LinearLayout c=card();content.addView(c,fullWithBottom(9));
+            LinearLayout heading=horizontal();c.addView(heading);
+            heading.addView(text((i+1)+". "+TimelineMetrics.stageLabel(name),14,WHITE,true),
+                new LinearLayout.LayoutParams(0,-2,1));
+            boolean ok="done".equalsIgnoreCase(state);
+            int color=ok?GREEN:("error".equalsIgnoreCase(state)||"failed".equalsIgnoreCase(state))?0xFFFF9B9B:PURPLE;
+            heading.addView(text(state.toUpperCase(java.util.Locale.ROOT),10,color,true));
+            space(c,7);
+            c.addView(text("Queued: "+TimelineMetrics.date(queued),12,MUTED,false));
+            c.addView(text("Muse started: "+TimelineMetrics.date(claimed),12,MUTED,false));
+            c.addView(text("Finished: "+TimelineMetrics.date(ended),12,MUTED,false));
+            space(c,5);
+            String active=ok||"error".equals(state)||"failed".equals(state)?"":" (as of refresh)";
+            if(claimed>0){
+                c.addView(text("Muse execution time: "+TimelineMetrics.interval(claimed,ended,System.currentTimeMillis()),13,GREEN,false));
+                if(queued>0 && claimed>=queued)c.addView(text("Time waiting in queue: "+
+                    TimelineMetrics.duration(claimed-queued),12,MUTED,false));
+            }else if(queued>0){
+                c.addView(text("Since queued (waiting + processing): "+TimelineMetrics.interval(queued,ended,System.currentTimeMillis())+active,12,PURPLE,false));
+                c.addView(text("Pure Muse execution time unavailable until backend reports startedAt.",11,MUTED,false));
+            }
+            c.addView(text("Muse attempts: "+attemptsOf(j),12,MUTED,false));
+            String problem=j.optString("error","");
+            if(!problem.isEmpty()){
+                space(c,6);
+                c.addView(text("Failure: "+TimelineMetrics.safeLabel(problem,180),12,0xFFFF9B9B,false));
+            }
+            showBackendMilestones(c,j);
+            if("digest".equals(name))renderDigestCheckpoints(c,j,assets);
+        }
+    }
+    private void showBackendMilestones(LinearLayout card,JSONObject job){
+        JSONObject progress=job.optJSONObject("progress");
+        if(progress==null)progress=job.optJSONObject("currentProgress");
+        if(progress!=null){
+            String label=progress.optString("label",progress.optString("stage",""));
+            String message=progress.optString("message","");
+            int done=progress.optInt("completedChunks",-1);
+            int total=progress.optInt("totalChunks",-1);
+            int percent=progress.optInt("percent",-1);
+            if(!label.isEmpty()||!message.isEmpty()||(total>0&&done>=0)||percent>=0){
+                space(card,9);
+                card.addView(text("MUSE LIVE CHECKPOINT",11,GREEN,true));
+                if(!label.isEmpty())card.addView(text(TimelineMetrics.safeLabel(label,100),12,WHITE,true));
+                if(!message.isEmpty())card.addView(text(TimelineMetrics.safeLabel(message,180),12,MUTED,false));
+                if(total>0&&done>=0)card.addView(text("Chunks: "+Math.min(done,total)+"/"+total,12,PURPLE,true));
+                if(percent>=0&&percent<=100)card.addView(text("Backend-reported progress: "+percent+"%",12,PURPLE,true));
+                long updated=TimelineMetrics.time(progress,"updatedAt","at","timestamp");
+                if(updated>0)card.addView(text("Last Muse update: "+TimelineMetrics.date(updated),11,MUTED,false));
+            }
+        }
+        JSONArray steps=job.optJSONArray("substeps");
+        if(steps==null)steps=job.optJSONArray("milestones");
+        if(steps==null)steps=job.optJSONArray("segments");
+        if(steps==null && progress!=null)steps=progress.optJSONArray("steps");
+        if(steps!=null && steps.length()>0){
+            space(card,9);card.addView(text("DETAILED MUSE STEPS",11,GREEN,true));
+            int count=Math.min(steps.length(),150);
+            for(int i=0;i<count;i++){
+                JSONObject step=steps.optJSONObject(i);
+                if(step==null)continue;
+                String label=step.optString("label",step.optString("name","Chunk "+(i+1)));
+                String state=step.optString("status","recorded");
+                card.addView(text((i+1)+". "+TimelineMetrics.safeLabel(label,100)+"  ·  "+TimelineMetrics.safeLabel(state,35),12,WHITE,false));
+                long began=TimelineMetrics.time(step,"startedAt","startAt");
+                long finished=TimelineMetrics.time(step,"finishedAt","endAt");
+                if(began>0){
+                    card.addView(text("   "+TimelineMetrics.date(began)+"  ·  "+TimelineMetrics.interval(began,finished,System.currentTimeMillis()),11,MUTED,false));
+                }
+                Object attempt=step.opt("attempt");
+                if(attempt instanceof Number)card.addView(text("   Attempt "+attempt,11,MUTED,false));
+            }
+            if(steps.length()>count)card.addView(text("More steps recorded: "+(steps.length()-count)+".",11,MUTED,false));
+        }
+        JSONArray retries=job.optJSONArray("attemptHistory");
+        if(retries!=null && retries.length()>0){
+            space(card,8);card.addView(text("MUSE ATTEMPT HISTORY",11,GREEN,true));
+            for(int a=0;a<Math.min(retries.length(),25);a++){
+                JSONObject record=retries.optJSONObject(a);if(record==null)continue;
+                long first=TimelineMetrics.time(record,"startedAt","claimedAt");
+                long last=TimelineMetrics.time(record,"finishedAt","endedAt");
+                card.addView(text("Attempt "+(a+1)+"  ·  "+record.optString("status","unknown")
+                    +"  ·  "+TimelineMetrics.interval(first,last,System.currentTimeMillis()),12,MUTED,false));
+            }
+        }
+    }
+    private void renderDigestCheckpoints(LinearLayout card,JSONObject job,JSONArray assets){
+        space(card,9);card.addView(text("DIGEST BREAKDOWN",11,GREEN,true));
+        boolean received=false;
+        if(assets!=null)for(int i=0;i<assets.length();i++){
+            JSONObject item=assets.optJSONObject(i);
+            if(item!=null&&"source_srt".equals(item.optString("kind")))received=true;
+        }
+        card.addView(text((received?"✓":"○")+" Source SRT stored in Cloudflare",12,received?GREEN:MUTED,false));
+        long queued=TimelineMetrics.time(job,"createdAt");
+        card.addView(text((queued>0?"✓":"○")+" Digest task queued",12,queued>0?GREEN:MUTED,false));
+        String status=job.optString("status");
+        boolean done="done".equals(status);
+        boolean active="working".equals(status);
+        card.addView(text((done?"✓":active?"◉":"○")+" Muse digest "+(done?"finished":active?"running":"not yet finished"),12,done?GREEN:MUTED,false));
+        if(done)card.addView(text("✓ Digest output accepted by backend",12,GREEN,false));
+        JSONObject progress=job.optJSONObject("progress");
+        JSONArray sub=job.optJSONArray("substeps");
+        if(sub==null)sub=job.optJSONArray("milestones");
+        if(sub==null && progress!=null)sub=progress.optJSONArray("steps");
+        if(sub==null || sub.length()==0){
+            card.addView(text("Inside the digest (story chunks, character analysis, chronology, and scene groups): the current Cloudflare API has not recorded individual Muse checkpoints. They cannot be timed accurately yet.",11,MUTED,false));
+        }
     }
     private void startPackageDownload(String id){
         if(!SecurityRules.validUuid(id)){showError("Invalid movie project");return;}

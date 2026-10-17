@@ -8,7 +8,11 @@ for f in ['app/src/main/AndroidManifest.xml','app/src/main/res/xml/network_secur
 for n,x in files.items():
  if n.endswith('.xml'):ET.parse(x)
 main=(p/'app/src/main/AndroidManifest.xml').read_text()
-assert main.count('uses-permission')==1
+assert main.count('<uses-permission ')==2
+assert 'android.permission.WRITE_EXTERNAL_STORAGE' in main and 'android:maxSdkVersion="28"' in main
+assert 'ACTION_OPEN_DOCUMENT_TREE' not in (p/'app/src/main/java/com/cinepulse/mobile/MainActivity.java').read_text()
+assert 'downloadToDownloads(' in (p/'app/src/main/java/com/cinepulse/mobile/MainActivity.java').read_text()
+assert 'MediaStore.Downloads.EXTERNAL_CONTENT_URI' in (p/'app/src/main/java/com/cinepulse/mobile/VerifiedDownloads.java').read_text()
 assert 'android.permission.INTERNET' in main
 assert 'android:allowBackup="false"' in main
 assert 'android:usesCleartextTraffic="false"' in main

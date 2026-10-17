@@ -72,6 +72,11 @@ public final class MainActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle out){out.putString("openedProject",openedProject);super.onSaveInstanceState(out);}
     @Override public void onBackPressed(){if(openedProject!=null){openedProject=null;renderHome();}else super.onBackPressed();}
     @Override protected void onDestroy(){io.shutdownNow();handler.removeCallbacksAndMessages(null);super.onDestroy();}
+    private static String readableBytes(long bytes){
+        if(bytes<0)return "unknown size";
+        if(bytes<1024)return bytes+" bytes";
+        return String.format(java.util.Locale.ROOT,"%.1f KiB",bytes/1024.0);
+    }
     private int dp(float d){return (int)(d*getResources().getDisplayMetrics().density+0.5f);}
     private GradientDrawable shape(int color,int border,int radius){
         GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));
@@ -315,7 +320,7 @@ public final class MainActivity extends Activity {
         JSONArray assets=document.optJSONArray("assets");
         if(assets!=null)for(int i=0;i<assets.length();i++){
             JSONObject a=assets.optJSONObject(i);if(a==null)continue;
-            content.addView(text("✓  "+a.optString("kind")+"  ·  "+(a.optLong("bytes")/1024)+" KiB",13,MUTED,false),fullWithBottom(7));
+            content.addView(text("✓  "+a.optString("kind")+"  ·  "+readableBytes(a.optLong("bytes", -1)),13,MUTED,false),fullWithBottom(7));
         }
         space(content,16);content.addView(text("Scene matching and final video rendering are completed on CinePulse Windows, using the original movie file.",12,MUTED,false));
     }

@@ -3,7 +3,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 p=Path(__file__).resolve().parents[1]
 files={x.relative_to(p).as_posix(): x for x in p.rglob('*') if x.is_file()}
-for f in ['app/src/main/AndroidManifest.xml','app/src/main/res/xml/network_security_config.xml','app/src/main/java/com/cinepulse/mobile/CloudApi.java','app/src/main/java/com/cinepulse/mobile/SecureTokenStore.java','app/src/main/java/com/cinepulse/mobile/VerifiedDownloads.java','app/src/main/java/com/cinepulse/mobile/MainActivity.java','.github/workflows/android-apk.yml']:
+for f in ['app/src/main/AndroidManifest.xml','app/src/main/res/xml/network_security_config.xml','app/src/main/java/com/cinepulse/mobile/CloudApi.java','app/src/main/java/com/cinepulse/mobile/SecureTokenStore.java','app/src/main/java/com/cinepulse/mobile/VerifiedDownloads.java','app/src/main/java/com/cinepulse/mobile/MainActivity.java','.github/workflows/bootstrap-apk.yml']:
  assert f in files, f
 for n,x in files.items():
  if n.endswith('.xml'):ET.parse(x)

@@ -59,6 +59,13 @@ final class CloudApi {
     JSONObject downloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads",null);}
     JSONObject jobs() throws Exception {return call("GET","/v1/jobs",null);}
     JSONObject nudge(String jobId) throws Exception {return call("POST","/v1/jobs/"+checked(jobId)+"/nudge",new JSONObject());}
+    JSONObject recovery(String projectId) throws Exception {return call("GET","/v1/projects/"+checked(projectId)+"/recovery",null);}
+    JSONObject repairStage(String projectId,String stepId) throws Exception {
+        if(!stepId.matches("mp3_english|srt_english|mp3_urdu|srt_urdu|digest|narration_english|narration_urdu|viral_metadata|scene_matching|cut_plan"))
+            throw new SecurityException("Unsupported stage to retry");
+        return call("POST","/v1/projects/"+checked(projectId)+"/recovery",
+            new JSONObject().put("stepId",stepId).put("confirm",true));
+    }
     JSONObject toggleWorker(String id,boolean pause) throws Exception {
         return call("POST","/v1/workers/"+checked(id)+(pause?"/pause":"/resume"),new JSONObject());
     }

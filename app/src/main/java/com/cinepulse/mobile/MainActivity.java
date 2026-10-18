@@ -212,7 +212,7 @@ public final class MainActivity extends Activity {
         .setNegativeButton("Cancel",null).setPositiveButton("Disconnect",(d,w)->{tokens.clear();projects=new JSONArray();workers=new JSONArray();openedProject=null;showConnect();}).show();}
     private void toggleWorker(String id,boolean pause){
         new AlertDialog.Builder(this).setTitle(pause?"Pause this worker?":"Resume this worker?")
-            .setMessage("Only this Cloudflare worker will be affected. Other movie projects remain untouched.")
+            .setMessage("This pauses/resumes the assigned Cloudflare worker, including any OTHER movie jobs assigned to that same worker. It does not pause or erase unrelated workers or completed outputs.")
             .setNegativeButton("Cancel",null)
             .setPositiveButton(pause?"Pause":"Resume",(d,w)->task("Updating worker",()->api.toggleWorker(id,pause),r->refresh())).show();
     }
@@ -504,6 +504,14 @@ public final class MainActivity extends Activity {
         }else{
             c.addView(text("Muse nudge backend is not deployed or not reporting capability yet.",12,0xFFFFC47E,false));
             c.addView(text("Install the updated Cloudflare Worker before expecting the Nudge button to start a task. Existing Muse processing continues normally.",11,MUTED,false));
+        }
+        if(worker!=null && SecurityRules.validUuid(worker.optString("id"))){
+            String wid=worker.optString("id");
+            boolean paused=worker.optBoolean("paused");
+            space(c,7);
+            c.addView(action(paused?"Resume assigned Muse worker":"Pause assigned Muse worker",
+                ()->toggleWorker(wid,!paused),false));
+            c.addView(text("Affects all jobs assigned to this worker, never other workers. A currently leased task may finish before pause takes effect.",11,MUTED,false));
         }
         space(c,8);c.addView(action("Refresh worker & queued tasks",()->loadDetail(openedProject),false));
     }

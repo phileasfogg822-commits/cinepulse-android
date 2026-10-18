@@ -299,6 +299,14 @@ public final class MainActivity extends Activity {
                     // The project timeline remains available if worker status fails to refresh.
                 }
             }
+            if("needs_review".equals(data.optJSONObject("project").optString("status"))){
+                try {data.put("recoveryCapabilities",api.recovery(projectId));}
+                catch(Exception error) {
+                    data.put("recoveryUnavailable",error.getMessage()!=null&&error.getMessage().contains("(404)")
+                        ?"Retry endpoint not deployed on Cloudflare yet. Install the matching backend repair update."
+                        :"Unable to load recovery options. Refresh or check the backend.");
+                }
+            }
             return data;
         },this::renderDetail);
     }
@@ -318,6 +326,7 @@ public final class MainActivity extends Activity {
         summary.addView(action("Refresh production stages",()->loadDetail(id),false));
         JSONArray jobs=document.optJSONArray("jobs");
         renderProjectClock(project,jobs);
+        if("needs_review".equals(status))renderRecoveryControls(id,document);
         JSONObject worker=document.optJSONObject("worker");
         JSONObject nudgePolicy=document.optJSONObject("nudgePolicy");
         renderWorkerHealth(worker,nudgePolicy);
@@ -342,6 +351,55 @@ public final class MainActivity extends Activity {
             content.addView(text("✓  "+a.optString("kind")+"  ·  "+readableBytes(a.optLong("bytes", -1)),13,MUTED,false),fullWithBottom(7));
         }
         space(content,16);content.addView(text("Scene matching and final video rendering are completed on CinePulse Windows, using the original movie file.",12,MUTED,false));
+    }
+    private void renderRecoveryControls(String projectId,JSONObject document){
+        LinearLayout c=card();content.addView(c,fullWithBottom(14));
+        c.addView(text("RECOVER FAILED MOVIE",13,GREEN,true));space(c,7);
+        c.addView(text("Only a terminal failed project can be restarted. The original movie, digest, narrations, metadata and successful stage history are preserved.",13,MUTED,false));
+        space(c,8);
+        JSONObject recovery=document.optJSONObject("recoveryCapabilities");
+        if(recovery==null){
+            c.addView(text(document.optString("recoveryUnavailable","Cloudflare recovery endpoint is unavailable. Update backend before retrying."),12,0xFFFFC47E,false));
+            return;
+        }
+        JSONArray options=recovery.optJSONArray("options");
+        if(!recovery.optBoolean("canRetry")||options==null||options.length()==0){
+            c.addView(text("No safe retry option currently available. "+TimelineMetrics.safeLabel(recovery.optString("notice"),180),12,MUTED,false));
+            return;
+        }
+        c.addView(text("Failed stage: "+TimelineMetrics.stageLabel(recovery.optString("failedStage")),12,MUTED,false));
+        if(recovery.optBoolean("workerPaused"))c.addView(text("Worker is paused; a recovered task will wait until you resume it.",12,0xFFFFC47E,false));
+        for(int i=0;i<Math.min(4,options.length());i++){
+            JSONObject option=options.optJSONObject(i);if(option==null)continue;
+            String step=option.optString("stepId");
+            if(step.isEmpty())continue;
+            boolean recommended=option.optBoolean("recommended");
+            space(c,8);
+            c.addView(action((recommended?"Recommended: ":"")+option.optString("label",TimelineMetrics.stageLabel(step)),
+                ()->confirmRecovery(projectId,step,option),recommended));
+            if(!option.optString("warning").isEmpty())
+                c.addView(text(TimelineMetrics.safeLabel(option.optString("warning"),240),11,MUTED,false));
+        }
+        space(c,9);
+        c.addView(text("A request is not a job claim: the existing assigned Muse worker must be online and polling to execute it. No other movie is restarted.",11,MUTED,false));
+    }
+    private void confirmRecovery(String projectId,String step,JSONObject option){
+        String description=option.optString("label",TimelineMetrics.stageLabel(step));
+        String warning=option.optString("warning","");
+        String message="Project stays the same. Recovery creates a NEW queued task under the same Muse worker. Successful earlier outputs remain intact. Historical failures remain visible.";
+        if(!warning.isEmpty())message+="\n\n"+warning;
+        if("mp3_english".equals(step)||"mp3_urdu".equals(step))
+            message+="\n\nThe old audio is archived on Cloudflare before it is invalidated. Wait for Muse to generate and verify the replacement MP3.";
+        new AlertDialog.Builder(this).setTitle("Confirm: "+description)
+            .setMessage(message)
+            .setNegativeButton("Cancel",null)
+            .setPositiveButton("Queue recovery",(d,w)->task("Queuing recovery safely",()->api.repairStage(projectId,step),result->{
+                String summary=result.optString("message","Recovery request accepted. Refresh the project.");
+                new AlertDialog.Builder(this).setTitle("Recovery queued")
+                    .setMessage(summary+"\n\nStage: "+TimelineMetrics.stageLabel(step))
+                    .setPositiveButton("View timeline",(dialog,index)->loadDetail(projectId))
+                    .show();
+            })).show();
     }
     /** Display real server timestamps. Queue+execution is never called pure Muse execution time. */
     private void renderProjectClock(JSONObject p, JSONArray jobs){

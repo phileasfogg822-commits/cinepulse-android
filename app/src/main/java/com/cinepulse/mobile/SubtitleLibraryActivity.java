@@ -253,7 +253,7 @@ public final class SubtitleLibraryActivity extends Activity {
                                 if(candidate.equalsIgnoreCase(name) && !hit.optBoolean("hi",false)){best=hit;break;}
                             }
                             if(best==null)continue;
-                            SubtitleProvider.Srt subtitle=SubtitleProvider.download(best.getString("path"));
+                            SubtitleProvider.Srt subtitle=SubtitleProvider.download(best.getString("path"),key);
                             shelf.save(best,subtitle);saved++;
                             present.add(name.toLowerCase(Locale.ROOT));
                             // Deliberate provider pacing; never parallelize unsolicited batch downloads.
@@ -313,7 +313,7 @@ public final class SubtitleLibraryActivity extends Activity {
                       if(hit==null)continue;
                       final int done=n+1;info("Downloading "+done+"/"+indexes.size());
                       try{
-                          SubtitleProvider.Srt subtitle=SubtitleProvider.download(hit.getString("path"));
+                          SubtitleProvider.Srt subtitle=SubtitleProvider.download(hit.getString("path"),providerKey.load());
                           shelf.save(hit,subtitle);saved++;
                       }catch(Exception e){
                           failures.append(hit.optString("release","Unknown")).append(": ")

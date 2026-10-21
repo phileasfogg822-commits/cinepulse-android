@@ -105,19 +105,47 @@ final class SubtitleProvider {
         }
     }
     /** Normalize only documented relative or first-party absolute SubDL subtitle links. */
+    /** SubDL returns a relative path on a fixed trusted CDN.
+     * Support filename punctuation and international text; never accept hosts from API data.
+     */
     static String normalizeDownloadPath(String raw){
         if(raw==null)return "";
         String p=raw.trim();
-        if(p.startsWith("https://dl.subdl.com/")){
+        if(p.startsWith("https://")){
             try{
                 java.net.URI uri=new java.net.URI(p);
-                if(uri.getUserInfo()!=null||uri.getPort()!=-1||uri.getQuery()!=null||
-                    uri.getFragment()!=null||!"dl.subdl.com".equalsIgnoreCase(uri.getHost()))return "";
+                if(!"https".equalsIgnoreCase(uri.getScheme()) ||
+                    !"dl.subdl.com".equalsIgnoreCase(uri.getHost()) ||
+                    uri.getPort()!=-1 || uri.getUserInfo()!=null ||
+                    uri.getRawQuery()!=null || uri.getRawFragment()!=null)return "";
                 p=uri.getRawPath();
             }catch(Exception ignored){return "";}
         }
-        if(p.startsWith("subtitle/"))p="/"+p;
-        return validPath(p)?p:"";
+        if(p!=null&&p.startsWith("subtitle/"))p="/"+p;
+        return cleanTrustedPath(p);
+    }
+    private static String cleanTrustedPath(String raw){
+        if(raw==null||raw.length()>2048||!raw.startsWith("/subtitle/")||
+            raw.contains("..")||raw.contains("//")||raw.indexOf('\\')>=0||
+            raw.indexOf('?')>=0||raw.indexOf('#')>=0)return "";
+        for(int i=0;i<raw.length();i++){
+            char c=raw.charAt(i);
+            if(Character.isISOControl(c)||c=='<'||c=='>'||c=='"'||c==39 ||
+                c=='{'||c=='}'||c=='|'||c=='^'||c==96)return "";
+        }
+        String safe=raw.replace(" ","%20");
+        if(safe.contains("%")){
+            if(!safe.matches("(?:[^%]|%[0-9A-Fa-f]{2})+"))return "";
+            String lower=safe.toLowerCase(Locale.ROOT);
+            for(String forbidden:new String[]{"%2e","%2f","%5c","%00","%3f","%23","%25"})
+                if(lower.contains(forbidden))return "";
+        }
+        try{
+            java.net.URI resolved=new java.net.URI("https://dl.subdl.com"+safe);
+            if(!"dl.subdl.com".equals(resolved.getHost())||resolved.getRawQuery()!=null||
+                resolved.getFragment()!=null)return "";
+            return resolved.toASCIIString().substring("https://dl.subdl.com".length());
+        }catch(Exception ignored){return "";}
     }
     private static boolean safeId(String candidate){
         return candidate!=null && candidate.length()>=2 && candidate.length()<=96 &&
@@ -445,20 +473,7 @@ final class SubtitleProvider {
         String clean=s.replaceAll("[\\r\\n\\t]"," ");
         return clean.length()>max?clean.substring(0,max):clean;
     }
-    static boolean validPath(String p){
-        if(p==null||p.length()>1000||!p.startsWith("/subtitle/")||p.contains("..")||p.contains("?")
-            ||p.contains("#")||p.contains("\\")||p.contains("//")||p.contains(" ")||
-            p.indexOf('\r')>=0||p.indexOf('\n')>=0)return false;
-        if(!p.matches("/subtitle/[A-Za-z0-9._~/%+-]+"))return false;
-        // Permit URL-encoded filenames but reject malformed percent escapes and encoded traversal.
-        if(p.contains("%")){
-            if(!p.matches("(?:[^%]|%[0-9A-Fa-f]{2})+"))return false;
-            String q=p.toLowerCase(Locale.ROOT);
-            if(q.contains("%2f")||q.contains("%5c")||q.contains("%2e")||q.contains("%00")||q.contains("%3f")
-                ||q.contains("%23"))return false;
-        }
-        return true;
-    }
+    static boolean validPath(String p){return p!=null && !cleanTrustedPath(p).isEmpty();}
     private static Srt parseSrt(byte[] bytes) throws Exception{
         if(bytes.length<80||bytes.length>MAX_SRT)throw new IOException("SRT must be 80 bytes to 2 MiB.");
         String text=new String(bytes,StandardCharsets.UTF_8).replace("\uFEFF","").trim();

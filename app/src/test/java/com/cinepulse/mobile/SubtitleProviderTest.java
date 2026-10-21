@@ -1,5 +1,6 @@
 package com.cinepulse.mobile;
 import org.junit.Test;
+import org.json.JSONObject;
 import static org.junit.Assert.*;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.ZipEntry;
@@ -42,4 +43,59 @@ public class SubtitleProviderTest {
             SubtitleProvider.parseBytes(new byte[SecurityRules.MAX_SRT_BYTES+1]);
             fail("oversize");}catch(Exception expected){assertNotNull(expected);}
     }
+    @Test public void packedReleaseIsVisibleEvenWithoutUnpackedFiles() throws Exception {
+        JSONObject response=new JSONObject().put("status",true)
+          .put("results",new org.json.JSONArray().put(new JSONObject().put("name","Inception").put("year",2010)))
+          .put("subtitles",new org.json.JSONArray().put(new JSONObject()
+            .put("release_name","WEB-DL English")
+            .put("url","/subtitle/3197651-3213944.zip")
+            .put("unpack_files",new org.json.JSONArray())));
+        SubtitleProvider.SearchResult result=SubtitleProvider.parseSearchResponse(response,"Inception","EN");
+        assertEquals(1,result.hits.length());
+        assertEquals("/subtitle/3197651-3213944.zip",result.hits.getJSONObject(0).getString("path"));
+        assertEquals(1,result.subtitleRecords);
+    }
+    @Test public void absoluteSubdlDownloadLinksAreSafelyNormalized() throws Exception {
+        assertEquals("/subtitle/3197651-3213944.zip",
+            SubtitleProvider.normalizeDownloadPath("https://dl.subdl.com/subtitle/3197651-3213944.zip"));
+        assertEquals("",SubtitleProvider.normalizeDownloadPath("https://evil.test/subtitle/3197651.zip"));
+        assertEquals("",SubtitleProvider.normalizeDownloadPath("https://dl.subdl.com.evil.test/subtitle/3197651.zip"));
+        assertEquals("",SubtitleProvider.normalizeDownloadPath("https://dl.subdl.com/subtitle/3197651.zip?token=unsafe"));
+    }
+    @Test public void documentedUnpackedSubtitleFileIsVisible() throws Exception {
+        JSONObject file=new JSONObject().put("file_n_id","file123").put("name","Inception.English.srt")
+            .put("release_name","BluRay 1080p").put("language","EN").put("hi",false)
+            .put("format","srt").put("url","/subtitle/parent_n_id/file123");
+        JSONObject response=new JSONObject().put("status",true)
+            .put("results",new org.json.JSONArray().put(new JSONObject().put("name","Inception").put("year",2010)))
+            .put("subtitles",new org.json.JSONArray().put(new JSONObject()
+                .put("name","Pack.zip").put("url","/subtitle/parent_n_id.zip")
+                .put("unpack_files",new org.json.JSONArray().put(file))));
+        SubtitleProvider.SearchResult result=SubtitleProvider.parseSearchResponse(response,"Inception","EN");
+        assertEquals(2,result.hits.length()); // Individual SRT plus original fallback ZIP
+        assertEquals("/subtitle/parent_n_id/file123",result.hits.getJSONObject(0).getString("path"));
+    }
+    @Test public void diagnosticDistinguishesUnavailableLanguageVsFormat() throws Exception{
+        JSONObject noSubtitle=new JSONObject().put("status",true)
+            .put("results",new org.json.JSONArray().put(new JSONObject().put("name","Inception")))
+            .put("subtitles",new org.json.JSONArray());
+        SubtitleProvider.SearchResult empty=SubtitleProvider.parseSearchResponse(noSubtitle,"Inception","UR");
+        assertEquals(0,empty.hits.length());
+        assertTrue(empty.diagnostic.contains("no subtitles"));
+        JSONObject unsupported=new JSONObject().put("status",true)
+            .put("results",new org.json.JSONArray().put(new JSONObject().put("name","Inception")))
+            .put("subtitles",new org.json.JSONArray().put(new JSONObject().put("language","EN")
+                .put("url","/unsupported/1")));
+        SubtitleProvider.SearchResult result=SubtitleProvider.parseSearchResponse(unsupported,"Inception","EN");
+        assertEquals(0,result.hits.length());
+        assertTrue(result.diagnostic.contains("1 subtitle record"));
+        assertEquals(1,result.invalidUrls);
+    }
+    @Test public void parentLanguageLabelsAreTolerant() {
+        assertTrue(SubtitleProvider.sameLanguage("English","EN"));
+        assertTrue(SubtitleProvider.sameLanguage("eng","EN"));
+        assertTrue(SubtitleProvider.sameLanguage("Urdu","UR"));
+        assertFalse(SubtitleProvider.sameLanguage("Arabic","UR"));
+    }
+
 }

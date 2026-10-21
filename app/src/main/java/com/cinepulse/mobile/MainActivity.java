@@ -758,10 +758,11 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("Close",null)
                 .setPositiveButton("Share ZIP",(d,w)->{
                     try{
-                        Uri uri=FileProvider.getUriForFile(this,getPackageName()+".fileprovider",result.file);
+                        Uri uri=FileProvider.getUriForFile(this,getPackageName()+".fileprovider",result.file,result.name);
                         Intent send=new Intent(Intent.ACTION_SEND);
                         send.setType("application/zip");
                         send.putExtra(Intent.EXTRA_STREAM,uri);
+                        send.setClipData(android.content.ClipData.newRawUri("CinePulse project ZIP",uri));
                         send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                         startActivity(Intent.createChooser(send,"Share CinePulse ZIP (WhatsApp, Drive, etc.)"));
                     }catch(Exception e){showError("Cannot share ZIP: "+e.getMessage());}

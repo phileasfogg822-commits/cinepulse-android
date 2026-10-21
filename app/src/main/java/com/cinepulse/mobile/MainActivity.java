@@ -337,7 +337,7 @@ public final class MainActivity extends Activity {
                         .setMessage(accepted==target?
                             "Cloudflare accepted the "+target+"-minute narration target for each language.":
                             "Movie submitted, but the current backend did NOT confirm the "+target+"-minute narration target. Update Cloudflare before relying on narration length control.")
-                        .setPositiveButton("View projects",(d,w)->refresh()).show();
+                        .setPositiveButton("View projects",(innerDialog,innerWhich)->refresh()).show();
                 });
             }).show();
     }

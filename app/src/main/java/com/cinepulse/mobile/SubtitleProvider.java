@@ -55,7 +55,7 @@ final class SubtitleProvider {
         c.setInstanceFollowRedirects(false);
         c.setConnectTimeout(12000);c.setReadTimeout(30000);
         c.setRequestProperty("Accept",isApi?"application/json":"application/octet-stream");
-        c.setRequestProperty("User-Agent","CinePulseAndroid/0.2.0");
+        c.setRequestProperty("User-Agent","CinePulseAndroid/0.2.1");
         if(isApi && apiKey!=null && !apiKey.trim().isEmpty())c.setRequestProperty("Authorization","Bearer "+apiKey.trim());
         // SubDL free search requires api_key as documented. Never log or copy URL containing it.
         try {
@@ -313,6 +313,78 @@ final class SubtitleProvider {
         if(raw.startsWith("https://"))return "other HTTPS host/path";
         if(raw.startsWith("/"))return "other relative path";
         return "other value format";
+    }
+    /** Runs on the user's phone, using ONLY the locally encrypted key.
+     * Checks a real search AND actual SRT transfer/parse. Never includes keys,
+     * downloadable URLs, unique subtitle IDs or captions in the report.
+     */
+    static final class LiveTest {
+        final String report;
+        final Srt srt;
+        final JSONObject hit;
+        LiveTest(String report,Srt srt,JSONObject hit){
+            this.report=report;this.srt=srt;this.hit=hit;
+        }
+    }
+    static LiveTest testRealDownload(String apiKey){
+        StringBuilder report=new StringBuilder("CinePulse SubDL live download test v0.2.1\n"+
+            "Movie: Inception (2010), IMDb tt1375666, English\n"+
+            "All operations run on this phone. Credentials and download URLs are omitted.\n\n");
+        if(apiKey==null||apiKey.trim().length()<8){
+            return new LiveTest(report.append("FAIL: No saved SubDL API key.\n").toString(),null,null);
+        }
+        JSONArray possible=new JSONArray();
+        java.util.HashSet<String> unique=new java.util.HashSet<>();
+        final String[] modes={"v2 IMDb", "v1 IMDb (packed ZIP)"};
+        for(int mode=0;mode<2;mode++){
+            try{
+                String route=mode==0?
+                    "/api/v2/subtitles/search?imdb_id=tt1375666&type=movie&languages=en&subs_per_page=5&unpack=1":
+                    "/api/v1/subtitles?api_key="+encode(apiKey.trim())+
+                        "&imdb_id=tt1375666&type=movie&languages=EN&subs_per_page=5";
+                JSONObject raw=jsonRequest(route,apiKey);
+                SearchResult found=parseSearchResponse(raw,"Inception (2010)","EN");
+                report.append(modes[mode]).append(": search succeeded; ")
+                    .append(found.subtitleRecords).append(" subtitle records; ")
+                    .append(found.hits.length()).append(" recognized download choices.\n");
+                report.append("  Response schema: ").append(responseShape(raw)).append("\n");
+                for(int i=0;i<found.hits.length()&&possible.length()<8;i++){
+                    JSONObject item=found.hits.optJSONObject(i);
+                    if(item!=null&&unique.add(item.optString("path")))possible.put(item);
+                }
+            }catch(Exception e){
+                report.append(modes[mode]).append(": FAILED — ")
+                    .append(providerError(e)).append("\n");
+            }
+        }
+        report.append("\n");
+        if(possible.length()==0){
+            report.append("FAIL: SubDL returned no recognized download choices. No transfer attempted.\n")
+                .append("Copy this report to identify the real API fields; the key is never included.\n");
+            return new LiveTest(report.toString(),null,null);
+        }
+        for(int i=0;i<Math.min(3,possible.length());i++){
+            JSONObject hit=possible.optJSONObject(i);
+            if(hit==null)continue;
+            String path=hit.optString("path");
+            try{
+                Srt result=download(path,apiKey);
+                report.append("PASS: Downloaded and decoded a real SubDL subtitle.\n")
+                    .append("Validated cues: ").append(result.cues).append("\n")
+                    .append("Last cue: ").append(String.format(Locale.ROOT,"%.1f",result.duration))
+                    .append(" seconds\n")
+                    .append("SRT SHA-256 prefix: ").append(result.sha256.substring(0,12)).append("\n")
+                    .append("The file can be saved locally in CinePulse.\n");
+                return new LiveTest(report.toString(),result,hit);
+            }catch(Exception e){
+                report.append("Download attempt ").append(i+1).append(" failed: ")
+                    .append(providerError(e)).append("\n");
+            }
+        }
+        report.append("FAIL: Search returned choices, but the first ")
+            .append(Math.min(3,possible.length()))
+            .append(" downloads failed. No subtitle was saved.\n");
+        return new LiveTest(report.toString(),null,null);
     }
     static SearchResult searchDetailed(String apiKey,String title,String language) throws Exception{
         if(apiKey==null||apiKey.trim().length()<8)

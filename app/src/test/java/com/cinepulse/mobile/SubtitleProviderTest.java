@@ -134,4 +134,44 @@ public class SubtitleProviderTest {
         assertFalse(SubtitleProvider.validPath("/subtitle/example%ZZ.zip"));
     }
 
+    @Test public void primaryV2PreferredOverLegacyThirtyBrokenLinks() throws Exception {
+        org.json.JSONArray invalid=new org.json.JSONArray();
+        for(int i=0;i<30;i++){
+            invalid.put(new JSONObject().put("release_name","Legacy "+i)
+                .put("url","/unrecognized/"+i));
+        }
+        JSONObject old=new JSONObject().put("status",true)
+            .put("results",new org.json.JSONArray().put(new JSONObject()
+                .put("name","Inception").put("imdb_id","tt1375666")))
+            .put("subtitles",invalid);
+        JSONObject fresh=new JSONObject().put("data",new JSONObject()
+            .put("subtitles",new org.json.JSONArray().put(new JSONObject()
+                .put("nId","NewSubtitleId")
+                .put("language","en").put("release_name","1080p WEB-DL")
+                .put("download_url","https://untrusted.invalid/file"))));
+        SubtitleProvider.Probe probe=SubtitleProvider.chooseProviderResponse(fresh,old,"Inception","EN");
+        assertEquals("API v2",probe.phase);
+        assertEquals(1,probe.result.hits.length());
+        assertEquals("v2:NewSubtitleId",probe.result.hits.getJSONObject(0).getString("path"));
+    }
+    @Test public void v1NoLinksCannotReuseSilentOldError() throws Exception{
+        JSONObject old=new JSONObject().put("status",true)
+            .put("results",new org.json.JSONArray().put(new JSONObject().put("name","Inception")))
+            .put("subtitles",new org.json.JSONArray().put(new JSONObject()
+                .put("release_name","Missing link").put("url","")));
+        SubtitleProvider.Probe p=SubtitleProvider.chooseProviderResponse(null,old,"Inception","EN");
+        assertEquals("No usable release",p.phase);
+        assertTrue(p.details.contains("v1=1 records / 0 links"));
+    }
+    @Test public void v2ResultsMayNestSubtitlesInsideFirstMediaRecord() throws Exception {
+        JSONObject response=new JSONObject()
+            .put("results",new org.json.JSONArray().put(new JSONObject()
+                .put("name","Inception").put("subtitles",new org.json.JSONArray().put(
+                    new JSONObject().put("n_id","xyzSubtitle987")
+                        .put("language","English").put("name","BluRay")))));
+        SubtitleProvider.SearchResult r=SubtitleProvider.parseSearchResponse(response,"Inception","EN");
+        assertEquals(1,r.hits.length());
+        assertEquals("v2:xyzSubtitle987",r.hits.getJSONObject(0).getString("path"));
+    }
+
 }

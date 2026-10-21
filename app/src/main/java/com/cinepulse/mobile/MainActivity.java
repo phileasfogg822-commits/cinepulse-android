@@ -2,6 +2,8 @@ package com.cinepulse.mobile;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.SharedPreferences;
+import androidx.core.content.FileProvider;
 import android.Manifest;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -56,6 +58,8 @@ public final class MainActivity extends Activity {
     private String openedProject=null;
     private String pendingDownloadProject=null;
     private boolean busy=false;
+    private boolean viewingArchive=false;
+    private static final String PREFS="cinepulse_project_list_v2";
 
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
@@ -72,6 +76,41 @@ public final class MainActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle out){out.putString("openedProject",openedProject);super.onSaveInstanceState(out);}
     @Override public void onBackPressed(){if(openedProject!=null){openedProject=null;renderHome();}else super.onBackPressed();}
     @Override protected void onDestroy(){io.shutdownNow();handler.removeCallbacksAndMessages(null);super.onDestroy();}
+    private SharedPreferences archivePrefs(){return getSharedPreferences(PREFS,MODE_PRIVATE);}
+    private String localState(String id){return archivePrefs().getString("state_"+id,"active");}
+    private void setLocalState(String id,String state){
+        archivePrefs().edit().putString("state_"+id,state).apply();
+    }
+    private static boolean terminalStatus(String status){return "ready".equals(status)||"needs_review".equals(status);}
+    private void archiveDialog(String id,String status,boolean reviewed){
+        if(!SecurityRules.validUuid(id))return;
+        String title=reviewed?"Mark reviewed and archive?":"Hide from active movies?";
+        String message=reviewed?
+            "Marks this movie reviewed on this phone and hides it from the active list. This does not mark the Cloudflare pipeline complete, change Muse tasks, or delete files.":
+            "This only hides the project on this device. Cloudflare and Muse will keep processing normally.";
+        new AlertDialog.Builder(this).setTitle(title).setMessage(message).setNegativeButton("Cancel",null)
+            .setPositiveButton("Archive",(d,w)->{
+                setLocalState(id,reviewed?"reviewed":"archived");
+                openedProject=null;renderHome();
+            }).show();
+    }
+    private void permanentlyDelete(String id,String status){
+        if(!terminalStatus(status)){showError("Only ready or needs_review projects may be deleted. Stop active work on the backend first.");return;}
+        EditText confirmation=new EditText(this);confirmation.setSingleLine(true);
+        confirmation.setHint("Type DELETE");
+        new AlertDialog.Builder(this).setTitle("Permanently delete Cloudflare movie?")
+            .setMessage("DANGER: all backend tasks, MP3s, JSON, SRT and audit history for this project will be removed permanently. Other movie projects are not affected. Export a ZIP first. Type DELETE to confirm.")
+            .setView(confirmation).setNegativeButton("Cancel",null)
+            .setPositiveButton("Delete",(d,w)->{
+                if(!"DELETE".equals(confirmation.getText().toString().trim())){showError("Deletion cancelled: confirmation did not match DELETE.");return;}
+                task("Permanently deleting one terminal project",()->api.deleteProject(id),result->{
+                    archivePrefs().edit().remove("state_"+id).apply();
+                    openedProject=null;
+                    Toast.makeText(this,"Project deleted from Cloudflare",Toast.LENGTH_LONG).show();
+                    refresh();
+                });
+            }).show();
+    }
     private static String readableBytes(long bytes){
         if(bytes<0)return "unknown size";
         if(bytes<1024)return bytes+" bytes";
@@ -166,8 +205,16 @@ public final class MainActivity extends Activity {
         info.addView(text(projects.length()+" movie projects  •  "+workers.length()+" workers",20,WHITE,true));space(info,4);
         info.addView(text("Movie AI production runs in Cloudflare/Muse. Video rendering remains on your Windows PC.",12,MUTED,false));
         LinearLayout bar=horizontal();content.addView(bar,fullWithBottom(12));
-        bar.addView(text("PROJECTS",12,MUTED,true),new LinearLayout.LayoutParams(0,-2,1));
+        int visible=0,hidden=0;
+        for(int i=0;i<projects.length();i++){
+            JSONObject item=projects.optJSONObject(i);
+            if(item==null)continue;
+            if("active".equals(localState(item.optString("id"))))visible++;else hidden++;
+        }
+        bar.addView(text((viewingArchive?"ARCHIVED":"ACTIVE")+" MOVIES ("+(viewingArchive?hidden:visible)+")",12,MUTED,true),new LinearLayout.LayoutParams(0,-2,1));
         TextView settings=text("Connection settings",12,PURPLE,true);settings.setOnClickListener(v->confirmDisconnect());bar.addView(settings);
+        content.addView(action(viewingArchive?"← Show active movies":"Show archived / reviewed ("+hidden+")",
+            ()->{viewingArchive=!viewingArchive;renderHome();},false),fullWithBottom(12));
         if(projects.length()==0){
             LinearLayout c=card();content.addView(c,fullWithBottom(12));
             c.addView(text("No projects listed yet",17,WHITE,true));space(c,8);
@@ -176,6 +223,8 @@ public final class MainActivity extends Activity {
         for(int i=0;i<projects.length();i++){
             JSONObject p=projects.optJSONObject(i);if(p==null)continue;
             String id=p.optString("id"),name=p.optString("title","Untitled"),status=p.optString("status","unknown");
+            boolean archived=!"active".equals(localState(id));
+            if(viewingArchive!=archived)continue;
             LinearLayout c=card();content.addView(c,fullWithBottom(10));
             LinearLayout row=horizontal();c.addView(row);
             row.addView(text(name,17,WHITE,true),new LinearLayout.LayoutParams(0,-2,1));
@@ -193,6 +242,10 @@ public final class MainActivity extends Activity {
             }
             space(c,12);Button open=action(status.equals("ready")?"View & download package →":"View timeline →",()->loadDetail(id),false);
             c.addView(open,new LinearLayout.LayoutParams(-1,dp(42)));
+            space(c,6);
+            if(archived)c.addView(action("Restore to active list",()->{setLocalState(id,"active");renderHome();},false));
+            else if(terminalStatus(status))c.addView(action("Mark reviewed & archive",()->archiveDialog(id,status,true),false));
+            if("reviewed".equals(localState(id)))c.addView(text("✓ Reviewed on this device",11,GREEN,false));
         }
         space(content,12);
         content.addView(text("WORKERS",12,MUTED,true),fullWithBottom(11));
@@ -253,6 +306,14 @@ public final class MainActivity extends Activity {
         if(ids.isEmpty()){showError("There are no active workers. Resume or create a worker first.");return;}
         LinearLayout form=vertical();pad(form,24,0,24,0);
         form.addView(text("Project title",13,Color.DKGRAY,true));form.addView(name);
+        EditText minutes=new EditText(this);
+        minutes.setSingleLine(true);
+        minutes.setInputType(InputType.TYPE_CLASS_NUMBER);
+        minutes.setText("15");
+        minutes.setHint("Narration minutes (3–60)");
+        form.addView(text("Desired narration length (minutes; each language)",13,Color.DKGRAY,true));
+        form.addView(minutes);
+        form.addView(text("Muse will aim for this duration once the Cloudflare backend accepts targetMinutes. MP3/STT duration is verified after generation.",12,Color.DKGRAY,false));
         form.addView(text("Processing worker",13,Color.DKGRAY,true));
         Spinner spinner=new Spinner(this);
         ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);
@@ -263,10 +324,21 @@ public final class MainActivity extends Activity {
             .setPositiveButton("Submit",(d,w)->{
                 String title=name.getText().toString().trim();
                 if(title.isEmpty()||title.length()>160){showError("Enter a project title under 160 characters");return;}
+                int target;
+                try{target=Integer.parseInt(minutes.getText().toString().trim());}
+                catch(NumberFormatException e){showError("Enter a narration duration from 3 to 60 minutes.");return;}
+                if(target<3||target>60){showError("Narration duration must be 3–60 minutes.");return;}
                 String worker=ids.get(spinner.getSelectedItemPosition());
                 task("Uploading subtitle",()->{
-                    String srt=readSrt(uri);return api.createProject(title,worker,srt,48);
-                },r->{Toast.makeText(this,"Movie queued",Toast.LENGTH_LONG).show();refresh();});
+                    String srt=readSrt(uri);return api.createProject(title,worker,srt,48,target);
+                },r->{
+                    int accepted=r.optInt("targetMinutes",-1);
+                    new AlertDialog.Builder(this).setTitle("Movie queued")
+                        .setMessage(accepted==target?
+                            "Cloudflare accepted the "+target+"-minute narration target for each language.":
+                            "Movie submitted, but the current backend did NOT confirm the "+target+"-minute narration target. Update Cloudflare before relying on narration length control.")
+                        .setPositiveButton("View projects",(d,w)->refresh()).show();
+                });
             }).show();
     }
     private String readSrt(Uri uri) throws Exception {
@@ -321,12 +393,28 @@ public final class MainActivity extends Activity {
         summary.addView(text(status.equals("ready")?"Original JSON and both MP3 files are ready. One tap downloads the verified package into Downloads/CinePulse.":
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
         space(summary,12);
-        if(status.equals("ready"))summary.addView(action("Download JSON + English/Urdu MP3s",()->startPackageDownload(id),true));
+        if(status.equals("ready")){
+            summary.addView(action("Download JSON + English/Urdu MP3s",()->startPackageDownload(id),true));
+            space(summary,7);
+            summary.addView(action("Verify and share complete ZIP (WhatsApp)",()->shareProjectZip(id),false));
+        }
+        int target=project.optInt("targetMinutes",-1);
+        space(summary,8);
+        summary.addView(text(target>0?"Narration target: "+target+" minutes per language":"Narration target: not reported by Cloudflare",12,MUTED,false));
+        if(terminalStatus(status)){
+            space(summary,7);
+            summary.addView(action("Mark reviewed & archive locally",()->archiveDialog(id,status,true),false));
+            space(summary,7);
+            summary.addView(action("Delete movie permanently from Cloudflare",()->permanentlyDelete(id,status),false));
+        }else{
+            space(summary,7);
+            summary.addView(action("Hide movie from my active list",()->archiveDialog(id,status,false),false));
+        }
         space(summary,7);
         summary.addView(action("Refresh production stages",()->loadDetail(id),false));
         JSONArray jobs=document.optJSONArray("jobs");
         renderProjectClock(project,jobs);
-        if("needs_review".equals(status))renderRecoveryControls(id,document);
+        renderRecoveryControls(id,document);
         JSONObject worker=document.optJSONObject("worker");
         JSONObject nudgePolicy=document.optJSONObject("nudgePolicy");
         renderWorkerHealth(worker,nudgePolicy);
@@ -355,14 +443,20 @@ public final class MainActivity extends Activity {
     private void renderRecoveryControls(String projectId,JSONObject document){
         LinearLayout c=card();content.addView(c,fullWithBottom(14));
         c.addView(text("RECOVER FAILED MOVIE",13,GREEN,true));space(c,7);
-        c.addView(text("Only a terminal failed project can be restarted. The original movie, digest, narrations, metadata and successful stage history are preserved.",13,MUTED,false));
+        c.addView(text("Only a terminal needs_review project can be retried. For defective audio, regenerate MP3 first; restarting only SRT reuses the bad file.",13,MUTED,false));
         space(c,8);
         JSONObject recovery=document.optJSONObject("recoveryCapabilities");
         if(recovery==null){
-            c.addView(text(document.optString("recoveryUnavailable","Cloudflare recovery endpoint is unavailable. Update backend before retrying."),12,0xFFFFC47E,false));
+            c.addView(text("Retry status: unavailable until Cloudflare exposes /v1/projects/:id/recovery",12,0xFFFFC47E,true));
+            c.addView(text(document.optString("recoveryUnavailable","Backend recovery capabilities not reported. The Android APK cannot create Muse jobs by itself."),12,MUTED,false));
+            c.addView(text("Requested recovery options: Regenerate English MP3 → English SRT; Regenerate Urdu MP3 → Urdu SRT; Retry failed stage. These actions activate only after verified backend deployment.",12,MUTED,false));
             return;
         }
         JSONArray options=recovery.optJSONArray("options");
+        if(!"needs_review".equals(document.optJSONObject("project").optString("status"))){
+            c.addView(text("No failed project to repair. Retry is enabled only after a real terminal failure.",12,MUTED,false));
+            return;
+        }
         if(!recovery.optBoolean("canRetry")||options==null||options.length()==0){
             c.addView(text("No safe retry option currently available. "+TimelineMetrics.safeLabel(recovery.optString("notice"),180),12,MUTED,false));
             return;
@@ -650,6 +744,29 @@ public final class MainActivity extends Activity {
         if(sub==null || sub.length()==0){
             card.addView(text("Inside the digest (story chunks, character analysis, chronology, and scene groups): the current Cloudflare API has not recorded individual Muse checkpoints. They cannot be timed accurately yet.",11,MUTED,false));
         }
+    }
+    private void shareProjectZip(String id){
+        if(!SecurityRules.validUuid(id)){showError("Invalid project ID");return;}
+        task("Downloading and verifying complete ZIP",()->{
+            JSONObject detail=api.project(id),links=api.downloads(id);
+            return new VerifiedDownloads(getContentResolver(),getCacheDir()).createVerifiedZip(id,detail,links,
+                step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
+        },result->{
+            String excerpt=result.report.length()>1500?result.report.substring(0,1500)+"\n… full report is in ZIP":result.report;
+            new AlertDialog.Builder(this).setTitle("Project QA and ZIP ready")
+                .setMessage(excerpt+"\n\nThe ZIP includes verified JSON, both MP3s, both SRTs (if present), metadata and this QA report. It does not contain movie footage.")
+                .setNegativeButton("Close",null)
+                .setPositiveButton("Share ZIP",(d,w)->{
+                    try{
+                        Uri uri=FileProvider.getUriForFile(this,getPackageName()+".fileprovider",result.file);
+                        Intent send=new Intent(Intent.ACTION_SEND);
+                        send.setType("application/zip");
+                        send.putExtra(Intent.EXTRA_STREAM,uri);
+                        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        startActivity(Intent.createChooser(send,"Share CinePulse ZIP (WhatsApp, Drive, etc.)"));
+                    }catch(Exception e){showError("Cannot share ZIP: "+e.getMessage());}
+                }).show();
+        });
     }
     private void startPackageDownload(String id){
         if(!SecurityRules.validUuid(id)){showError("Invalid movie project");return;}

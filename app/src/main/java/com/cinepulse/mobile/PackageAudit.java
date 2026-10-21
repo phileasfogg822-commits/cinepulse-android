@@ -62,6 +62,24 @@ final class PackageAudit {
         return "MP3 "+fmt(measured)+" vs SRT "+fmt(expected)+" (difference "+
             fmt(diff)+", tolerance "+fmt(tolerance)+") — "+(diff<=tolerance?"PASS duration":"WARNING duration mismatch");
     }
+    /** Approximate script↔SRT textual overlap, never audio transcription verification. */
+    static double lexicalRecall(String narration,String timedSrt){
+        String cleaned=(timedSrt==null?"":timedSrt)
+            .replaceAll("\\d{2}:\\d{2}:\\d{2}[,.]\\d{3}\\s*-->\\s*\\d{2}:\\d{2}:\\d{2}[,.]\\d{3}"," ")
+            .replaceAll("(?m)^\\s*\\d{1,6}\\s*$"," ")
+            .replaceAll("<[^>]*>"," ");
+        Map<String,Integer> seen=new HashMap<>();
+        Matcher m=Pattern.compile("[\\p{L}\\p{N}]+").matcher(cleaned.toLowerCase(Locale.ROOT));
+        while(m.find()){String word=m.group();seen.put(word,seen.getOrDefault(word,0)+1);}
+        Matcher original=Pattern.compile("[\\p{L}\\p{N}]+").matcher((narration==null?"":narration).toLowerCase(Locale.ROOT));
+        int count=0,matched=0;
+        while(original.find()){
+            String word=original.group();count++;
+            int n=seen.getOrDefault(word,0);
+            if(n>0){matched++;seen.put(word,n-1);}
+        }
+        return count<10?-1:matched/(double)count;
+    }
     private static boolean hasText(Object o,String key){
         return unwrap(o,key).trim().length()>25;
     }
@@ -95,6 +113,15 @@ final class PackageAudit {
             if(text.trim().length()<=25)pass=false;
             line(report,lang+" SRT",cues>0?"PASS "+cues+" timed cues, end "+fmt(srtDuration):"FAIL no valid timed SRT");
             if(cues==0)pass=false;
+            double recall=lexicalRecall(text,rawSrt);
+            if(recall>=0){
+                double threshold=eng?0.70:0.45;
+                line(report,lang+" narration↔SRT lexical coverage",
+                    String.format(Locale.ROOT,"%.1f%% script words appear in SRT (",recall*100d)+
+                    (recall>=threshold?"PASS approximate text agreement":"WARNING script/SRT text mismatch")+
+                    "). This compares written words only, not actual audio speech.");
+                if(recall<threshold)pass=false;
+            }else line(report,lang+" narration↔SRT lexical coverage","NOT VERIFIED (missing or insufficient text)");
             double measured=eng?englishMp3Seconds:urduMp3Seconds;
             line(report,lang+" MP3/SRT",audioTiming(measured,srtDuration));
             if(measured>0 && srtDuration>0 && Math.abs(measured-srtDuration)>Math.max(8d,srtDuration*.04d))pass=false;

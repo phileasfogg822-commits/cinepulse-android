@@ -101,7 +101,7 @@ final class SubtitleProvider {
             this.hits=hits;this.movieMatches=movieMatches;this.subtitleRecords=subtitleRecords;
             this.invalidUrls=invalidUrls;this.wrongLanguage=wrongLanguage;
             this.unsupportedFormat=unsupportedFormat;
-            this.diagnostic=diagnostics.length()>600?diagnostics.substring(0,600):diagnostics;
+            this.diagnostic=diagnostics.length()>1200?diagnostics.substring(0,1200):diagnostics;
         }
     }
     /** Normalize only documented relative or first-party absolute SubDL subtitle links. */
@@ -274,6 +274,46 @@ final class SubtitleProvider {
         String imdb=movie.optString("imdb_id","");
         return imdb.matches("tt[0-9]{5,12}")?imdb:"";
     }
+    private static String responseShape(JSONObject payload){
+        if(payload==null)return "no response";
+        JSONObject obj=payload.optJSONObject("data");
+        if(obj==null)obj=payload;
+        JSONArray subs=obj.optJSONArray("subtitles");
+        if(subs==null)subs=obj.optJSONArray("items");
+        if(subs==null)subs=obj.optJSONArray("results");
+        JSONObject one=subs==null||subs.length()==0?null:subs.optJSONObject(0);
+        if(one==null)return "keys "+safeKeys(obj)+"; sample absent";
+        JSONArray unpack=one.optJSONArray("unpack_files");
+        JSONObject first=unpack==null||unpack.length()==0?null:unpack.optJSONObject(0);
+        return "keys "+safeKeys(obj)+"; sample fields "+safeKeys(one)+
+            "; URL "+linkShape(one.optString("url",""))+
+            "; first unpacked fields "+safeKeys(first)+
+            "; unpack URL "+linkShape(first==null?"":first.optString("url",""));
+    }
+    private static String safeKeys(JSONObject obj){
+        if(obj==null)return "(none)";
+        java.util.ArrayList<String> keys=new java.util.ArrayList<>();
+        java.util.Iterator<String> iter=obj.keys();
+        while(iter.hasNext()){
+            String key=iter.next();
+            if(key.matches("[A-Za-z][A-Za-z0-9_]{0,32}") &&
+                !key.toLowerCase(Locale.ROOT).contains("key") &&
+                !key.toLowerCase(Locale.ROOT).contains("token") &&
+                !key.toLowerCase(Locale.ROOT).contains("secret") &&
+                keys.size()<16)keys.add(key);
+        }
+        java.util.Collections.sort(keys);
+        return keys.toString();
+    }
+    private static String linkShape(String raw){
+        if(raw==null||raw.isEmpty())return "absent";
+        if(raw.startsWith("/subtitle/"))return "relative subtitle path";
+        if(raw.startsWith("https://dl.subdl.com/subtitle/"))return "official CDN absolute";
+        if(raw.startsWith("subtitle/"))return "relative without slash";
+        if(raw.startsWith("https://"))return "other HTTPS host/path";
+        if(raw.startsWith("/"))return "other relative path";
+        return "other value format";
+    }
     static SearchResult searchDetailed(String apiKey,String title,String language) throws Exception{
         if(apiKey==null||apiKey.trim().length()<8)
             throw new IOException("Set your SubDL API key in SRT Library first.");
@@ -318,10 +358,11 @@ final class SubtitleProvider {
         SearchResult r=selection.result;
         String details=selection.details;
         String errorText=errors.toString();
-        String summary="All SubDL search paths exhausted: "+details+
+        String summary="v0.2.0 | All SubDL search paths exhausted: "+details+
             "; rejected links="+r.invalidUrls+"; wrong-language files="+r.wrongLanguage+
             "; non-SRT files="+r.unsupportedFormat+"."+
-            (errorText.isEmpty()?"":" API errors: "+errorText);
+            (errorText.isEmpty()?"":" API errors: "+errorText)+
+            " [v2 shape: "+responseShape(v2)+"] [v1 shape: "+responseShape(v1)+"]";
         return new SearchResult(r.hits,r.movieMatches,r.subtitleRecords,
             r.invalidUrls,r.wrongLanguage,r.unsupportedFormat,summary);
     }

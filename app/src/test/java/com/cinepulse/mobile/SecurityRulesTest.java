@@ -12,6 +12,9 @@ public class SecurityRulesTest {
         assertFalse(SecurityRules.validDownloadUrl(good.replace("https:","http:"),id,"english_mp3"));
         assertFalse(SecurityRules.validDownloadUrl(good.replace("maryumblog.workers.dev","evil.test"),id,"english_mp3"));
         assertFalse(SecurityRules.validDownloadUrl(good,id,"urdu_mp3"));
+        String original=SecurityRules.BASE+"/dl/"+id+"/source_srt?exp=123&sig=123abc";
+        assertTrue(SecurityRules.validDownloadUrl(original,id,"source_srt"));
+        assertFalse(SecurityRules.validDownloadUrl(original,id,"english_mp3"));
         assertFalse(SecurityRules.validDownloadUrl(good.replace("/dl/","/redirect/"),id,"english_mp3"));
         assertFalse(SecurityRules.validDownloadUrl("https://attacker.test/dl/"+id+"/english_mp3?exp=1&sig=1",id,"english_mp3"));
     }
@@ -24,5 +27,6 @@ public class SecurityRulesTest {
         assertEquals("CinePulse_Project.json",SecurityRules.expectedName("export_json"));
         assertEquals("CinePulse_English.mp3",SecurityRules.expectedName("english_mp3"));
         assertEquals("CinePulse_Urdu.mp3",SecurityRules.expectedName("urdu_mp3"));
+        assertEquals("CinePulse_Source.srt",SecurityRules.expectedName("source_srt"));
     }
 }

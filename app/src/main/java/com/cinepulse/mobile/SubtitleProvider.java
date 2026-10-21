@@ -133,15 +133,32 @@ final class SubtitleProvider {
             if(Character.isISOControl(c)||c=='<'||c=='>'||c=='"'||c==39 ||
                 c=='{'||c=='}'||c=='|'||c=='^'||c==96)return "";
         }
-        String safe=raw.replace(" ","%20");
-        if(safe.contains("%")){
-            if(!safe.matches("(?:[^%]|%[0-9A-Fa-f]{2})+"))return "";
-            String lower=safe.toLowerCase(Locale.ROOT);
-            for(String forbidden:new String[]{"%2e","%2f","%5c","%00","%3f","%23","%25"})
-                if(lower.contains(forbidden))return "";
+        String lower=raw.toLowerCase(Locale.ROOT);
+        if(lower.contains("%2e")||lower.contains("%2f")||lower.contains("%5c")||
+           lower.contains("%00")||lower.contains("%3f")||lower.contains("%23")||
+           lower.contains("%25"))return "";
+        // Quote each UTF-8 codepoint into an RFC3986 path segment, retaining valid
+        // existing percent escapes. Java URI rejects [] and spaces in raw paths.
+        String allowed="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~/!$&'()*+,;=:@";
+        StringBuilder path=new StringBuilder();
+        for(int i=0;i<raw.length();){
+            int c=raw.codePointAt(i);
+            if(c=='%'){
+                if(i+2>=raw.length()||Character.digit(raw.charAt(i+1),16)<0||
+                    Character.digit(raw.charAt(i+2),16)<0)return "";
+                path.append(raw,i,i+3);
+                i+=3;
+            }else if(c<128&&allowed.indexOf((char)c)>=0){
+                path.append((char)c);
+                i++;
+            }else{
+                byte[] encoded=new String(Character.toChars(c)).getBytes(StandardCharsets.UTF_8);
+                for(byte b:encoded)path.append(String.format(Locale.ROOT,"%%%02X",b&255));
+                i+=Character.charCount(c);
+            }
         }
         try{
-            java.net.URI resolved=new java.net.URI("https://dl.subdl.com"+safe);
+            java.net.URI resolved=new java.net.URI("https://dl.subdl.com"+path);
             if(!"dl.subdl.com".equals(resolved.getHost())||resolved.getRawQuery()!=null||
                 resolved.getFragment()!=null)return "";
             return resolved.toASCIIString().substring("https://dl.subdl.com".length());

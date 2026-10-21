@@ -19,7 +19,7 @@
             </intent-filter>
         </activity>
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name=".CinePulseShareProvider"
             android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">

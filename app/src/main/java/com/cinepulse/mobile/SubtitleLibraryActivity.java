@@ -141,7 +141,7 @@ public final class SubtitleLibraryActivity extends Activity {
         TextView sub=label("Search • collect hundreds locally • select a batch for Muse",12,MUTED,false);
         sub.setPadding(dp(18),0,dp(18),dp(12));add(root,sub);
         ScrollView scroll=new ScrollView(this);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-        container=column();container.setPadding(dp(15),dp(8),dp(15),dp(24));add(scroll,container);
+        container=column();container.setPadding(dp(15),dp(8),dp(15),dp(24));scroll.addView(container);
 
         LinearLayout keyBox=box(container);
         add(keyBox,label("SubDL provider connection",16,WHITE,true));

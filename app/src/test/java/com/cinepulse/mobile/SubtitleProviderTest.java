@@ -189,4 +189,32 @@ public class SubtitleProviderTest {
         assertEquals("v2:safeIdentifier1",result.hits.getJSONObject(0).optString("path"));
     }
 
+    @Test public void acceptsRealisticPunctuationAndUnicodeFromOfficialCdn(){
+        String raw="/subtitle/Inception (2010) [English] - 1080p! - العربية.srt";
+        String normalized=SubtitleProvider.normalizeDownloadPath(raw);
+        assertTrue(normalized.startsWith("/subtitle/"));
+        assertTrue(normalized.contains("%20"));
+        assertTrue(normalized.contains("%D8"));
+        assertTrue(SubtitleProvider.validPath(normalized));
+        assertTrue(SubtitleProvider.validPath("/subtitle/Inception.2010.REPACK_(WEB-DL)@[1].zip"));
+    }
+    @Test public void rejectsHostSpoofingEncodedTraversalAndUnsafeUri(){
+        assertEquals("",SubtitleProvider.normalizeDownloadPath("https://dl.subdl.com.attacker.net/subtitle/film.srt"));
+        assertEquals("",SubtitleProvider.normalizeDownloadPath("https://dl.subdl.com@attacker.net/subtitle/film.srt"));
+        assertEquals("",SubtitleProvider.normalizeDownloadPath("/subtitle/%2e%2e/private"));
+        assertEquals("",SubtitleProvider.normalizeDownloadPath("/subtitle/name%2fsecret"));
+        assertEquals("",SubtitleProvider.normalizeDownloadPath("/subtitle/name%25hack"));
+        assertEquals("",SubtitleProvider.normalizeDownloadPath("/subtitle/test.srt?api_key=secret"));
+    }
+    @Test public void resultingSearchReturnsPunctuatedTrustedUrl() throws Exception {
+        JSONObject entry=new JSONObject().put("release_name","Inception 2010")
+            .put("language","EN").put("url","/subtitle/Inception (2010) [English]!.zip");
+        JSONObject json=new JSONObject().put("status",true)
+            .put("results",new org.json.JSONArray().put(new JSONObject().put("name","Inception")))
+            .put("subtitles",new org.json.JSONArray().put(entry));
+        SubtitleProvider.SearchResult r=SubtitleProvider.parseSearchResponse(json,"Inception","EN");
+        assertEquals(1,r.hits.length());
+        assertTrue(r.hits.getJSONObject(0).getString("path").contains("%20"));
+    }
+
 }

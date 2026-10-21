@@ -72,9 +72,14 @@ final class CloudApi {
     JSONObject createWorker(String label) throws Exception {
         return call("POST","/v1/workers",new JSONObject().put("label",label));
     }
-    JSONObject createProject(String title,String workerId,String sourceSrt,int retentionHours) throws Exception {
+    JSONObject deleteProject(String projectId) throws Exception {
+        return call("DELETE","/v1/projects/"+checked(projectId),null);
+    }
+    JSONObject createProject(String title,String workerId,String sourceSrt,int retentionHours,int targetMinutes) throws Exception {
+        if(targetMinutes<3||targetMinutes>60)throw new IllegalArgumentException("Choose 3–60 minutes");
         return call("POST","/v1/projects",new JSONObject().put("title",title)
-            .put("workerId",checked(workerId)).put("sourceSrt",sourceSrt).put("retentionHours",retentionHours));
+            .put("workerId",checked(workerId)).put("sourceSrt",sourceSrt)
+            .put("retentionHours",retentionHours).put("targetMinutes",targetMinutes));
     }
     private String checked(String id){if(!SecurityRules.validUuid(id))throw new IllegalArgumentException("Invalid project or worker ID");return id;}
 }

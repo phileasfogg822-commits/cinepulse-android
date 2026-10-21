@@ -147,6 +147,17 @@ public final class SubtitleLibraryActivity extends Activity {
         add(keyBox,label("SubDL provider connection",16,WHITE,true));
         add(keyBox,label("Free personal API key required. Stored encrypted in Android Keystore; not sent to Cloudflare. Provider usage quotas apply.",12,MUTED,false));
         button(keyBox,"Set / replace SubDL API key",this::configureKey);
+        button(keyBox,"Test SubDL search connection (Inception, English)",()->{
+            work("Testing SubDL search",()->SubtitleProvider.searchDetailed(providerKey.load(),"Inception","EN"),result->{
+                results=result.hits;
+                resultSelection.clear();
+                renderResults();
+                info("Connection test: "+result.diagnostic);
+                new AlertDialog.Builder(this).setTitle("SubDL connection diagnostic")
+                    .setMessage(result.diagnostic+"\n\nNo API key is displayed. A successful response can still contain zero subtitles for a specific title or language.")
+                    .setPositiveButton("OK",null).show();
+            });
+        });
         button(keyBox,"Provider documentation",()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(SubtitleProvider.DOCS))));
 
         LinearLayout finder=box(container);
@@ -230,7 +241,8 @@ public final class SubtitleLibraryActivity extends Activity {
                         final int completed=saved,attempt=lookups;
                         info("Subtitle search "+attempt+" • "+saved+"/"+n+" saved");
                         try{
-                            JSONArray found=SubtitleProvider.search(key,name,lang);
+                            SubtitleProvider.SearchResult response=SubtitleProvider.searchDetailed(key,name,lang);
+                            JSONArray found=response.hits;
                             if(found.length()==0)continue;
                             JSONObject best=null;
                             // Only accept an exact title (with optional release year), not a loosely related search hit.
@@ -265,9 +277,9 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void search(String title){
         final String lang=language.getSelectedItemPosition()==1?"UR":"EN";
-        work("Searching SubDL for "+title,()->SubtitleProvider.search(providerKey.load(),title,lang),found->{
-            results=found;resultSelection.clear();renderResults();
-            info(found.length()+" available subtitle result(s). Choose releases and download to your library.");
+        work("Searching SubDL for "+title,()->SubtitleProvider.searchDetailed(providerKey.load(),title,lang),found->{
+            results=found.hits;resultSelection.clear();renderResults();
+            info(found.diagnostic);
         });
     }
     private void renderResults(){

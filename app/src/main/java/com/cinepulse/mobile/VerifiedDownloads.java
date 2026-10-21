@@ -14,6 +14,10 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import android.media.MediaMetadataRetriever;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.MessageDigest;
@@ -166,6 +170,99 @@ final class VerifiedDownloads {
             throw ex;
         }finally {
             for(File file:staged)if(file!=null)file.delete();
+        }
+    }
+
+    static final class ZipResult {
+        final File file;
+        final String name;
+        final String report;
+        ZipResult(File file,String name,String report){this.file=file;this.name=name;this.report=report;}
+    }
+    private static double measuredMp3Seconds(File f){
+        MediaMetadataRetriever mmr=new MediaMetadataRetriever();
+        try{
+            mmr.setDataSource(f.getAbsolutePath());
+            String s=mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            if(s==null)return -1;
+            return Math.max(-1,Double.parseDouble(s)/1000d);
+        }catch(Exception ignored){return -1;}
+        finally{try{mmr.release();}catch(Exception ignored){}}
+    }
+    private static String inner(Object value,String field){
+        if(value==null||value==JSONObject.NULL)return "";
+        if(value instanceof JSONObject)return ((JSONObject)value).optString(field,"");
+        String str=String.valueOf(value);
+        if(str.trim().startsWith("{")){
+            try{return new JSONObject(str).optString(field,"");}catch(Exception ignored){}
+        }
+        return str;
+    }
+    private static void zipText(ZipOutputStream out,String name,String text) throws IOException{
+        out.putNextEntry(new ZipEntry(name));
+        byte[] bytes=text.getBytes(StandardCharsets.UTF_8);
+        out.write(bytes);out.closeEntry();
+    }
+    private static void zipFile(ZipOutputStream out,String name,File f) throws IOException{
+        out.putNextEntry(new ZipEntry(name));
+        copy(f,out);
+        out.closeEntry();
+    }
+    /** Archives verified original files, extracted SRTs, metadata and a truthful QA audit. */
+    ZipResult createVerifiedZip(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception{
+        if(!SecurityRules.validUuid(projectId))throw new SecurityException("Invalid project ID");
+        JSONObject p=detail.getJSONObject("project");
+        if(!projectId.equals(p.optString("id"))||!"ready".equals(p.optString("status")))
+            throw new SecurityException("Project must be ready and match downloaded manifest");
+        String[] kinds={"export_json","english_mp3","urdu_mp3"};
+        String[] names={"CinePulse_Project.json","CinePulse_English.mp3","CinePulse_Urdu.mp3"};
+        File[] temp=new File[3];
+        File zip=null;
+        try{
+            Map<String,JSONObject> assets=manifest(detail);
+            JSONObject linksByKind=links.getJSONObject("files");
+            for(int i=0;i<3;i++){
+                JSONObject meta=assets.get(kinds[i]);
+                if(meta==null)throw new IOException("Missing Cloudflare "+kinds[i]+" manifest");
+                progress.update("Verifying "+names[i]+" ("+(i+1)+"/3)");
+                temp[i]=receive(linksByKind.getJSONObject(kinds[i]).getString("url"),
+                    projectId,kinds[i],meta.getLong("bytes"),meta.getString("sha256"));
+            }
+            byte[] jsonBytes=new byte[(int)Math.min(SecurityRules.MAX_JSON_BYTES,temp[0].length())];
+            try(InputStream in=new FileInputStream(temp[0])){
+                int total=0,n;while(total<jsonBytes.length&&(n=in.read(jsonBytes,total,jsonBytes.length-total))!=-1){total+=n;}
+                if(total!=jsonBytes.length)throw new IOException("Project JSON read incomplete");
+            }
+            JSONObject exported=new JSONObject(new String(jsonBytes,StandardCharsets.UTF_8));
+            JSONObject identity=exported.optJSONObject("project");
+            if(identity==null || !projectId.equals(identity.optString("id")))
+                throw new SecurityException("Exported JSON project ID does not match requested movie");
+            PackageAudit.Result audit=PackageAudit.inspect(exported,measuredMp3Seconds(temp[1]),measuredMp3Seconds(temp[2]));
+            String title=SecurityRules.safeFolderName(p.optString("title"));
+            String name="CinePulse-"+title+"-"+SecurityRules.shortId(projectId)+".zip";
+            zip=File.createTempFile("cinepulse-share-", ".zip",cache);
+            progress.update("Creating shareable ZIP and QA report");
+            try(ZipOutputStream out=new ZipOutputStream(new FileOutputStream(zip))){
+                for(int i=0;i<3;i++)zipFile(out,names[i],temp[i]);
+                JSONObject subtitles=exported.optJSONObject("narrationSrts");
+                if(subtitles!=null){
+                    String en=inner(subtitles.opt("english"),"srt");
+                    String ur=inner(subtitles.opt("urdu"),"srt");
+                    if(!en.isEmpty())zipText(out,"CinePulse_English.srt",en);
+                    if(!ur.isEmpty())zipText(out,"CinePulse_Urdu.srt",ur);
+                }
+                JSONObject metadata=exported.optJSONObject("metadata");
+                if(metadata!=null)zipText(out,"CinePulse_Metadata.json",metadata.toString(2));
+                zipText(out,"CinePulse_Quality_Report.txt",audit.report);
+            }
+            if(zip.length()<=0)throw new IOException("Cannot generate project ZIP");
+            progress.update("ZIP created, audit complete. Share with WhatsApp or transfer to Windows.");
+            return new ZipResult(zip,name,audit.report);
+        }catch(Exception error){
+            if(zip!=null)zip.delete();
+            throw error;
+        }finally{
+            for(File file:temp)if(file!=null)file.delete();
         }
     }
 }

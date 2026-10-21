@@ -196,6 +196,8 @@ public final class MainActivity extends Activity {
     }
     private void renderHome(){
         begin("WORKSPACE","Your movies","A light control center for Muse and CinePulse Windows.");
+        content.addView(action("🔎 SRT Library • Search & batch import",
+            ()->startActivity(new Intent(this,SubtitleLibraryActivity.class)),true),fullWithBottom(14));
         LinearLayout actions=horizontal();content.addView(actions,fullWithBottom(14));
         Button add=action("+ New movie",this::chooseSrt,true);
         actions.addView(add,new LinearLayout.LayoutParams(0,dp(48),1));

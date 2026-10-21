@@ -55,7 +55,7 @@ final class SubtitleProvider {
         c.setInstanceFollowRedirects(false);
         c.setConnectTimeout(12000);c.setReadTimeout(30000);
         c.setRequestProperty("Accept",isApi?"application/json":"application/octet-stream");
-        c.setRequestProperty("User-Agent","CinePulseAndroid/0.1.9");
+        c.setRequestProperty("User-Agent","CinePulseAndroid/0.2.0");
         if(isApi && apiKey!=null && !apiKey.trim().isEmpty())c.setRequestProperty("Authorization","Bearer "+apiKey.trim());
         // SubDL free search requires api_key as documented. Never log or copy URL containing it.
         try {
@@ -96,6 +96,13 @@ final class SubtitleProvider {
                     " non-SRT unpacked file(s). This can be an API format issue, not no subtitles.";
             }
         }
+        SearchResult(JSONArray hits,int movieMatches,int subtitleRecords,int invalidUrls,
+                     int wrongLanguage,int unsupportedFormat,String diagnostics){
+            this.hits=hits;this.movieMatches=movieMatches;this.subtitleRecords=subtitleRecords;
+            this.invalidUrls=invalidUrls;this.wrongLanguage=wrongLanguage;
+            this.unsupportedFormat=unsupportedFormat;
+            this.diagnostic=diagnostics.length()>600?diagnostics.substring(0,600):diagnostics;
+        }
     }
     /** Normalize only documented relative or first-party absolute SubDL subtitle links. */
     static String normalizeDownloadPath(String raw){
@@ -123,14 +130,18 @@ final class SubtitleProvider {
         String n=record.optString("n_id","");
         if(n.isEmpty())n=record.optString("nId","");
         if(n.isEmpty())n=record.optString("subtitle_id","");
+        if(n.isEmpty())n=record.optString("subtitleId","");
+        if(n.isEmpty())n=record.optString("id","");
         return safeId(n)?"v2:"+n:"";
     }
     private static String canonicalDownload(JSONObject record,JSONObject parent){
         String path=normalizeDownloadPath(record.optString("url",""));
+        if(path.isEmpty())path=normalizeDownloadPath(record.optString("download_url",""));
+        if(path.isEmpty())path=normalizeDownloadPath(record.optString("downloadUrl",""));
         if(!path.isEmpty())return path;
         // V1 unpack_files can identify exact raw file without a usable URL.
         if(parent!=null){
-            String n=parent.optString("n_id",parent.optString("nId",""));
+            String n=parent.optString("n_id",parent.optString("nId",parent.optString("subtitle_id",parent.optString("id",""))));
             String file=record.optString("file_n_id","");
             if(safeId(n)&&safeId(file))return "/subtitle/"+n+"/"+file;
             String backup=fallbackId(parent);
@@ -149,8 +160,23 @@ final class SubtitleProvider {
     static SearchResult parseSearchResponse(JSONObject response,String title,String language) throws IOException {
         if(response.has("status")&&!response.optBoolean("status"))
             throw new IOException("SubDL search failed: "+safeError(response.optString("error",response.optString("message","Provider declined search")),90));
+        JSONObject wrapped=response.optJSONObject("data");
+        if(wrapped!=null&&(wrapped.has("subtitles")||wrapped.has("items")||wrapped.has("results")))response=wrapped;
         JSONArray movies=response.optJSONArray("results");
         JSONArray subs=response.optJSONArray("subtitles");
+        if(subs==null)subs=response.optJSONArray("items");
+        if(subs==null){
+            JSONArray maybe=response.optJSONArray("results");
+            if(maybe!=null&&maybe.length()>0){
+                JSONObject first=maybe.optJSONObject(0);
+                if(first!=null&&(first.has("n_id")||first.has("nId")||first.has("release_name")||first.has("download_url"))){
+                    subs=maybe;
+                    movies=new JSONArray();
+                }else if(first!=null&&first.optJSONArray("subtitles")!=null){
+                    subs=first.optJSONArray("subtitles");
+                }
+            }
+        }
         int movieCount=movies==null?0:movies.length();
         int subtitleCount=subs==null?0:subs.length();
         String foundTitle=title.trim();
@@ -179,7 +205,7 @@ final class SubtitleProvider {
                 String format=file.optString("format","");
                 boolean isSrt="srt".equalsIgnoreCase(format)||name.toLowerCase(Locale.ROOT).endsWith(".srt");
                 if(!isSrt){badFormats++;continue;}
-                String subLanguage=file.optString("language",entry.optString("language",""));
+                String subLanguage=file.optString("language",entry.optString("language",entry.optString("lang","")));
                 if(!sameLanguage(subLanguage,language)){badLanguages++;continue;}
                 String path=canonicalDownload(file,entry);
                 if(path.isEmpty()){badLinks++;continue;}
@@ -207,34 +233,97 @@ final class SubtitleProvider {
         }
         return new SearchResult(hits,movieCount,subtitleCount,badLinks,badLanguages,badFormats);
     }
+    /** API request errors never return credentials or full URLs to the UI. */
+    private static String providerError(Exception problem){
+        String msg=problem.getMessage();
+        if(msg==null)return problem.getClass().getSimpleName();
+        msg=msg.replaceAll("(?i)api_key=[^&\\s]+","api_key=[REDACTED]")
+            .replaceAll("(?i)Bearer\\s+\\S+","Bearer [REDACTED]")
+            .replaceAll("(?i)subdl_[A-Za-z0-9_-]{10,}","[REDACTED]");
+        if(msg.length()>90)msg=msg.substring(0,90);
+        return msg;
+    }
+    static final class Probe {
+        final SearchResult result;
+        final String phase,details;
+        Probe(SearchResult r,String phase,String details){this.result=r;this.phase=phase;this.details=details;}
+    }
+    static Probe chooseProviderResponse(JSONObject v2,JSONObject v1,String title,String lang) throws Exception {
+        SearchResult newer=v2==null?null:parseSearchResponse(v2,title,lang);
+        if(newer!=null&&newer.hits.length()>0)return new Probe(newer,"API v2","Subtitle IDs/links recognized");
+        SearchResult legacy=v1==null?null:parseSearchResponse(v1,title,lang);
+        if(legacy!=null&&legacy.hits.length()>0)return new Probe(legacy,"API v1","Fallback subtitle links recognized");
+        SearchResult best=newer!=null&&newer.subtitleRecords>0?newer:legacy!=null?legacy:newer;
+        if(best==null)throw new IOException("SubDL returned no usable JSON subtitle response.");
+        return new Probe(best,"No usable release",
+            "v2="+(newer==null?"unavailable":newer.subtitleRecords+" records / "+newer.hits.length()+" links")+
+            "; v1="+(legacy==null?"unavailable":legacy.subtitleRecords+" records / "+legacy.hits.length()+" links"));
+    }
+    private static JSONObject jsonRequest(String path,String key) throws Exception {
+        byte[] data=fetch(new URL("https://api.subdl.com"+path),1024*1024,key,true);
+        return new JSONObject(new String(data,StandardCharsets.UTF_8));
+    }
+    private static String firstImdb(JSONObject response){
+        if(response==null)return "";
+        JSONObject object=response.optJSONObject("data");
+        if(object==null)object=response;
+        JSONArray items=object.optJSONArray("results");
+        if(items==null||items.length()==0)return "";
+        JSONObject movie=items.optJSONObject(0);
+        if(movie==null)return "";
+        String imdb=movie.optString("imdb_id","");
+        return imdb.matches("tt[0-9]{5,12}")?imdb:"";
+    }
     static SearchResult searchDetailed(String apiKey,String title,String language) throws Exception{
         if(apiKey==null||apiKey.trim().length()<8)
-            throw new IOException("Set a new personal SubDL API key in the SRT Library.");
+            throw new IOException("Set your SubDL API key in SRT Library first.");
         if(title==null||title.trim().length()<2||title.length()>130)
             throw new IOException("Movie search must contain 2–130 characters.");
-        if(!("EN".equals(language)||"UR".equals(language)))throw new IOException("Unsupported language code.");
+        if(!("EN".equals(language)||"UR".equals(language)))
+            throw new IOException("Unsupported language code.");
         String clean=title.trim().replaceFirst("\\s*\\(\\d{4}\\)$","");
-        String path="https://api.subdl.com/api/v1/subtitles?api_key="+encode(apiKey.trim())+
-            "&film_name="+encode(clean)+"&type=movie&languages="+language+
-            "&unpack=1&subs_per_page=30&client=custom_integration";
-        JSONObject response=new JSONObject(new String(fetch(new URL(path),1024*1024,apiKey,true),StandardCharsets.UTF_8));
-        SearchResult original=parseSearchResponse(response,clean,language);
-        if(original.hits.length()>0||original.subtitleRecords==0)return original;
-        // When the legacy endpoint supplies subtitle records without usable links or IDs,
-        // try the official v2 search (Bearer-authenticated) before declaring "0 results".
+        String lower=language.toLowerCase(Locale.ROOT);
+        JSONObject v2=null,v1=null;
+        StringBuilder errors=new StringBuilder();
+        // v2 is now primary. The older implementation hid its errors and reused
+        // the v1 "zero offered" diagnostic on every device.
         try{
-            String v2="https://api.subdl.com/api/v2/subtitles/search?film_name="+encode(clean)+
-                "&type=movie&languages="+language.toLowerCase(Locale.ROOT)+
-                "&unpack=1&subs_per_page=30";
-            JSONObject result=new JSONObject(new String(fetch(new URL(v2),1024*1024,apiKey,true),StandardCharsets.UTF_8));
-            JSONObject payload=result.optJSONObject("data");
-            if(payload==null)payload=result;
-            SearchResult newer=parseSearchResponse(payload,clean,language);
-            if(newer.hits.length()>0)return newer;
-        }catch(Exception ignored){
-            // Do not convert a valid v1 provider response into a failure if v2 is unavailable.
-        }
-        return original;
+            v2=jsonRequest("/api/v2/subtitles/search?film_name="+encode(clean)+
+                "&type=movie&languages="+lower+"&unpack=1&subs_per_page=30",apiKey);
+            SearchResult first=parseSearchResponse(v2,clean,language);
+            if(first.hits.length()>0)return first;
+        }catch(Exception e){errors.append("v2 subtitle title search: ").append(providerError(e)).append("; ");}
+
+        // A stable IMDb lookup is more reliable than a fuzzy title for some v2 catalogs.
+        try{
+            JSONObject movies=jsonRequest("/api/v2/movies/search?q="+encode(clean)+"&type=movie&limit=5",apiKey);
+            String imdb=firstImdb(movies);
+            if(!imdb.isEmpty()){
+                JSONObject idResponse=jsonRequest("/api/v2/subtitles/search?imdb_id="+encode(imdb)+
+                    "&type=movie&languages="+lower+"&unpack=1&subs_per_page=30",apiKey);
+                SearchResult byId=parseSearchResponse(idResponse,clean,language);
+                if(byId.hits.length()>0)return byId;
+                if(v2==null||byId.subtitleRecords>0)v2=idResponse;
+            }else errors.append("v2 movie search had no IMDb ID; ");
+        }catch(Exception e){errors.append("v2 IMDb lookup: ").append(providerError(e)).append("; ");}
+
+        try{
+            v1=jsonRequest("/api/v1/subtitles?api_key="+encode(apiKey.trim())+
+                "&film_name="+encode(clean)+"&type=movie&languages="+language+
+                "&unpack=1&subs_per_page=30&client=custom_integration",apiKey);
+        }catch(Exception e){errors.append("v1 legacy search: ").append(providerError(e)).append("; ");}
+        Probe selection=chooseProviderResponse(v2,v1,clean,language);
+        if(selection.result.hits.length()>0)return selection.result;
+        // Display precise evidence and the phases checked; do not silently swallow errors.
+        SearchResult r=selection.result;
+        String details=selection.details;
+        String errorText=errors.toString();
+        String summary="All SubDL search paths exhausted: "+details+
+            "; rejected links="+r.invalidUrls+"; wrong-language files="+r.wrongLanguage+
+            "; non-SRT files="+r.unsupportedFormat+"."+
+            (errorText.isEmpty()?"":" API errors: "+errorText);
+        return new SearchResult(r.hits,r.movieMatches,r.subtitleRecords,
+            r.invalidUrls,r.wrongLanguage,r.unsupportedFormat,summary);
     }
     static JSONArray search(String apiKey,String title,String language) throws Exception {
         return searchDetailed(apiKey,title,language).hits;

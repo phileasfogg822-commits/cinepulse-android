@@ -147,7 +147,7 @@ final class SubtitleProvider {
     }
     /** Deterministic response parser tested against packed, unpacked and absolute-URL fixtures. */
     static SearchResult parseSearchResponse(JSONObject response,String title,String language) throws IOException {
-        if(!response.optBoolean("status"))
+        if(response.has("status")&&!response.optBoolean("status"))
             throw new IOException("SubDL search failed: "+safeError(response.optString("error",response.optString("message","Provider declined search")),90));
         JSONArray movies=response.optJSONArray("results");
         JSONArray subs=response.optJSONArray("subtitles");
@@ -218,7 +218,23 @@ final class SubtitleProvider {
             "&film_name="+encode(clean)+"&type=movie&languages="+language+
             "&unpack=1&subs_per_page=30&client=custom_integration";
         JSONObject response=new JSONObject(new String(fetch(new URL(path),1024*1024,apiKey,true),StandardCharsets.UTF_8));
-        return parseSearchResponse(response,clean,language);
+        SearchResult original=parseSearchResponse(response,clean,language);
+        if(original.hits.length()>0||original.subtitleRecords==0)return original;
+        // When the legacy endpoint supplies subtitle records without usable links or IDs,
+        // try the official v2 search (Bearer-authenticated) before declaring "0 results".
+        try{
+            String v2="https://api.subdl.com/api/v2/subtitles/search?film_name="+encode(clean)+
+                "&type=movie&languages="+language.toLowerCase(Locale.ROOT)+
+                "&unpack=1&subs_per_page=30";
+            JSONObject result=new JSONObject(new String(fetch(new URL(v2),1024*1024,apiKey,true),StandardCharsets.UTF_8));
+            JSONObject payload=result.optJSONObject("data");
+            if(payload==null)payload=result;
+            SearchResult newer=parseSearchResponse(payload,clean,language);
+            if(newer.hits.length()>0)return newer;
+        }catch(Exception ignored){
+            // Do not convert a valid v1 provider response into a failure if v2 is unavailable.
+        }
+        return original;
     }
     static JSONArray search(String apiKey,String title,String language) throws Exception {
         return searchDetailed(apiKey,title,language).hits;

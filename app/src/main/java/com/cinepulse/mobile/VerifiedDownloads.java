@@ -79,6 +79,36 @@ final class VerifiedDownloads {
             } finally {conn.disconnect();}
         } catch(Exception ex) { temp.delete();throw ex; }
     }
+    /** Backward-compatible fourth file for pre-v0.1.7 backends:
+     * extract the source SRT only from SHA-256-verified export JSON, then independently
+     * verify its exact byte length and SHA-256 against the original source_srt manifest.
+     */
+    private File sourceSrtFromVerifiedJson(File verifiedJson,String projectId,JSONObject sourceManifest) throws Exception {
+        if(sourceManifest==null)throw new SecurityException("Original source SRT manifest unavailable");
+        if(verifiedJson.length()<=0||verifiedJson.length()>SecurityRules.MAX_JSON_BYTES)
+            throw new SecurityException("Verified project JSON size invalid");
+        String payload=new String(java.nio.file.Files.readAllBytes(verifiedJson.toPath()),StandardCharsets.UTF_8);
+        JSONObject export=new JSONObject(payload);
+        JSONObject identity=export.optJSONObject("project");
+        if(identity==null||!projectId.equals(identity.optString("id")))
+            throw new SecurityException("Source SRT recovery rejected: project identity mismatch");
+        String source=export.optString("sourceSrt","");
+        if(!source.contains("-->")||source.length()<20)
+            throw new SecurityException("Original SRT is missing from verified project JSON");
+        byte[] bytes=source.getBytes(StandardCharsets.UTF_8);
+        long expected=sourceManifest.optLong("bytes",-1);
+        String digest=sourceManifest.optString("sha256","");
+        if(expected!=bytes.length||!digest.matches("(?i)[a-f0-9]{64}"))
+            throw new SecurityException("Original SRT manifest does not match exported source bytes");
+        StringBuilder check=new StringBuilder();
+        byte[] actual=MessageDigest.getInstance("SHA-256").digest(bytes);
+        for(byte n:actual)check.append(String.format(java.util.Locale.ROOT,"%02x",n&255));
+        if(!check.toString().equalsIgnoreCase(digest))
+            throw new SecurityException("Original SRT hash mismatch; refused unverified fallback");
+        File copy=File.createTempFile("cp-original-srt-", ".part",cache);
+        try(FileOutputStream out=new FileOutputStream(copy)){out.write(bytes);}
+        return copy;
+    }
     private static Map<String,JSONObject> manifest(JSONObject project) {
         Map<String,JSONObject> found=new HashMap<>();
         JSONArray entries=project.optJSONArray("assets");
@@ -120,7 +150,11 @@ final class VerifiedDownloads {
                 progress.update("Downloading and verifying "+SecurityRules.expectedName(kind)+" ("+(i+1)+"/4)");
                 JSONObject url=files.getJSONObject(kind), metadata=known.get(kind);
                 if(metadata==null)throw new SecurityException("Cloudflare has no "+kind+" file manifest");
-                staged[i]=receive(url.getString("url"),projectId,kind,metadata.getLong("bytes"),metadata.getString("sha256"));
+                if("source_srt".equals(kind)&&!files.has(kind)){
+                    staged[i]=sourceSrtFromVerifiedJson(staged[0],projectId,metadata);
+                }else{
+                    staged[i]=receive(url.getString("url"),projectId,kind,metadata.getLong("bytes"),metadata.getString("sha256"));
+                }
             }
             if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 for(int i=0;i<kinds.length;i++) {
@@ -226,8 +260,12 @@ final class VerifiedDownloads {
                 JSONObject meta=assets.get(kinds[i]);
                 if(meta==null)throw new IOException("Missing Cloudflare "+kinds[i]+" manifest");
                 progress.update("Verifying "+names[i]+" ("+(i+1)+"/4)");
-                temp[i]=receive(linksByKind.getJSONObject(kinds[i]).getString("url"),
-                    projectId,kinds[i],meta.getLong("bytes"),meta.getString("sha256"));
+                if("source_srt".equals(kinds[i])&&!linksByKind.has(kinds[i])){
+                    temp[i]=sourceSrtFromVerifiedJson(temp[0],projectId,meta);
+                }else{
+                    temp[i]=receive(linksByKind.getJSONObject(kinds[i]).getString("url"),
+                        projectId,kinds[i],meta.getLong("bytes"),meta.getString("sha256"));
+                }
             }
             byte[] jsonBytes=new byte[(int)Math.min(SecurityRules.MAX_JSON_BYTES,temp[0].length())];
             try(InputStream in=new FileInputStream(temp[0])){

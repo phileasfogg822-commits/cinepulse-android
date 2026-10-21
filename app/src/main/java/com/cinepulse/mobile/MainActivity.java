@@ -402,12 +402,16 @@ public final class MainActivity extends Activity {
         }
         if("processing".equals(status)||"needs_review".equals(status)){
             space(summary,7);
+            if(!project.has("paused")){
+                summary.addView(text("Pause movie unavailable: the matching Cloudflare backend v0.1.7 has not been deployed. Pause worker is a separate operation.",12,0xFFFFC47E,false));
+            }else{
             final boolean paused=project.optBoolean("paused",false);
             summary.addView(action(paused?"▶ Resume only this movie":"⏸ Pause only this movie",
                 ()->confirmMoviePause(id,!paused),false));
             summary.addView(text(paused?
                 "This movie is paused. Its queued stages will not be claimed, but other movies on the same Muse worker continue.":
                 "Pauses only this movie ID, not the entire Muse worker. An active leased task may finish first.",12,MUTED,false));
+            }
         }
         int target=project.optInt("targetMinutes",-1);
         space(summary,8);

@@ -3,6 +3,8 @@ package com.cinepulse.mobile;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.ClipboardManager;
+import android.content.ClipData;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -88,7 +90,7 @@ public final class SubtitleLibraryActivity extends Activity {
     @Override public void onCreate(Bundle b){
         super.onCreate(b);
         getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        // SRT Library diagnostics are screenshot-friendly; the credential dialog alone is protected.
         shelf=new SubtitleShelf(this);
         providerKey=new SecureTokenStore(this,true);
         cloud=new CloudApi(new SecureTokenStore(this));
@@ -137,7 +139,7 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void buildUi(){
         root=column();root.setBackgroundColor(BG);setContentView(root);
-        TextView heading=label("SRT LIBRARY  •  v0.2.0",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
+        TextView heading=label("SRT LIBRARY  •  v0.2.1",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
         TextView sub=label("Search • collect hundreds locally • select a batch for Muse",12,MUTED,false);
         sub.setPadding(dp(18),0,dp(18),dp(12));add(root,sub);
         ScrollView scroll=new ScrollView(this);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -145,7 +147,7 @@ public final class SubtitleLibraryActivity extends Activity {
 
         LinearLayout keyBox=box(container);
         add(keyBox,label("SubDL provider connection",16,WHITE,true));
-        add(keyBox,label("Provider engine: API v2 first, IMDb matching, then legacy v1 fallback. Build v0.2.0.",12,GREEN,false));
+        add(keyBox,label("Provider engine: API v2 first, IMDb matching, then legacy v1 fallback. Build v0.2.1.",12,GREEN,false));
         add(keyBox,label("Free personal API key required. Stored encrypted in Android Keystore; not sent to Cloudflare. Provider usage quotas apply.",12,MUTED,false));
         button(keyBox,"Set / replace SubDL API key",this::configureKey);
         button(keyBox,"Test SubDL search connection (Inception, English)",()->{
@@ -154,9 +156,22 @@ public final class SubtitleLibraryActivity extends Activity {
                 resultSelection.clear();
                 renderResults();
                 info("Connection test: "+result.diagnostic);
-                new AlertDialog.Builder(this).setTitle("SubDL connection diagnostic")
-                    .setMessage(result.diagnostic+"\n\nNo API key is displayed. A successful response can still contain zero subtitles for a specific title or language.")
-                    .setPositiveButton("OK",null).show();
+                showCopyableReport("SubDL search diagnostic",
+                    result.diagnostic+"\n\nNo API key, response IDs or full URLs are included.");
+            });
+        });
+        button(keyBox,"LIVE test: search, download and verify 1 Inception SRT",()->{
+            work("Testing actual SubDL subtitle download",()->{
+                SubtitleProvider.LiveTest test=SubtitleProvider.testRealDownload(providerKey.load());
+                if(test.srt!=null&&test.hit!=null){
+                    JSONObject saved=shelf.save(test.hit,test.srt);
+                    return test.report+"\nSaved locally: "+saved.optString("title","Inception")+
+                        " • "+saved.optInt("cues")+" cues.\n";
+                }
+                return test.report;
+            },report->{
+                reloadLibrary();
+                showCopyableReport("REAL SubDL download verification",report);
             });
         });
         button(keyBox,"Provider documentation",()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(SubtitleProvider.DOCS))));
@@ -190,12 +205,28 @@ public final class SubtitleLibraryActivity extends Activity {
         button(saved,"Remove selected SRTs from phone only",this::deleteSelection);
         add(saved,label("Cloud projects are created only when you press Queue. Downloads never upload automatically.",11,MUTED,false));
     }
+    private void copyDiagnostic(String value){
+        String copy=value.replaceAll("(?i)subdl_[A-Za-z0-9_-]{12,}","[REDACTED]")
+            .replaceAll("(?i)api_key=[^&\s]+","api_key=[REDACTED]")
+            .replaceAll("(?i)Bearer\s+\S+","Bearer [REDACTED]");
+        ClipboardManager clipboard=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+        if(clipboard==null){err("Clipboard unavailable");return;}
+        clipboard.setPrimaryClip(ClipData.newPlainText("CinePulse SubDL diagnostic",copy));
+        Toast.makeText(this,"Diagnostic copied — no API key included",Toast.LENGTH_LONG).show();
+    }
+    private void showCopyableReport(String title,String text){
+        new AlertDialog.Builder(this).setTitle(title).setMessage(text)
+            .setNegativeButton("Close",null)
+            .setPositiveButton("Copy diagnostic",(dialog,which)->copyDiagnostic(text))
+            .show();
+    }
     private void configureKey(){
         EditText input=new EditText(this);input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
         input.setHint("Paste your personal SubDL API key");
         input.setTextColor(Color.BLACK);
-        new AlertDialog.Builder(this).setTitle("Connect SubDL").setMessage(
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Connect SubDL").setMessage(
             "Create a free key in your own SubDL account at subdl.com/api-doc. This is separate from your CinePulse Cloudflare token.")
             .setView(input).setNegativeButton("Cancel",null)
             .setNeutralButton("Clear key",(d,w)->{providerKey.clear();info("SubDL key cleared from phone.");})
@@ -203,7 +234,9 @@ public final class SubtitleLibraryActivity extends Activity {
                 String key=input.getText().toString().trim();input.setText("");
                 work("Securing your SubDL key",()->{providerKey.save(key);return true;},
                     v->info("SubDL key saved securely. Search for a movie."));
-            }).show();
+            }).create();
+        dialog.setOnDismissListener(d->getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE));
+        dialog.show();
     }
     private void showIdeas(){
         List<String> all=new ArrayList<>();Collections.addAll(all,IDEAS);

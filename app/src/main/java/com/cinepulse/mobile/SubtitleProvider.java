@@ -55,7 +55,8 @@ final class SubtitleProvider {
         c.setInstanceFollowRedirects(false);
         c.setConnectTimeout(12000);c.setReadTimeout(30000);
         c.setRequestProperty("Accept",isApi?"application/json":"application/octet-stream");
-        c.setRequestProperty("User-Agent","CinePulseAndroid/0.1.8");
+        c.setRequestProperty("User-Agent","CinePulseAndroid/0.1.9");
+        if(isApi && apiKey!=null && !apiKey.trim().isEmpty())c.setRequestProperty("Authorization","Bearer "+apiKey.trim());
         // SubDL free search requires api_key as documented. Never log or copy URL containing it.
         try {
             int code=c.getResponseCode();
@@ -108,7 +109,34 @@ final class SubtitleProvider {
                 p=uri.getRawPath();
             }catch(Exception ignored){return "";}
         }
+        if(p.startsWith("subtitle/"))p="/"+p;
         return validPath(p)?p:"";
+    }
+    private static boolean safeId(String candidate){
+        return candidate!=null && candidate.length()>=2 && candidate.length()<=96 &&
+            candidate.matches("[A-Za-z0-9_-]+");
+    }
+    /** Prefer the official v2 ID download route when a v1 path is unavailable.
+     * No URL or host is ever accepted from the response for this route.
+     */
+    private static String fallbackId(JSONObject record){
+        String n=record.optString("n_id","");
+        if(n.isEmpty())n=record.optString("nId","");
+        if(n.isEmpty())n=record.optString("subtitle_id","");
+        return safeId(n)?"v2:"+n:"";
+    }
+    private static String canonicalDownload(JSONObject record,JSONObject parent){
+        String path=normalizeDownloadPath(record.optString("url",""));
+        if(!path.isEmpty())return path;
+        // V1 unpack_files can identify exact raw file without a usable URL.
+        if(parent!=null){
+            String n=parent.optString("n_id",parent.optString("nId",""));
+            String file=record.optString("file_n_id","");
+            if(safeId(n)&&safeId(file))return "/subtitle/"+n+"/"+file;
+            String backup=fallbackId(parent);
+            if(!backup.isEmpty())return backup;
+        }
+        return fallbackId(record);
     }
     static boolean sameLanguage(String actual,String wanted){
         if(actual==null||actual.trim().isEmpty())return true; // Parent API search already filters language.
@@ -153,7 +181,7 @@ final class SubtitleProvider {
                 if(!isSrt){badFormats++;continue;}
                 String subLanguage=file.optString("language",entry.optString("language",""));
                 if(!sameLanguage(subLanguage,language)){badLanguages++;continue;}
-                String path=normalizeDownloadPath(file.optString("url",""));
+                String path=canonicalDownload(file,entry);
                 if(path.isEmpty()){badLinks++;continue;}
                 JSONObject hit=new JSONObject();
                 try{
@@ -167,7 +195,7 @@ final class SubtitleProvider {
             // parent pack fallback, even if an unpacked SRT is present. This avoids false zeros.
             String topLanguage=entry.optString("language",entry.optString("lang",""));
             if(!sameLanguage(topLanguage,language)){badLanguages++;continue;}
-            String path=normalizeDownloadPath(entry.optString("url",""));
+            String path=canonicalDownload(entry,null);
             if(!path.isEmpty()){
                 if(included.add(path)){
                     try{
@@ -200,9 +228,18 @@ final class SubtitleProvider {
         return clean.length()>max?clean.substring(0,max):clean;
     }
     static boolean validPath(String p){
-        if(p==null||p.length()>200||!p.startsWith("/subtitle/")||p.contains("..")||p.contains("?")
-            ||p.contains("#")||p.contains("\\")||p.contains("//"))return false;
-        return p.matches("/subtitle/[A-Za-z0-9._/-]+");
+        if(p==null||p.length()>1000||!p.startsWith("/subtitle/")||p.contains("..")||p.contains("?")
+            ||p.contains("#")||p.contains("\\")||p.contains("//")||p.contains(" ")||
+            p.indexOf('\r')>=0||p.indexOf('\n')>=0)return false;
+        if(!p.matches("/subtitle/[A-Za-z0-9._~/%+-]+"))return false;
+        // Permit URL-encoded filenames but reject malformed percent escapes and encoded traversal.
+        if(p.contains("%")){
+            if(!p.matches("(?:[^%]|%[0-9A-Fa-f]{2})+"))return false;
+            String q=p.toLowerCase(Locale.ROOT);
+            if(q.contains("%2f")||q.contains("%5c")||q.contains("%2e")||q.contains("%00")||q.contains("%3f")
+                ||q.contains("%23"))return false;
+        }
+        return true;
     }
     private static Srt parseSrt(byte[] bytes) throws Exception{
         if(bytes.length<80||bytes.length>MAX_SRT)throw new IOException("SRT must be 80 bytes to 2 MiB.");
@@ -220,8 +257,22 @@ final class SubtitleProvider {
     }
     static Srt parseBytes(byte[] bytes) throws Exception{return parseSrt(bytes);}
     static Srt download(String path) throws Exception{
-        if(!validPath(path))throw new SecurityException("Untrusted subtitle download path.");
-        byte[] data=fetch(new URL("https://dl.subdl.com"+path),MAX_WIRE,null,false);
+        return download(path,null);
+    }
+    static Srt download(String path,String apiKey) throws Exception{
+        byte[] data;
+        if(path!=null && path.startsWith("v2:")){
+            String id=path.substring(3);
+            if(!safeId(id))throw new SecurityException("SubDL subtitle ID is invalid.");
+            if(apiKey==null||apiKey.trim().length()<8)
+                throw new IOException("SubDL ID downloads need your saved API key.");
+            // Official v2 endpoint requests the complete archive; it may have multiple files.
+            String endpoint="https://api.subdl.com/api/v2/subtitles/"+id+"/download?format=zip";
+            data=fetchV2(new URL(endpoint),apiKey);
+        }else{
+            if(!validPath(path))throw new SecurityException("Untrusted subtitle download path.");
+            data=fetch(new URL("https://dl.subdl.com"+path),MAX_WIRE,null,false);
+        }
         if(data.length>=4&&data[0]=='P'&&data[1]=='K'){
             try(ZipInputStream z=new ZipInputStream(new ByteArrayInputStream(data))){
                 int entries=0;ZipEntry entry;
@@ -238,8 +289,44 @@ final class SubtitleProvider {
                     }
                 }
             }
-            throw new IOException("No valid .srt entry found in subtitle ZIP.");
+            throw new IOException("SubDL archive has no SRT (it may only contain ASS/SUB). Choose another subtitle release.");
         }
         return parseSrt(data);
+    }
+    private static byte[] fetchV2(URL endpoint,String key) throws Exception{
+        URL current=endpoint;
+        for(int turn=0;turn<3;turn++){
+            String host=current.getHost().toLowerCase(Locale.ROOT);
+            if(!"https".equalsIgnoreCase(current.getProtocol())||current.getPort()!=-1||
+                !("api.subdl.com".equals(host)||"dl.subdl.com".equals(host)))
+                throw new SecurityException("SubDL redirected to an untrusted download host.");
+            HttpURLConnection conn=(HttpURLConnection)current.openConnection();
+            conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(12000);conn.setReadTimeout(30000);
+            conn.setRequestProperty("Accept","application/zip,application/octet-stream,*/*");
+            conn.setRequestProperty("User-Agent","CinePulseAndroid/0.1.9");
+            if("api.subdl.com".equals(host))conn.setRequestProperty("Authorization","Bearer "+key);
+            try{
+                int status=conn.getResponseCode();
+                if(status>=300&&status<400){
+                    String location=conn.getHeaderField("Location");
+                    if(location==null)throw new IOException("SubDL returned redirect without a target.");
+                    current=new URL(current,location);
+                    continue;
+                }
+                if(status==401||status==403)throw new IOException("SubDL denied subtitle ID download; check account quota.");
+                if(status==429)throw new IOException("SubDL rate limit reached.");
+                if(status!=200)throw new IOException("SubDL ID download returned HTTP "+status);
+                try(InputStream in=conn.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){
+                    byte[] buf=new byte[8192];int n,total=0;
+                    while((n=in.read(buf))!=-1){
+                        if((total+=n)>MAX_WIRE)throw new IOException("Subtitle response too large.");
+                        out.write(buf,0,n);
+                    }
+                    return out.toByteArray();
+                }
+            }finally{conn.disconnect();}
+        }
+        throw new IOException("Too many SubDL download redirects.");
     }
 }

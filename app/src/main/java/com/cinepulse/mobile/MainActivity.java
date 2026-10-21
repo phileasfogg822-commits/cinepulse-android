@@ -392,13 +392,22 @@ public final class MainActivity extends Activity {
         content.addView(action("← All movies",()->{openedProject=null;renderHome();},false),fullWithBottom(15));
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
         summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
-        summary.addView(text(status.equals("ready")?"Original JSON and both MP3 files are ready. One tap downloads the verified package into Downloads/CinePulse.":
+        summary.addView(text(status.equals("ready")?"Project JSON, original movie SRT and English/Urdu MP3s are ready. Download four primary files into Downloads/CinePulse.":
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
         space(summary,12);
         if(status.equals("ready")){
-            summary.addView(action("Download JSON + English/Urdu MP3s",()->startPackageDownload(id),true));
+            summary.addView(action("Download 4 files: JSON + 2 MP3 + source SRT",()->startPackageDownload(id),true));
             space(summary,7);
             summary.addView(action("Verify and share complete ZIP (WhatsApp)",()->shareProjectZip(id),false));
+        }
+        if("processing".equals(status)||"needs_review".equals(status)){
+            space(summary,7);
+            final boolean paused=project.optBoolean("paused",false);
+            summary.addView(action(paused?"▶ Resume only this movie":"⏸ Pause only this movie",
+                ()->confirmMoviePause(id,!paused),false));
+            summary.addView(text(paused?
+                "This movie is paused. Its queued stages will not be claimed, but other movies on the same Muse worker continue.":
+                "Pauses only this movie ID, not the entire Muse worker. An active leased task may finish first.",12,MUTED,false));
         }
         int target=project.optInt("targetMinutes",-1);
         space(summary,8);
@@ -444,9 +453,13 @@ public final class MainActivity extends Activity {
     }
     private void renderRecoveryControls(String projectId,JSONObject document){
         LinearLayout c=card();content.addView(c,fullWithBottom(14));
-        c.addView(text("RECOVER FAILED MOVIE",13,GREEN,true));space(c,7);
-        c.addView(text("Only a terminal needs_review project can be retried. For defective audio, regenerate MP3 first; restarting only SRT reuses the bad file.",13,MUTED,false));
+        c.addView(text("RETRY THIS MOVIE’S FAILED STAGE",13,GREEN,true));space(c,7);
+        c.addView(text("Create a NEW task for the failed stage of this movie, preserving finished digest, narrations and all unrelated movies. If MP3 audio itself is damaged, regenerate MP3 before SRT.",13,MUTED,false));
         space(c,8);
+        if(!"needs_review".equals(document.optJSONObject("project").optString("status"))){
+            c.addView(text("Available when this movie has a terminal failed stage (needs_review). It cannot restart a currently executing task.",12,MUTED,false));
+            return;
+        }
         JSONObject recovery=document.optJSONObject("recoveryCapabilities");
         if(recovery==null){
             c.addView(text("Retry status: unavailable until Cloudflare exposes /v1/projects/:id/recovery",12,0xFFFFC47E,true));
@@ -478,6 +491,20 @@ public final class MainActivity extends Activity {
         }
         space(c,9);
         c.addView(text("A request is not a job claim: the existing assigned Muse worker must be online and polling to execute it. No other movie is restarted.",11,MUTED,false));
+    }
+    private void confirmMoviePause(String projectId,boolean pause){
+        if(!SecurityRules.validUuid(projectId)){showError("Invalid movie ID");return;}
+        new AlertDialog.Builder(this).setTitle(pause?"Pause this movie only?":"Resume this movie?")
+            .setMessage(pause?
+                "No NEW CinePulse tasks for this movie will be claimed after the backend records the pause. An already active Muse task may finish. Every OTHER movie assigned to the worker stays runnable.":
+                "Allow this same project ID to continue its remaining queued stages using its original Muse worker. No earlier stages will restart.")
+            .setNegativeButton("Cancel",null)
+            .setPositiveButton(pause?"Pause movie":"Resume movie",(d,w)->
+                task("Updating this movie only",()->api.toggleMovie(projectId,pause),response->{
+                    String note=response.optString("message","Movie state updated");
+                    Toast.makeText(this,note,Toast.LENGTH_LONG).show();
+                    loadDetail(projectId);
+                })).show();
     }
     private void confirmRecovery(String projectId,String step,JSONObject option){
         String description=option.optString("label",TimelineMetrics.stageLabel(step));
@@ -790,7 +817,7 @@ public final class MainActivity extends Activity {
         }
     }
     private void downloadProject(String id){
-        task("Downloading 3 files to Downloads/CinePulse",()->{
+        task("Downloading 4 files to Downloads/CinePulse",()->{
             // Fresh signed links on every click; verify all files before publishing any.
             JSONObject detail=api.project(id),urls=api.downloads(id);
             return new VerifiedDownloads(getContentResolver(),getCacheDir()).downloadToDownloads(

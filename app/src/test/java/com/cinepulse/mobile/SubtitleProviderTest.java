@@ -174,4 +174,19 @@ public class SubtitleProviderTest {
         assertEquals("v2:xyzSubtitle987",r.hits.getJSONObject(0).getString("path"));
     }
 
+    @Test public void realDownloadSelfTestNeverLeaksOrCallsNetworkWhenKeyMissing(){
+        SubtitleProvider.LiveTest result=SubtitleProvider.testRealDownload(null);
+        assertNull(result.srt);assertNull(result.hit);
+        assertTrue(result.report.contains("No saved SubDL API key"));
+        assertTrue(result.report.contains("Inception"));
+    }
+    @Test public void searchResultIncludesSanitizedSchemaOnly() throws Exception {
+        JSONObject v2=new JSONObject().put("data",new JSONObject()
+            .put("subtitles",new org.json.JSONArray().put(new JSONObject()
+                .put("n_id","safeIdentifier1").put("download_url","/unsupported/new_format"))));
+        SubtitleProvider.SearchResult result=SubtitleProvider.parseSearchResponse(v2,"Inception","EN");
+        assertEquals(1,result.hits.length());
+        assertEquals("v2:safeIdentifier1",result.hits.getJSONObject(0).optString("path"));
+    }
+
 }

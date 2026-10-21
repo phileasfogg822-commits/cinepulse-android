@@ -148,12 +148,12 @@ final class VerifiedDownloads {
             for(int i=0;i<kinds.length;i++) {
                 String kind=kinds[i];
                 progress.update("Downloading and verifying "+SecurityRules.expectedName(kind)+" ("+(i+1)+"/4)");
-                JSONObject url=files.getJSONObject(kind), metadata=known.get(kind);
+                JSONObject metadata=known.get(kind);
                 if(metadata==null)throw new SecurityException("Cloudflare has no "+kind+" file manifest");
                 if("source_srt".equals(kind)&&!files.has(kind)){
                     staged[i]=sourceSrtFromVerifiedJson(staged[0],projectId,metadata);
                 }else{
-                    staged[i]=receive(url.getString("url"),projectId,kind,metadata.getLong("bytes"),metadata.getString("sha256"));
+                    staged[i]=receive(files.getJSONObject(kind).getString("url"),projectId,kind,metadata.getLong("bytes"),metadata.getString("sha256"));
                 }
             }
             if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

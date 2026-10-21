@@ -18,12 +18,18 @@ final class SecureTokenStore {
     private static final String ALIAS = "CinePulse.Mobile.Token.v1";
     private static final String PREF = "cinepulse_secure_session_v1";
     private final SharedPreferences prefs;
-    SecureTokenStore(Context context) { prefs=context.getSharedPreferences(PREF, Context.MODE_PRIVATE); }
+    private final String alias;
+    SecureTokenStore(Context context) {this(context,false);}
+    /** Separate Keystore namespace for the optional subtitle-provider API key. */
+    SecureTokenStore(Context context, boolean subtitleProvider) {
+        alias=subtitleProvider?"CinePulse.Mobile.SubtitleProvider.v1":ALIAS;
+        prefs=context.getSharedPreferences(subtitleProvider?"cinepulse_subdl_session_v1":PREF,Context.MODE_PRIVATE);
+    }
     private SecretKey key() throws Exception {
         KeyStore store=KeyStore.getInstance("AndroidKeyStore"); store.load(null);
-        if (store.containsAlias(ALIAS)) return (SecretKey)store.getKey(ALIAS,null);
+        if (store.containsAlias(alias)) return (SecretKey)store.getKey(alias,null);
         KeyGenerator generator=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
-        generator.init(new KeyGenParameterSpec.Builder(ALIAS,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT)
+        generator.init(new KeyGenParameterSpec.Builder(alias,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setKeySize(256).setRandomizedEncryptionRequired(true).build());
         return generator.generateKey();

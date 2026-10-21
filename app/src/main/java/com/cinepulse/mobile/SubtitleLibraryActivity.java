@@ -137,7 +137,7 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void buildUi(){
         root=column();root.setBackgroundColor(BG);setContentView(root);
-        TextView heading=label("SRT LIBRARY",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
+        TextView heading=label("SRT LIBRARY  •  v0.2.0",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
         TextView sub=label("Search • collect hundreds locally • select a batch for Muse",12,MUTED,false);
         sub.setPadding(dp(18),0,dp(18),dp(12));add(root,sub);
         ScrollView scroll=new ScrollView(this);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -145,6 +145,7 @@ public final class SubtitleLibraryActivity extends Activity {
 
         LinearLayout keyBox=box(container);
         add(keyBox,label("SubDL provider connection",16,WHITE,true));
+        add(keyBox,label("Provider engine: API v2 first, IMDb matching, then legacy v1 fallback. Build v0.2.0.",12,GREEN,false));
         add(keyBox,label("Free personal API key required. Stored encrypted in Android Keystore; not sent to Cloudflare. Provider usage quotas apply.",12,MUTED,false));
         button(keyBox,"Set / replace SubDL API key",this::configureKey);
         button(keyBox,"Test SubDL search connection (Inception, English)",()->{

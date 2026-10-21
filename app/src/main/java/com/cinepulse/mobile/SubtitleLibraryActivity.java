@@ -207,8 +207,8 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void copyDiagnostic(String value){
         String copy=value.replaceAll("(?i)subdl_[A-Za-z0-9_-]{12,}","[REDACTED]")
-            .replaceAll("(?i)api_key=[^&\s]+","api_key=[REDACTED]")
-            .replaceAll("(?i)Bearer\s+\S+","Bearer [REDACTED]");
+            .replaceAll("(?i)api_key=[^&\\s]+","api_key=[REDACTED]")
+            .replaceAll("(?i)Bearer\\s+\\S+","Bearer [REDACTED]");
         ClipboardManager clipboard=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
         if(clipboard==null){err("Clipboard unavailable");return;}
         clipboard.setPrimaryClip(ClipData.newPlainText("CinePulse SubDL diagnostic",copy));

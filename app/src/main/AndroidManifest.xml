@@ -12,6 +12,7 @@
         android:icon="@drawable/ic_cinepulse"
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
+        <activity android:name=".SubtitleLibraryActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

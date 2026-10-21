@@ -49,7 +49,8 @@ final class VerifiedDownloads {
     private File receive(String link,String projectId,String kind,long length,String digest) throws Exception {
         if(!SecurityRules.validDownloadUrl(link,projectId,kind))
             throw new SecurityException("Cloudflare supplied an untrusted download link for "+kind);
-        long max=kind.equals("export_json")?SecurityRules.MAX_JSON_BYTES:SecurityRules.MAX_MP3_BYTES;
+        long max=kind.equals("export_json")?SecurityRules.MAX_JSON_BYTES:
+            kind.equals("source_srt")?SecurityRules.MAX_SRT_BYTES:SecurityRules.MAX_MP3_BYTES;
         if(length<=0||length>max||digest==null||!digest.matches("(?i)[0-9a-f]{64}"))
             throw new SecurityException("Missing/invalid file size or SHA-256 for "+kind);
         File temp=File.createTempFile("cp-", ".part",cache);
@@ -97,7 +98,7 @@ final class VerifiedDownloads {
     /**
      * On Android 10+ use MediaStore.Downloads with pending files, no storage permission.
      * Android 8/9 requires WRITE_EXTERNAL_STORAGE permission granted by the activity.
-     * All three files are verified BEFORE any user-visible output is created.
+     * All four primary files are verified BEFORE any user-visible output is created.
      */
     String downloadToDownloads(String projectId,JSONObject project,JSONObject links,Progress progress) throws Exception {
         if(!SecurityRules.validUuid(projectId))throw new SecurityException("Invalid project ID");
@@ -106,7 +107,7 @@ final class VerifiedDownloads {
         if(!"ready".equals(p.optString("status")))throw new IllegalStateException("Project is not ready for download");
         Map<String,JSONObject> known=manifest(project);
         JSONObject files=links.getJSONObject("files");
-        String[] kinds={"export_json","english_mp3","urdu_mp3"};
+        String[] kinds={"export_json","english_mp3","urdu_mp3","source_srt"};
         File[] staged=new File[kinds.length];
         String folder=SecurityRules.safeFolderName(p.optString("title"))+"-"+SecurityRules.shortId(projectId);
         String relative=Environment.DIRECTORY_DOWNLOADS+"/CinePulse/"+folder+"/";
@@ -116,7 +117,7 @@ final class VerifiedDownloads {
         try {
             for(int i=0;i<kinds.length;i++) {
                 String kind=kinds[i];
-                progress.update("Downloading and verifying "+SecurityRules.expectedName(kind)+" ("+(i+1)+"/3)");
+                progress.update("Downloading and verifying "+SecurityRules.expectedName(kind)+" ("+(i+1)+"/4)");
                 JSONObject url=files.getJSONObject(kind), metadata=known.get(kind);
                 if(metadata==null)throw new SecurityException("Cloudflare has no "+kind+" file manifest");
                 staged[i]=receive(url.getString("url"),projectId,kind,metadata.getLong("bytes"),metadata.getString("sha256"));
@@ -126,7 +127,7 @@ final class VerifiedDownloads {
                     String kind=kinds[i],name=SecurityRules.expectedName(kind);
                     ContentValues values=new ContentValues();
                     values.put(MediaStore.MediaColumns.DISPLAY_NAME,name);
-                    values.put(MediaStore.MediaColumns.MIME_TYPE,kind.equals("export_json")?"application/json":"audio/mpeg");
+                    values.put(MediaStore.MediaColumns.MIME_TYPE,kind.equals("export_json")?"application/json":kind.equals("source_srt")?"application/x-subrip":"audio/mpeg");
                     values.put(MediaStore.MediaColumns.RELATIVE_PATH,relative);
                     values.put(MediaStore.MediaColumns.IS_PENDING,1);
                     Uri destination=resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,values);
@@ -136,7 +137,7 @@ final class VerifiedDownloads {
                         if(out==null)throw new IOException("Cannot open "+name+" for saving");
                         copy(staged[i],out);
                     }
-                    progress.update("Saved "+name+" ("+(i+1)+"/3)");
+                    progress.update("Saved "+name+" ("+(i+1)+"/4)");
                 }
                 // Publish only after the entire package has been saved successfully.
                 for(Uri uri:createdUris) {
@@ -159,10 +160,10 @@ final class VerifiedDownloads {
                     if(!destination.createNewFile())throw new IOException("Could not create "+destination.getName());
                     createdFiles.add(destination);
                     try(OutputStream out=new FileOutputStream(destination)) {copy(staged[i],out);}
-                    progress.update("Saved "+destination.getName()+" ("+(i+1)+"/3)");
+                    progress.update("Saved "+destination.getName()+" ("+(i+1)+"/4)");
                 }
             }
-            return "Downloaded and verified 3 files in Downloads/CinePulse/"+folder+"/. Open My Files → Internal storage → Download → CinePulse to view or transfer the folder to Windows.";
+            return "Downloaded and verified 4 primary files (including source SRT) in Downloads/CinePulse/"+folder+"/. Open My Files → Internal storage → Download → CinePulse to view or transfer the folder to Windows.";
         }catch(Exception ex) {
             for(Uri uri:createdUris)try{resolver.delete(uri,null,null);}catch(Exception ignored){}
             for(File file:createdFiles)file.delete();
@@ -215,16 +216,16 @@ final class VerifiedDownloads {
         if(!projectId.equals(p.optString("id"))||!"ready".equals(p.optString("status")))
             throw new SecurityException("Project must be ready and match downloaded manifest");
         String[] kinds={"export_json","english_mp3","urdu_mp3"};
-        String[] names={"CinePulse_Project.json","CinePulse_English.mp3","CinePulse_Urdu.mp3"};
-        File[] temp=new File[3];
+        String[] names={"CinePulse_Project.json","CinePulse_English.mp3","CinePulse_Urdu.mp3","CinePulse_Source.srt"};
+        File[] temp=new File[kinds.length];
         File zip=null;
         try{
             Map<String,JSONObject> assets=manifest(detail);
             JSONObject linksByKind=links.getJSONObject("files");
-            for(int i=0;i<3;i++){
+            for(int i=0;i<kinds.length;i++){
                 JSONObject meta=assets.get(kinds[i]);
                 if(meta==null)throw new IOException("Missing Cloudflare "+kinds[i]+" manifest");
-                progress.update("Verifying "+names[i]+" ("+(i+1)+"/3)");
+                progress.update("Verifying "+names[i]+" ("+(i+1)+"/4)");
                 temp[i]=receive(linksByKind.getJSONObject(kinds[i]).getString("url"),
                     projectId,kinds[i],meta.getLong("bytes"),meta.getString("sha256"));
             }
@@ -237,13 +238,17 @@ final class VerifiedDownloads {
             JSONObject identity=exported.optJSONObject("project");
             if(identity==null || !projectId.equals(identity.optString("id")))
                 throw new SecurityException("Exported JSON project ID does not match requested movie");
+            String exportedSource=exported.optString("sourceSrt","");
+            String downloadedSource=new String(java.nio.file.Files.readAllBytes(temp[3].toPath()),StandardCharsets.UTF_8).trim();
+            if(exportedSource.trim().length()>0&&!exportedSource.trim().equals(downloadedSource))
+                throw new SecurityException("Source SRT differs from the exported JSON; package cannot be shared safely.");
             PackageAudit.Result audit=PackageAudit.inspect(exported,measuredMp3Seconds(temp[1]),measuredMp3Seconds(temp[2]));
             String title=SecurityRules.safeFolderName(p.optString("title"));
             String name="CinePulse-"+title+"-"+SecurityRules.shortId(projectId)+".zip";
             zip=File.createTempFile("cinepulse-share-", ".zip",cache);
             progress.update("Creating shareable ZIP and QA report");
             try(ZipOutputStream out=new ZipOutputStream(new FileOutputStream(zip))){
-                for(int i=0;i<3;i++)zipFile(out,names[i],temp[i]);
+                for(int i=0;i<kinds.length;i++)zipFile(out,names[i],temp[i]);
                 JSONObject subtitles=exported.optJSONObject("narrationSrts");
                 if(subtitles!=null){
                     String en=inner(subtitles.opt("english"),"srt");

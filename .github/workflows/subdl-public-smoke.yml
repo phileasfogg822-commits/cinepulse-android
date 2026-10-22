@@ -27,8 +27,16 @@ jobs:
               if not names:raise RuntimeError('no SRT in archive')
               src=z.read(names[0])
               if b'-->' not in src:raise RuntimeError('SRT has no timecodes')
+              with open('subdl_verified_real.srt','wb') as out:out.write(src)
               print('PASS: downloaded a real SRT from SubDL public CDN',len(src),'bytes')
           except Exception as e:
               print('INCONCLUSIVE/FAIL: Documented public example not downloadable:',type(e).__name__,str(e)[:200])
               sys.exit(1)
           PY
+      - name: Preserve downloaded SRT as short-lived verification artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SubDL-Real-SRT-Verification
+          path: subdl_verified_real.srt
+          retention-days: 1
+          if-no-files-found: error

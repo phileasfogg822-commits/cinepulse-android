@@ -1,0 +1,34 @@
+name: SubDL public download smoke check
+on:
+  push:
+    paths:
+      - '.github/workflows/subdl-public-smoke.yml'
+  workflow_dispatch:
+jobs:
+  public-download-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Check official documented subtitle archive (no credentials)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import urllib.request,zipfile,io,sys
+          url='https://dl.subdl.com/subtitle/3197651-3213944.zip'
+          request=urllib.request.Request(url,headers={'User-Agent':'CinePulse-Verifier/1.0'})
+          try:
+              with urllib.request.urlopen(request,timeout=25) as r:
+                  b=r.read(5*1024*1024+1)
+                  print('HTTP status:',r.status,'content-type:',r.headers.get('Content-Type'),'bytes:',len(b))
+              if len(b)>5*1024*1024:raise RuntimeError('archive too large')
+              z=zipfile.ZipFile(io.BytesIO(b))
+              names=[name for name in z.namelist() if name.lower().endswith('.srt')]
+              print('Contained SRT files:',len(names))
+              if not names:raise RuntimeError('no SRT in archive')
+              src=z.read(names[0])
+              if b'-->' not in src:raise RuntimeError('SRT has no timecodes')
+              print('PASS: downloaded a real SRT from SubDL public CDN',len(src),'bytes')
+          except Exception as e:
+              print('INCONCLUSIVE/FAIL: Documented public example not downloadable:',type(e).__name__,str(e)[:200])
+              sys.exit(1)
+          PY

@@ -5,6 +5,15 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.ClipboardManager;
 import android.content.ClipData;
+import android.database.Cursor;
+import android.provider.OpenableColumns;
+import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -44,6 +53,7 @@ import java.util.function.Consumer;
  * Bulk network work runs while screen is open, not as an invisible background task.
  */
 public final class SubtitleLibraryActivity extends Activity {
+    private static final int PICK_LIBRARY_SRT=717;
     private static final int BG=0xFF0B1021,CARD=0xFF151C32,STROKE=0xFF27314A,
         WHITE=0xFFF8FAFF,MUTED=0xFFA9B5D0,GREEN=0xFF39D3B2,PURPLE=0xFF8578FF;
     private static final String[] IDEAS={
@@ -139,7 +149,7 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void buildUi(){
         root=column();root.setBackgroundColor(BG);setContentView(root);
-        TextView heading=label("SRT LIBRARY  •  v0.2.1",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
+        TextView heading=label("SRT LIBRARY  •  v0.2.2",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
         TextView sub=label("Search • collect hundreds locally • select a batch for Muse",12,MUTED,false);
         sub.setPadding(dp(18),0,dp(18),dp(12));add(root,sub);
         ScrollView scroll=new ScrollView(this);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -147,7 +157,7 @@ public final class SubtitleLibraryActivity extends Activity {
 
         LinearLayout keyBox=box(container);
         add(keyBox,label("SubDL provider connection",16,WHITE,true));
-        add(keyBox,label("Provider engine: API v2 first, IMDb matching, then legacy v1 fallback. Build v0.2.1.",12,GREEN,false));
+        add(keyBox,label("Provider engine: API v2 first, IMDb matching, then legacy v1 fallback. Build v0.2.2.",12,GREEN,false));
         add(keyBox,label("Free personal API key required. Stored encrypted in Android Keystore; not sent to Cloudflare. Provider usage quotas apply.",12,MUTED,false));
         button(keyBox,"Set / replace SubDL API key",this::configureKey);
         button(keyBox,"Test SubDL search connection (Inception, English)",()->{
@@ -176,6 +186,14 @@ public final class SubtitleLibraryActivity extends Activity {
         });
         button(keyBox,"Provider documentation",()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(SubtitleProvider.DOCS))));
 
+        LinearLayout alternate=box(container);
+        add(alternate,label("ALTERNATIVE PROVIDER — OpenSubtitles",16,WHITE,true));
+        add(alternate,label("Browse titles at OpenSubtitles, download an SRT or ZIP to Android, then import it directly into this library. No SubDL API key is required for this route; the site's download limits still apply.",12,MUTED,false));
+        button(alternate,"Open OpenSubtitles subtitle catalog",
+            ()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://www.opensubtitles.com/"))));
+        button(alternate,"Import downloaded SRT/ZIP files into CinePulse",
+            this::chooseLocalSubtitles);
+        add(alternate,label("Import validates subtitle cues and stores files privately. You can select multiple SRT files or ZIP archives, then queue chosen movies to Muse using the existing batch controls.",11,MUTED,false));
         LinearLayout finder=box(container);
         add(finder,label("Find movie subtitles",17,WHITE,true));
         query=new EditText(this);query.setSingleLine(true);query.setTextColor(WHITE);query.setHintTextColor(MUTED);
@@ -219,6 +237,114 @@ public final class SubtitleLibraryActivity extends Activity {
             .setNegativeButton("Close",null)
             .setPositiveButton("Copy diagnostic",(dialog,which)->copyDiagnostic(text))
             .show();
+    }
+    private void chooseLocalSubtitles(){
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true);
+        try{startActivityForResult(intent,PICK_LIBRARY_SRT);}
+        catch(Exception e){err("Android document picker unavailable: "+e.getMessage());}
+    }
+    private static byte[] readLimited(InputStream in,int max) throws Exception{
+        try(ByteArrayOutputStream out=new ByteArrayOutputStream()){
+            byte[] buffer=new byte[8192];int n,total=0;
+            while((n=in.read(buffer))!=-1){
+                total+=n;
+                if(total>max)throw new IOException("Subtitle file exceeds maximum safe size");
+                out.write(buffer,0,n);
+            }
+            return out.toByteArray();
+        }
+    }
+    private String displayName(Uri uri){
+        String fallback=uri.getLastPathSegment();
+        if(fallback==null)fallback="Imported subtitle";
+        try(Cursor cursor=getContentResolver().query(uri,new String[]{OpenableColumns.DISPLAY_NAME},null,null,null)){
+            if(cursor!=null&&cursor.moveToFirst()){
+                int col=cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if(col>=0&&!cursor.isNull(col))fallback=cursor.getString(col);
+            }
+        }catch(Exception ignored){}
+        return fallback.length()>150?fallback.substring(0,150):fallback;
+    }
+    private int importEntry(String movieTitle,String filename,byte[] raw) throws Exception{
+        SubtitleProvider.Srt subtitle=SubtitleProvider.parseBytes(raw);
+        String title=movieTitle.replaceFirst("(?i)\\.srt$","")
+            .replaceFirst("(?i)\\.zip$","")
+            .replace('.', ' ').replace('_',' ').trim();
+        if(title.isEmpty())title="Imported subtitle";
+        JSONObject meta=new JSONObject()
+            .put("title",title)
+            .put("release",filename)
+            .put("language","EN")
+            .put("path","")
+            .put("provider","OpenSubtitles / local import");
+        shelf.save(meta,subtitle);
+        return 1;
+    }
+    private int importFile(Uri uri) throws Exception{
+        String filename=displayName(uri);
+        byte[] bytes;
+        try(InputStream in=getContentResolver().openInputStream(uri)){
+            if(in==null)throw new IOException("Android could not open chosen file");
+            bytes=readLimited(in,5*1024*1024);
+        }
+        boolean zipped=bytes.length>3&&bytes[0]=='P'&&bytes[1]=='K';
+        if(zipped){
+            int saved=0,entries=0;
+            try(ZipInputStream archive=new ZipInputStream(new ByteArrayInputStream(bytes))){
+                ZipEntry z;
+                while((z=archive.getNextEntry())!=null){
+                    if(++entries>50)throw new IOException("Subtitle archive has too many entries");
+                    if(z.isDirectory()||!z.getName().toLowerCase(Locale.ROOT).endsWith(".srt"))continue;
+                    String entryName=z.getName();
+                    // Read directly from ZIP stream; never trust archive paths or extract them onto disk.
+                    String simple=entryName.substring(entryName.lastIndexOf('/')+1);
+                    byte[] subtitle=readLimited(archive,SecurityRules.MAX_SRT_BYTES);
+                    try{saved+=importEntry(simple,simple,subtitle);}
+                    catch(Exception ignored){/* archive may contain nonstandard/invalid language files */}
+                    if(saved>=20)break;
+                }
+            }
+            if(saved==0)throw new IOException("ZIP contains no valid timed SRT subtitles");
+            return saved;
+        }
+        if(!filename.toLowerCase(Locale.ROOT).endsWith(".srt") &&
+            bytes.length>0 && !new String(bytes,StandardCharsets.UTF_8).contains("-->"))
+            throw new IOException("Choose an SRT or ZIP containing SRT files");
+        return importEntry(filename,filename,bytes);
+    }
+    @Override protected void onActivityResult(int request,int result,Intent data){
+        super.onActivityResult(request,result,data);
+        if(request!=PICK_LIBRARY_SRT||result!=RESULT_OK||data==null)return;
+        ArrayList<Uri> selected=new ArrayList<>();
+        ClipData clips=data.getClipData();
+        if(clips!=null)for(int i=0;i<Math.min(clips.getItemCount(),20);i++){
+            Uri uri=clips.getItemAt(i).getUri();
+            if(uri!=null)selected.add(uri);
+        }
+        else if(data.getData()!=null)selected.add(data.getData());
+        if(selected.isEmpty())return;
+        work("Importing and validating local subtitles",()->{
+            int succeeded=0;StringBuilder errors=new StringBuilder();
+            for(Uri uri:selected){
+                try{succeeded+=importFile(uri);}
+                catch(Exception failure){
+                    errors.append(displayName(uri)).append(": ")
+                        .append(failure.getMessage()==null?"Invalid SRT":failure.getMessage()).append("\n");
+                }
+            }
+            return new String[]{Integer.toString(succeeded),errors.toString()};
+        },summary->{
+            // reloadLibrary() schedules work; finish this completion callback first.
+            new AlertDialog.Builder(this).setTitle("Subtitle import finished")
+                .setMessage(summary[0]+" validated SRT(s) saved in CinePulse."+
+                    (summary[1].isEmpty()?"":"\n\nSkipped:\n"+summary[1])+
+                    "\n\nOpen My saved SRT files to select titles for Muse.")
+                .setPositiveButton("OK",null).show();
+            reloadLibrary();
+        });
     }
     private void configureKey(){
         EditText input=new EditText(this);input.setSingleLine(true);

@@ -150,85 +150,27 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void buildUi(){
         root=column();root.setBackgroundColor(BG);setContentView(root);
-        TextView heading=label("SRT LIBRARY  •  v0.2.4",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
-        TextView sub=label("Search • collect hundreds locally • select a batch for Muse",12,MUTED,false);
+        TextView heading=label("SRT DOWNLOADER  •  v0.2.5",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
+        TextView sub=label("Browse subtitle websites • save to Downloads • import SRT/ZIP",12,MUTED,false);
         sub.setPadding(dp(18),0,dp(18),dp(12));add(root,sub);
         ScrollView scroll=new ScrollView(this);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         container=column();container.setPadding(dp(15),dp(8),dp(15),dp(24));scroll.addView(container);
-
-        LinearLayout keyBox=box(container);
-        add(keyBox,label("SubDL provider connection",16,WHITE,true));
-        add(keyBox,label("Provider engine: API v2 first, IMDb matching, then legacy v1 fallback. Build v0.2.2.",12,GREEN,false));
-        add(keyBox,label("Free personal API key required. Stored encrypted in Android Keystore; not sent to Cloudflare. Provider usage quotas apply.",12,MUTED,false));
-        button(keyBox,"Set / replace SubDL API key",this::configureKey);
-        button(keyBox,"Test SubDL search connection (Inception, English)",()->{
-            work("Testing SubDL search",()->SubtitleProvider.searchDetailed(providerKey.load(),"Inception","EN"),result->{
-                results=result.hits;
-                resultSelection.clear();
-                renderResults();
-                info("Connection test: "+result.diagnostic);
-                showCopyableReport("SubDL search diagnostic",
-                    result.diagnostic+"\n\nNo API key, response IDs or full URLs are included.");
-            });
-        });
-        button(keyBox,"LIVE test: search, download and verify 1 Inception SRT",()->{
-            work("Testing actual SubDL subtitle download",()->{
-                SubtitleProvider.LiveTest test=SubtitleProvider.testRealDownload(providerKey.load());
-                if(test.srt!=null&&test.hit!=null){
-                    JSONObject saved=shelf.save(test.hit,test.srt);
-                    return test.report+"\nSaved locally: "+saved.optString("title","Inception")+
-                        " • "+saved.optInt("cues")+" cues.\n";
-                }
-                return test.report;
-            },report->{
-                reloadLibrary();
-                showCopyableReport("REAL SubDL download verification",report);
-            });
-        });
-        button(keyBox,"Provider documentation",()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(SubtitleProvider.DOCS))));
 
         LinearLayout browserBox=box(container);
         add(browserBox,label("SUBDL WEBSITE — MANUAL DOWNLOAD",16,WHITE,true));
         add(browserBox,label("Open the verified Inception English subtitle listing inside CinePulse. Tap a subtitle, download it, then import the SRT/ZIP from Android Downloads. No API key needed.",12,MUTED,false));
         button(browserBox,"Browse Inception (2010) English SRTs",()->openSubtitleBrowser("https://subdl.com/subtitle/sd2922/inception/english"));
         button(browserBox,"Open verified individual Inception subtitle",()->openSubtitleBrowser("https://subdl.com/s/info/e7iE3R6nMC"));
+        button(browserBox,"Try OpenSubtitles",()->openSubtitleBrowser("https://www.opensubtitles.com/"));
+        button(browserBox,"Try SubSource",()->openSubtitleBrowser("https://subsource.net/"));
         button(browserBox,"Import downloaded SRT / ZIP",this::chooseLocalSubtitles);
-        LinearLayout alternate=box(container);
-        add(alternate,label("ALTERNATIVE PROVIDER — OpenSubtitles",16,WHITE,true));
-        add(alternate,label("Browse titles at OpenSubtitles, download an SRT or ZIP to Android, then import it directly into this library. No SubDL API key is required for this route; the site's download limits still apply.",12,MUTED,false));
-        button(alternate,"Open OpenSubtitles subtitle catalog",
-            ()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://www.opensubtitles.com/"))));
-        button(alternate,"Import downloaded SRT/ZIP files into CinePulse",
-            this::chooseLocalSubtitles);
-        add(alternate,label("Import validates subtitle cues and stores files privately. You can select multiple SRT files or ZIP archives, then queue chosen movies to Muse using the existing batch controls.",11,MUTED,false));
-        LinearLayout finder=box(container);
-        add(finder,label("Find movie subtitles",17,WHITE,true));
-        query=new EditText(this);query.setSingleLine(true);query.setTextColor(WHITE);query.setHintTextColor(MUTED);
-        query.setHint("Search movie title (e.g. Arrival)");
-        add(finder,query);
-        language=new Spinner(this);
-        language.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,
-            new String[]{"English subtitles (EN)","Urdu subtitles (UR)"}));
-        add(finder,language);
-        button(finder,"Search SubDL",()->search(query.getText().toString()));
-        button(finder,"Surprise me: movie ideas",this::showIdeas);
-        button(finder,"Collect random SRTs in bulk (5 / 10 / 20)",this::bulkCollectDialog);
-        add(finder,label("Ideas are a built-in rotating title list, not live ranked recommendations or guaranteed subtitle availability.",11,MUTED,false));
-        status=label("Connect your provider key to search.",12,GREEN,false);
-        add(finder,status);
-
-        LinearLayout found=box(container);
-        add(found,label("Search results",17,WHITE,true));
-        resultsArea=column();add(found,resultsArea);
-        button(found,"Download selected subtitles to library (max 20)",this::downloadSelection);
-
         LinearLayout saved=box(container);
         add(saved,label("My saved SRT files",17,WHITE,true));
         add(saved,label("Keep up to 1,000 subtitles on this device. Select 10 of 100 for example, then submit just those movies to Muse.",12,MUTED,false));
         libraryArea=column();add(saved,libraryArea);
-        button(saved,"Queue selected SRTs to Cloudflare / Muse (max 10)",this::batchDialog);
-        button(saved,"Remove selected SRTs from phone only",this::deleteSelection);
-        add(saved,label("Cloud projects are created only when you press Queue. Downloads never upload automatically.",11,MUTED,false));
+
+
+
     }
     private void copyDiagnostic(String value){
         String copy=value.replaceAll("(?i)subdl_[A-Za-z0-9_-]{12,}","[REDACTED]")

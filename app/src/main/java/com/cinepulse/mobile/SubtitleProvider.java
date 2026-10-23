@@ -277,8 +277,8 @@ final class SubtitleProvider {
             }else if(!foundIndividual)badLinks++;
         }
         return new SearchResult(hits,movieCount,subtitleCount,badLinks,badLanguages,badFormats,
-            hits.length()>0?hits.length()+" trusted subtitle choices detected ("+subtitleCount+" records).":
-                subtitleCount+" records rejected: invalid/untrusted download paths="+badLinks+
+            hits.length()>0?hits.length()+" downloadable SRT release(s) found across "+movieCount+" title match(es), "+subtitleCount+" provider subtitle record(s).":
+                subtitleCount+" subtitle record(s) rejected: invalid/untrusted download paths="+badLinks+
                 ", other language="+badLanguages+", unsupported unpacked format="+badFormats+
                 ". No web adverts or browser links are followed.");
     }

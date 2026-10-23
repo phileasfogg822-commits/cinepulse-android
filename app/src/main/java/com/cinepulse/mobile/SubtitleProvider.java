@@ -276,6 +276,7 @@ final class SubtitleProvider {
                 }
             }else if(!foundIndividual)badLinks++;
         }
+        if(subtitleCount==0) return new SearchResult(hits,movieCount,subtitleCount,badLinks,badLanguages,badFormats);
         return new SearchResult(hits,movieCount,subtitleCount,badLinks,badLanguages,badFormats,
             hits.length()>0?hits.length()+" downloadable SRT release(s) found across "+movieCount+" title match(es), "+subtitleCount+" provider subtitle record(s).":
                 subtitleCount+" subtitle record(s) rejected: invalid/untrusted download paths="+badLinks+

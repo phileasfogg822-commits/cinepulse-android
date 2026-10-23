@@ -54,6 +54,7 @@ import java.util.function.Consumer;
  */
 public final class SubtitleLibraryActivity extends Activity {
     private static final int PICK_LIBRARY_SRT=717;
+    private static final int OPEN_SUBTITLE_BROWSER=718;
     private static final int BG=0xFF0B1021,CARD=0xFF151C32,STROKE=0xFF27314A,
         WHITE=0xFFF8FAFF,MUTED=0xFFA9B5D0,GREEN=0xFF39D3B2,PURPLE=0xFF8578FF;
     private static final String[] IDEAS={
@@ -149,7 +150,7 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void buildUi(){
         root=column();root.setBackgroundColor(BG);setContentView(root);
-        TextView heading=label("SRT LIBRARY  •  v0.2.2",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
+        TextView heading=label("SRT LIBRARY  •  v0.2.4",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
         TextView sub=label("Search • collect hundreds locally • select a batch for Muse",12,MUTED,false);
         sub.setPadding(dp(18),0,dp(18),dp(12));add(root,sub);
         ScrollView scroll=new ScrollView(this);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -186,6 +187,12 @@ public final class SubtitleLibraryActivity extends Activity {
         });
         button(keyBox,"Provider documentation",()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(SubtitleProvider.DOCS))));
 
+        LinearLayout browserBox=box(container);
+        add(browserBox,label("SUBDL WEBSITE — MANUAL DOWNLOAD",16,WHITE,true));
+        add(browserBox,label("Open the verified Inception English subtitle listing inside CinePulse. Tap a subtitle, download it, then import the SRT/ZIP from Android Downloads. No API key needed.",12,MUTED,false));
+        button(browserBox,"Browse Inception (2010) English SRTs",()->openSubtitleBrowser("https://subdl.com/subtitle/sd2922/inception/english"));
+        button(browserBox,"Open verified individual Inception subtitle",()->openSubtitleBrowser("https://subdl.com/s/info/e7iE3R6nMC"));
+        button(browserBox,"Import downloaded SRT / ZIP",this::chooseLocalSubtitles);
         LinearLayout alternate=box(container);
         add(alternate,label("ALTERNATIVE PROVIDER — OpenSubtitles",16,WHITE,true));
         add(alternate,label("Browse titles at OpenSubtitles, download an SRT or ZIP to Android, then import it directly into this library. No SubDL API key is required for this route; the site's download limits still apply.",12,MUTED,false));
@@ -237,6 +244,11 @@ public final class SubtitleLibraryActivity extends Activity {
             .setNegativeButton("Close",null)
             .setPositiveButton("Copy diagnostic",(dialog,which)->copyDiagnostic(text))
             .show();
+    }
+    private void openSubtitleBrowser(String url){
+        Intent intent=new Intent(this,SubtitleBrowserActivity.class);
+        intent.putExtra("url",url);
+        startActivityForResult(intent,OPEN_SUBTITLE_BROWSER);
     }
     private void chooseLocalSubtitles(){
         Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -317,6 +329,10 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);
+        if(request==OPEN_SUBTITLE_BROWSER){
+            if(result==RESULT_OK&&data!=null&&data.getBooleanExtra("open_import",false))chooseLocalSubtitles();
+            return;
+        }
         if(request!=PICK_LIBRARY_SRT||result!=RESULT_OK||data==null)return;
         ArrayList<Uri> selected=new ArrayList<>();
         ClipData clips=data.getClipData();

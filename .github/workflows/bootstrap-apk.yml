@@ -1,6 +1,8 @@
 name: CinePulse Android APK
 on:
   push:
+    branches: [main, 'feature/subtitle-browser-v024']
+  pull_request:
     branches: [main]
   workflow_dispatch:
 permissions:

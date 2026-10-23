@@ -1,6 +1,10 @@
 package com.cinepulse.mobile;
 
 import android.app.Activity;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.webkit.URLUtil;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
 import android.content.Context;
@@ -23,6 +27,8 @@ import java.util.Locale;
 /** User-controlled subtitle browsing; never sends provider credentials to a web page. */
 public final class SubtitleBrowserActivity extends Activity {
     private WebView browser;
+    private Runnable pendingDownload;
+    private static final int STORAGE_PERMISSION=731;
     private static final String HOME="https://subdl.com/subtitle/sd2922/inception/english";
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
@@ -72,24 +78,35 @@ public final class SubtitleBrowserActivity extends Activity {
         browser.setDownloadListener((url,userAgent,disposition,mime,length)->{
             Uri uri=Uri.parse(url);
             String host=uri.getHost()==null?"":uri.getHost().toLowerCase(Locale.ROOT);
-            if(!"https".equalsIgnoreCase(uri.getScheme())||!allowed(host)){
+            if(!"https".equalsIgnoreCase(uri.getScheme())||host.isEmpty()){
                 Toast.makeText(this,"Untrusted download blocked",Toast.LENGTH_LONG).show();return;
             }
+            String proposed=URLUtil.guessFileName(url,disposition,mime);
+            String ext=proposed.toLowerCase(Locale.ROOT);
+            if(ext.endsWith(".apk")||ext.endsWith(".exe")||ext.endsWith(".html")||ext.endsWith(".htm")||ext.endsWith(".js")){
+                Toast.makeText(this,"Only subtitle downloads are supported",Toast.LENGTH_LONG).show();return;
+            }
             new AlertDialog.Builder(this).setTitle("Download subtitle?")
-                .setMessage("Save this file to Android Downloads, then tap Import SRT / ZIP. Only download subtitles you trust.")
+                .setMessage("Save "+proposed+" from "+host+" to Downloads? Some websites may serve ads instead of subtitles.")
                 .setNegativeButton("Cancel",null)
                 .setPositiveButton("Download",(dialog,which)->{
-                    try{
+                    Runnable action=()->{try{
                         DownloadManager.Request req=new DownloadManager.Request(uri);
                         req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                        req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,"cinepulse-subtitle-"+System.currentTimeMillis()+".zip");
+                        String extension=ext.endsWith(".srt")?".srt":ext.endsWith(".zip")?".zip":".download";
+                        req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,"cinepulse-subtitle-"+System.currentTimeMillis()+extension);
                         String cookies=CookieManager.getInstance().getCookie(url);
                         if(cookies!=null)req.addRequestHeader("Cookie",cookies);
                         if(userAgent!=null)req.addRequestHeader("User-Agent",userAgent);
-                        req.addRequestHeader("Referer",browser.getUrl());
+                        if(browser.getUrl()!=null&&browser.getUrl().startsWith("https://"))req.addRequestHeader("Referer",browser.getUrl());
                         ((DownloadManager)getSystemService(Context.DOWNLOAD_SERVICE)).enqueue(req);
                         Toast.makeText(this,"Download started. Import after completion.",Toast.LENGTH_LONG).show();
                     }catch(Exception e){Toast.makeText(this,"Download failed: "+e.getClass().getSimpleName(),Toast.LENGTH_LONG).show();}
+                    };
+                    if(Build.VERSION.SDK_INT<=28&&checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)!=PackageManager.PERMISSION_GRANTED){
+                        pendingDownload=action;
+                        requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},STORAGE_PERMISSION);
+                    }else action.run();
                 }).show();
         });
         panel.addView(browser,new LinearLayout.LayoutParams(-1,0,1));
@@ -114,6 +131,14 @@ public final class SubtitleBrowserActivity extends Activity {
     }
     private static boolean allowed(String host){
         return "subdl.com".equals(host)||"www.subdl.com".equals(host)||"dl.subdl.com".equals(host);
+    }
+    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] grants){
+        super.onRequestPermissionsResult(request,permissions,grants);
+        if(request==STORAGE_PERMISSION){
+            Runnable action=pendingDownload;pendingDownload=null;
+            if(grants.length>0&&grants[0]==PackageManager.PERMISSION_GRANTED&&action!=null)action.run();
+            else Toast.makeText(this,"Storage permission is needed to save into Downloads",Toast.LENGTH_LONG).show();
+        }
     }
     @Override public void onBackPressed(){if(browser!=null&&browser.canGoBack())browser.goBack();else super.onBackPressed();}
     @Override protected void onDestroy(){

@@ -217,4 +217,19 @@ public class SubtitleProviderTest {
         assertTrue(r.hits.getJSONObject(0).getString("path").contains("%20"));
     }
 
+    @Test public void adInterstitialIsDetectedWithoutOpeningItsLinks(){
+        assertTrue(SubtitleProvider.looksLikeHtml("<!DOCTYPE html><a href='https://ads.invalid'>download</a>".getBytes(StandardCharsets.UTF_8)));
+        assertTrue(SubtitleProvider.looksLikeHtml("<html><script>advertisement()</script></html>".getBytes(StandardCharsets.UTF_8)));
+        assertFalse(SubtitleProvider.looksLikeHtml(demo().getBytes(StandardCharsets.UTF_8)));
+        assertFalse(SubtitleProvider.looksLikeHtml(new byte[]{'P','K',3,4}));
+    }
+    @Test public void zeroChoicesExplainsTheRejects() throws Exception{
+        JSONObject payload=new JSONObject().put("status",true)
+            .put("results",new org.json.JSONArray().put(new JSONObject().put("name","Inception")))
+            .put("subtitles",new org.json.JSONArray().put(new JSONObject()
+                .put("language","English").put("url","https://ads.invalid/download")));
+        SubtitleProvider.SearchResult r=SubtitleProvider.parseSearchResponse(payload,"Inception","EN");
+        assertEquals(0,r.hits.length());
+        assertTrue(r.diagnostic.contains("invalid/untrusted download paths=1"));
+    }
 }

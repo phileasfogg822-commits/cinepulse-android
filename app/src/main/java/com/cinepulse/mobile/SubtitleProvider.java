@@ -55,7 +55,7 @@ final class SubtitleProvider {
         c.setInstanceFollowRedirects(false);
         c.setConnectTimeout(12000);c.setReadTimeout(30000);
         c.setRequestProperty("Accept",isApi?"application/json":"application/octet-stream");
-        c.setRequestProperty("User-Agent","CinePulseAndroid/0.2.1");
+        c.setRequestProperty("User-Agent","CinePulseAndroid/0.2.3");
         if(isApi && apiKey!=null && !apiKey.trim().isEmpty())c.setRequestProperty("Authorization","Bearer "+apiKey.trim());
         // SubDL free search requires api_key as documented. Never log or copy URL containing it.
         try {
@@ -276,7 +276,11 @@ final class SubtitleProvider {
                 }
             }else if(!foundIndividual)badLinks++;
         }
-        return new SearchResult(hits,movieCount,subtitleCount,badLinks,badLanguages,badFormats);
+        return new SearchResult(hits,movieCount,subtitleCount,badLinks,badLanguages,badFormats,
+            hits.length()>0?hits.length()+" downloadable SRT release(s) found across "+movieCount+" title match(es), "+subtitleCount+" provider subtitle record(s).":
+                subtitleCount+" subtitle record(s) rejected: invalid/untrusted download paths="+badLinks+
+                ", other language="+badLanguages+", unsupported unpacked format="+badFormats+
+                ". No web adverts or browser links are followed.");
     }
     /** API request errors never return credentials or full URLs to the UI. */
     private static String providerError(Exception problem){
@@ -372,7 +376,7 @@ final class SubtitleProvider {
         }
     }
     static LiveTest testRealDownload(String apiKey){
-        StringBuilder report=new StringBuilder("CinePulse SubDL live download test v0.2.1\n"+
+        StringBuilder report=new StringBuilder("CinePulse SubDL live download test v0.2.3\n"+
             "Movie: Inception (2010), IMDb tt1375666, English\n"+
             "All operations run on this phone. Credentials and download URLs are omitted.\n\n");
         if(apiKey==null||apiKey.trim().length()<8){
@@ -408,7 +412,8 @@ final class SubtitleProvider {
                 .append("Copy this report to identify the real API fields; the key is never included.\n");
             return new LiveTest(report.toString(),null,null);
         }
-        for(int i=0;i<Math.min(3,possible.length());i++){
+        report.append("Only official SubDL HTTPS endpoints are used. No ads, browser pages, or third-party links are opened.\\n");
+        for(int i=0;i<Math.min(8,possible.length());i++){
             JSONObject hit=possible.optJSONObject(i);
             if(hit==null)continue;
             String path=hit.optString("path");
@@ -427,7 +432,7 @@ final class SubtitleProvider {
             }
         }
         report.append("FAIL: Search returned choices, but the first ")
-            .append(Math.min(3,possible.length()))
+            .append(Math.min(8,possible.length()))
             .append(" downloads failed. No subtitle was saved.\n");
         return new LiveTest(report.toString(),null,null);
     }
@@ -475,7 +480,7 @@ final class SubtitleProvider {
         SearchResult r=selection.result;
         String details=selection.details;
         String errorText=errors.toString();
-        String summary="v0.2.0 | All SubDL search paths exhausted: "+details+
+        String summary="v0.2.3 | All SubDL search paths exhausted: "+details+
             "; rejected links="+r.invalidUrls+"; wrong-language files="+r.wrongLanguage+
             "; non-SRT files="+r.unsupportedFormat+"."+
             (errorText.isEmpty()?"":" API errors: "+errorText)+
@@ -521,7 +526,7 @@ final class SubtitleProvider {
             data=fetchV2(new URL(endpoint),apiKey);
         }else{
             if(!validPath(path))throw new SecurityException("Untrusted subtitle download path.");
-            data=fetch(new URL("https://dl.subdl.com"+path),MAX_WIRE,null,false);
+            data=fetchSubtitleBytes(path);
         }
         if(data.length>=4&&data[0]=='P'&&data[1]=='K'){
             try(ZipInputStream z=new ZipInputStream(new ByteArrayInputStream(data))){
@@ -543,6 +548,26 @@ final class SubtitleProvider {
         }
         return parseSrt(data);
     }
+    /** Some downloads serve an HTML interstitial before file bytes.
+     * Repeat once against the SAME trusted URL; never parse/click HTML,
+     * follow advertiser redirects, or retain cookies from an ad page.
+     */
+    private static byte[] fetchSubtitleBytes(String path) throws Exception {
+        URL url=new URL("https://dl.subdl.com"+path);
+        byte[] first=fetch(url,MAX_WIRE,null,false);
+        if(!looksLikeHtml(first))return first;
+        byte[] second=fetch(url,MAX_WIRE,null,false);
+        if(looksLikeHtml(second))
+            throw new IOException("SubDL returned a web page twice instead of subtitle bytes; ads are blocked and not followed.");
+        return second;
+    }
+    static boolean looksLikeHtml(byte[] bytes){
+        if(bytes==null||bytes.length==0)return false;
+        String head=new String(bytes,0,Math.min(bytes.length,256),StandardCharsets.UTF_8)
+            .trim().toLowerCase(Locale.ROOT);
+        return head.startsWith("<!doctype html")||head.startsWith("<html")||
+            head.startsWith("<head")||head.startsWith("<script");
+    }
     private static byte[] fetchV2(URL endpoint,String key) throws Exception{
         URL current=endpoint;
         for(int turn=0;turn<3;turn++){
@@ -554,7 +579,7 @@ final class SubtitleProvider {
             conn.setInstanceFollowRedirects(false);
             conn.setConnectTimeout(12000);conn.setReadTimeout(30000);
             conn.setRequestProperty("Accept","application/zip,application/octet-stream,*/*");
-            conn.setRequestProperty("User-Agent","CinePulseAndroid/0.1.9");
+            conn.setRequestProperty("User-Agent","CinePulseAndroid/0.2.3");
             if("api.subdl.com".equals(host))conn.setRequestProperty("Authorization","Bearer "+key);
             try{
                 int status=conn.getResponseCode();

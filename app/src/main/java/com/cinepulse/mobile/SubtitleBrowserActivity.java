@@ -67,7 +67,7 @@ public final class SubtitleBrowserActivity extends Activity {
                 if(!allowed(host)){
                     new AlertDialog.Builder(SubtitleBrowserActivity.this)
                         .setTitle("External website blocked")
-                        .setMessage("CinePulse only opens SubDL pages and its download host here.\n"+host)
+                        .setMessage("CinePulse only opens supported subtitle sites here.\n"+host)
                         .setPositiveButton("OK",null).show();
                     return true;
                 }
@@ -116,7 +116,7 @@ public final class SubtitleBrowserActivity extends Activity {
             Uri uri=Uri.parse(target);
             if("https".equalsIgnoreCase(uri.getScheme())&&allowed(uri.getHost()==null?"":uri.getHost().toLowerCase(Locale.ROOT)))
                 browser.loadUrl(target);
-            else Toast.makeText(this,"Enter an HTTPS SubDL URL",Toast.LENGTH_SHORT).show();
+            else Toast.makeText(this,"Enter an HTTPS URL for a supported subtitle site",Toast.LENGTH_SHORT).show();
         });
         back.setOnClickListener(v->{if(browser.canGoBack())browser.goBack();else finish();});
         importFile.setOnClickListener(v->{
@@ -130,7 +130,7 @@ public final class SubtitleBrowserActivity extends Activity {
         browser.loadUrl("https".equalsIgnoreCase(initialUri.getScheme())&&allowed(initialUri.getHost()==null?"":initialUri.getHost().toLowerCase(Locale.ROOT))?initialUri.toString():HOME);
     }
     private static boolean allowed(String host){
-        return "subdl.com".equals(host)||"www.subdl.com".equals(host)||"dl.subdl.com".equals(host);
+        return "subdl.com".equals(host)||"www.subdl.com".equals(host)||"dl.subdl.com".equals(host)||"opensubtitles.com".equals(host)||"www.opensubtitles.com".equals(host)||"subsource.net".equals(host)||"www.subsource.net".equals(host);
     }
     @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] grants){
         super.onRequestPermissionsResult(request,permissions,grants);

@@ -152,7 +152,7 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void buildUi(){
         root=column();root.setBackgroundColor(BG);setContentView(root);
-        TextView heading=label("SRT DOWNLOADER  •  v0.2.7",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
+        TextView heading=label("SRT DOWNLOADER  •  v0.2.8",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
         TextView sub=label("Browse subtitle websites • save to Downloads • import SRT/ZIP",12,MUTED,false);
         sub.setPadding(dp(18),0,dp(18),dp(12));add(root,sub);
         ScrollView scroll=new ScrollView(this);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -174,6 +174,7 @@ public final class SubtitleLibraryActivity extends Activity {
         add(automatic,label("Separate from manual browsing. Configure your own SubDL API key, then collect English subtitles for 5, 10 or 20 different randomly selected movie titles. Saves locally; does not start Muse.",12,MUTED,false));
         button(automatic,"1. Enter / update SubDL API key",this::configureKey);
         button(automatic,"2. Test API connection",this::testSubdlConnection);
+        button(automatic,"Inspect API URLs (original vs cleaned)",this::inspectSubdlUrls);
         button(automatic,"3. Collect 5 random movie SRTs",()->collectRandom(5));
         button(automatic,"4. Collect 10 random movie SRTs",()->collectRandom(10));
         button(automatic,"5. Collect 20 random movie SRTs",()->collectRandom(20));
@@ -391,6 +392,25 @@ public final class SubtitleLibraryActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Random movie-title ideas")
             .setItems(candidates,(d,w)->{query.setText(candidates[w]);search(candidates[w]);})
             .setNegativeButton("Cancel",null).show();
+    }
+    private void inspectSubdlUrls(){
+        EditText title=new EditText(this);title.setSingleLine(true);title.setText("Inception");
+        title.setHint("Movie title");title.setTextColor(Color.BLACK);
+        new AlertDialog.Builder(this).setTitle("Inspect SubDL download links")
+            .setMessage("Displays original API link fields, cleaned URLs and rejection status. Credentials are excluded.")
+            .setView(title).setNegativeButton("Cancel",null)
+            .setPositiveButton("Inspect",(d,w)->work("Inspecting SubDL API URL fields",
+                ()->SubtitleProvider.inspectLinks(providerKey.load(),title.getText().toString()),
+                report->{
+                    TextView view=new TextView(this);view.setText(report);view.setTextIsSelectable(true);
+                    view.setTextSize(12);view.setPadding(dp(14),dp(10),dp(14),dp(10));
+                    android.widget.HorizontalScrollView horizontal=new android.widget.HorizontalScrollView(this);
+                    horizontal.addView(view);
+                    ScrollView scroll=new ScrollView(this);scroll.addView(horizontal);
+                    new AlertDialog.Builder(this).setTitle("SubDL URL inspection table")
+                        .setView(scroll).setNegativeButton("Close",null)
+                        .setPositiveButton("Copy report",(dialog,which)->copyDiagnostic(report)).show();
+                })).show();
     }
     private void testSubdlConnection(){
         work("Checking SubDL API key",()->{

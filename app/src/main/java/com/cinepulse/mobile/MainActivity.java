@@ -245,6 +245,17 @@ public final class MainActivity extends Activity {
             space(c,12);Button open=action(status.equals("ready")?"View & download package →":"View timeline →",()->loadDetail(id),false);
             c.addView(open,new LinearLayout.LayoutParams(-1,dp(42)));
             space(c,6);
+            if(!terminalStatus(status)){
+                if(p.has("paused")){
+                    boolean moviePaused=p.optBoolean("paused",false);
+                    c.addView(action(moviePaused?"▶ Resume this movie":"⏸ Pause this movie",
+                        ()->confirmMoviePause(id,!moviePaused),false));
+                }else{
+                    c.addView(text("Individual movie pause awaits Cloudflare support; worker pause affects all jobs.",11,MUTED,false));
+                }
+                c.addView(text("Individual STOP is not available until Cloudflare exposes safe project cancellation. Hiding does NOT stop processing.",11,0xFFFFC47E,false));
+            }
+            space(c,6);
             if(archived)c.addView(action("Restore to active list",()->{setLocalState(id,"active");renderHome();},false));
             else if(terminalStatus(status))c.addView(action("Mark reviewed & archive",()->archiveDialog(id,status,true),false));
             if("reviewed".equals(localState(id)))c.addView(text("✓ Reviewed on this device",11,GREEN,false));

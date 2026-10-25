@@ -421,64 +421,94 @@ public final class SubtitleLibraryActivity extends Activity {
         },message->showCopyableReport("SubDL connection test",message));
     }
     private void collectRandom(int count){
-        new AlertDialog.Builder(this).setTitle("Collect "+count+" English SRTs")
-            .setMessage("Search up to "+Math.min(70,count*4)+" randomly selected movie titles, download and validate one English subtitle per movie using your SubDL API key. No Cloudflare project will start. Keep this screen open.")
+        new AlertDialog.Builder(this).setTitle("Collect "+count+" complete English SRTs")
+            .setMessage("CinePulse skips movies already stored or queued, checks title and timeline coverage, and tries alternate releases when necessary. It saves to this phone only; Muse never starts automatically. Keep this screen open.")
             .setNegativeButton("Cancel",null)
-            .setPositiveButton("Collect",(d,w)->work("Collecting "+count+" English SRTs",()->{
+            .setPositiveButton("Collect",(d,w)->work("Collecting "+count+" verified English SRTs",()->{
                 String key=providerKey.load();
-                if(key==null||key.trim().isEmpty())throw new IOException("Enter your SubDL API key using the separate key button.");
+                if(key==null||key.trim().isEmpty())throw new IOException("Enter your SubDL API key first.");
+                shelf.reviewExistingQuality();
                 JSONArray existing=shelf.entries();
-                Set<String> present=new HashSet<>();
+                List<String> present=new ArrayList<>();
                 for(int i=0;i<existing.length();i++){
                     JSONObject item=existing.optJSONObject(i);
-                    if(item!=null)present.add(item.optString("title").toLowerCase(Locale.ROOT));
+                    if(item!=null&&!"NEEDS_REVIEW".equals(SubtitleShelf.state(item)))
+                        present.add(item.optString("title"));
                 }
                 List<String> names=new ArrayList<>();Collections.addAll(names,IDEAS);
                 Collections.shuffle(names);
-                int saved=0,lookups=0;StringBuilder report=new StringBuilder();
+                int saved=0,lookups=0,rejected=0;
+                StringBuilder report=new StringBuilder();
+                boolean quotaStop=false;
                 for(String name:names){
-                    if(saved>=count||lookups>=Math.min(70,count*4))break;
-                    if(present.contains(name.toLowerCase(Locale.ROOT)))continue;
+                    if(saved>=count||lookups>=Math.min(names.size(),Math.max(70,count*5))||quotaStop)break;
+                    boolean already=false;
+                    for(String item:present)if(MovieIdentity.sameMovie(item,name)){already=true;break;}
+                    if(already)continue;
                     lookups++;
-                    info("SubDL: searching "+lookups+" | imported "+saved+"/"+count+" | "+name);
+                    info("SubDL: searching "+lookups+" | complete "+saved+"/"+count+" | "+name);
                     try{
                         SubtitleProvider.SearchResult response=SubtitleProvider.searchDetailed(key,name,"EN");
-                        JSONObject best=null;
-                        for(int i=0;i<response.hits.length();i++){
+                        SubtitleProvider.Srt bestSrt=null;
+                        JSONObject bestHit=null;
+                        int bestScore=-1,attempts=0;
+                        StringBuilder reasons=new StringBuilder();
+                        for(int i=0;i<response.hits.length()&&attempts<10;i++){
                             JSONObject hit=response.hits.optJSONObject(i);
-                            if(hit==null)continue;
-                            String candidate=hit.optString("title").replaceAll("\\s+\\(\\d{4}\\)$","").trim();
-                            if(candidate.equalsIgnoreCase(name)&&!hit.optBoolean("hi",false)){best=hit;break;}
-                        }
-                        if(best==null){report.append(name).append(": no exact English match\\n");continue;}
-                        SubtitleProvider.Srt subtitle=null;StringBuilder reasons=new StringBuilder();
-                        for(int attempt=0;attempt<Math.min(8,response.hits.length());attempt++){
-                            JSONObject option=response.hits.optJSONObject(attempt);
-                            if(option==null||option.optBoolean("hi",false)||
-                                !option.optString("title").replaceAll("\\s+\\(\\d{4}\\)$","").trim().equalsIgnoreCase(name))continue;
+                            if(hit==null||hit.optBoolean("hi",false)||
+                                !MovieIdentity.baseTitle(hit.optString("title")).equals(MovieIdentity.baseTitle(name)))continue;
+                            attempts++;
                             try{
-                                SubtitleProvider.Srt candidate=SubtitleProvider.download(option.getString("path"),key);
-                                if(candidate.cues<100||candidate.duration<2400)
-                                    throw new IOException("Incomplete subtitle: "+candidate.cues+" cues, "+Math.round(candidate.duration/60)+" min");
-                                subtitle=candidate;best=option;break;
-                            }catch(Exception invalid){reasons.append(invalid.getMessage()).append("; ");}
+                                SubtitleProvider.Srt candidate=SubtitleProvider.download(hit.getString("path"),key,"EN");
+                                SubtitleQuality.Result check=SubtitleQuality.assess(candidate,hit.optInt("runtimeMinutes",0));
+                                if(!check.complete){
+                                    reasons.append("release ").append(attempts).append(": ").append(check.reason).append("; ");
+                                    continue;
+                                }
+                                if(check.score>bestScore){bestSrt=candidate;bestHit=hit;bestScore=check.score;}
+                                // High-quality complete subtitles avoid unnecessary quota consumption.
+                                if(bestScore>=90&&attempts>=2)break;
+                            }catch(Exception invalid){
+                                String reason=invalid.getMessage()==null?"download error":invalid.getMessage();
+                                reasons.append("release ").append(attempts).append(": ").append(reason).append("; ");
+                                if(reason.toLowerCase(Locale.ROOT).contains("rate limit")||
+                                   reason.toLowerCase(Locale.ROOT).contains("quota")||
+                                   reason.contains("401")||reason.contains("403")){quotaStop=true;break;}
+                            }
                         }
-                        if(subtitle==null){report.append(name).append(": no complete subtitle (").append(reasons).append(")\\n");continue;}
-                        shelf.save(best,subtitle);
-                        saved++;present.add(name.toLowerCase(Locale.ROOT));
-                        report.append(name).append(": imported ").append(subtitle.cues).append(" cues\\n");
-                        Thread.sleep(900);
+                        if(bestSrt==null){
+                            rejected++;
+                            report.append(name).append(": no sufficiently complete English SRT after ")
+                                .append(attempts).append(" release attempts. ").append(reasons).append("\n");
+                            continue;
+                        }
+                        JSONObject stored=shelf.save(bestHit,bestSrt);
+                        if(!bestSrt.sha256.equals(stored.optString("sha256"))){
+                            report.append(name).append(": already indexed; duplicate skipped.\n");
+                            present.add(name);
+                            continue;
+                        }
+                        saved++;present.add(name);
+                        report.append(name).append(": saved ").append(bestSrt.cues).append(" cues • ")
+                            .append(Math.round(bestSrt.duration/60)).append(" min • quality ")
+                            .append(bestScore).append("/100\n");
+                        Thread.sleep(650);
                     }catch(Exception e){
-                        String reason=e.getMessage()==null?"download error":e.getMessage();
-                        report.append(name).append(": ").append(reason).append("\\n");
-                        if(reason.toLowerCase(Locale.ROOT).contains("rate limit")||reason.toLowerCase(Locale.ROOT).contains("quota")||reason.contains("401")||reason.contains("403"))break;
+                        String reason=e.getMessage()==null?"download failed":e.getMessage();
+                        report.append(name).append(": ").append(reason).append("\n");
+                        String lower=reason.toLowerCase(Locale.ROOT);
+                        if(lower.contains("rate limit")||lower.contains("quota")||
+                           lower.contains("401")||lower.contains("403"))quotaStop=true;
                     }
                 }
-                return new String[]{String.valueOf(saved),String.valueOf(lookups),report.toString()};
+                if(saved<count)report.append("\nOnly ").append(saved).append(" valid SRTs available from ")
+                    .append(lookups).append(" searches. Incomplete movies were not counted.");
+                return new String[]{String.valueOf(saved),String.valueOf(lookups),String.valueOf(rejected),report.toString()};
             },result->{
                 reloadLibrary();
-                showCopyableReport("Automatic collection report",
-                    "Imported "+result[0]+"/"+count+" English SRTs after "+result[1]+" searches.\\n\\n"+result[2]);
+                showCopyableReport("Automatic subtitle quality report",
+                    "Saved "+result[0]+"/"+count+" complete English SRTs after "+result[1]+
+                    " searches. Rejected incomplete titles: "+result[2]+".\n\n"+result[3]);
             })).show();
     }
     private void search(String title){

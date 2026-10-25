@@ -52,7 +52,7 @@ final class SubtitleShelf {
     synchronized void setState(String id,String state,String projectId,String reason) throws Exception{
         if(!SecurityRules.validUuid(id))throw new SecurityException("Invalid subtitle ID.");
         if(!("READY".equals(state)||"SUBMITTING".equals(state)||"UNKNOWN".equals(state)||
-            "QUEUED".equals(state)||"NEEDS_REVIEW".equals(state)))
+            "QUEUED".equals(state)||"FINISHED".equals(state)||"NEEDS_REVIEW".equals(state)))
             throw new SecurityException("Unsupported movie state.");
         JSONArray all=entries();boolean found=false;
         for(int i=0;i<all.length();i++){
@@ -124,6 +124,7 @@ final class SubtitleShelf {
             .put("release",hit.optString("release","Unknown release"))
             .put("language",hit.optString("language","EN"))
             .put("provider",hit.optString("provider","SubDL"))
+            .put("imdbId",hit.optString("imdbId",""))
             .put("sourcePath",hit.optString("path",""))
             .put("sha256",srt.sha256)
             .put("durationSeconds",srt.duration)
@@ -134,6 +135,19 @@ final class SubtitleShelf {
         return entry;
     }
     String storageLocation(){return dir.getAbsolutePath();}
+    synchronized void markFinished(String id) throws Exception{
+        if(!SecurityRules.validUuid(id))throw new SecurityException("Invalid subtitle ID.");
+        JSONArray all=entries();boolean changed=false;
+        for(int i=0;i<all.length();i++){
+            JSONObject item=all.optJSONObject(i);
+            if(item!=null&&id.equals(item.optString("id"))&&"QUEUED".equals(state(item))){
+                item.put("state","FINISHED");
+                item.put("stateReason","Cloudflare reports this movie ready or awaiting review.");
+                changed=true;break;
+            }
+        }
+        if(changed)write(all);
+    }
     synchronized void markQueued(String id,String projectId) throws Exception{
         setState(id,"QUEUED",projectId,"Confirmed by Cloudflare");
     }
@@ -181,7 +195,7 @@ final class SubtitleShelf {
         for(int i=0;i<current.length();i++){
             JSONObject item=current.optJSONObject(i);
             if(item!=null&&id.equals(item.optString("id"))&&
-                ("QUEUED".equals(state(item))||"UNKNOWN".equals(state(item))||
+                ("QUEUED".equals(state(item))||"FINISHED".equals(state(item))||"UNKNOWN".equals(state(item))||
                  "SUBMITTING".equals(state(item))))
                 throw new IOException("Cannot remove a queued/uncertain movie. Its index prevents duplicate processing.");
         }

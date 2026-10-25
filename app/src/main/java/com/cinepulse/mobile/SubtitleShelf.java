@@ -48,13 +48,70 @@ final class SubtitleShelf {
             if(!temp.renameTo(indexFile))throw new IOException("Could not save subtitle index.");
         }
     }
+    static String state(JSONObject entry){return entry.optString("state","READY");}
+    synchronized void setState(String id,String state,String projectId,String reason) throws Exception{
+        if(!SecurityRules.validUuid(id))throw new SecurityException("Invalid subtitle ID.");
+        if(!("READY".equals(state)||"SUBMITTING".equals(state)||"UNKNOWN".equals(state)||
+            "QUEUED".equals(state)||"NEEDS_REVIEW".equals(state)))
+            throw new SecurityException("Unsupported movie state.");
+        JSONArray all=entries();boolean found=false;
+        for(int i=0;i<all.length();i++){
+            JSONObject item=all.optJSONObject(i);
+            if(item==null||!id.equals(item.optString("id")))continue;
+            String current=state(item);
+            if("SUBMITTING".equals(state)&&!"READY".equals(current))
+                throw new IOException("Already submitted or uncertain: "+current);
+            if("READY".equals(state)&&!"NEEDS_REVIEW".equals(current))
+                throw new IOException("A queued/unknown submission may not be reset automatically.");
+            if("QUEUED".equals(state)&&!SecurityRules.validUuid(projectId))
+                throw new SecurityException("No verified Cloudflare project ID.");
+            item.put("state",state);
+            if("QUEUED".equals(state))item.put("projectId",projectId);
+            if(reason!=null&&!reason.isEmpty())item.put("stateReason",reason.length()>160?reason.substring(0,160):reason);
+            found=true;break;
+        }
+        if(!found)throw new IOException("Movie not found in local library.");
+        write(all);
+    }
+    synchronized void reviewExistingQuality() throws Exception{
+        JSONArray all=entries();boolean changed=false;
+        for(int i=0;i<all.length();i++){
+            JSONObject item=all.optJSONObject(i);
+            if(item==null||!"READY".equals(state(item)))continue;
+            if(item.optInt("cues",0)<75||item.optDouble("durationSeconds",0)<3300){
+                item.put("state","NEEDS_REVIEW");
+                item.put("stateReason","Legacy SRT has insufficient cues or timeline. Collect a better release.");
+                changed=true;
+            }
+        }
+        if(changed)write(all);
+    }
     synchronized JSONObject save(JSONObject hit,SubtitleProvider.Srt srt) throws Exception{
         JSONArray all=entries();
         for(int i=0;i<all.length();i++){
             JSONObject previous=all.optJSONObject(i);
-            if(previous!=null && (srt.sha256.equals(previous.optString("sha256")) ||
-                (hit.optString("title").equalsIgnoreCase(previous.optString("title")) &&
-                "EN".equalsIgnoreCase(previous.optString("language")))))return previous;
+            if(previous==null)continue;
+            boolean same=srt.sha256.equals(previous.optString("sha256"))||
+                ("EN".equalsIgnoreCase(hit.optString("language"))&&
+                 "EN".equalsIgnoreCase(previous.optString("language"))&&
+                 MovieIdentity.sameMovie(hit.optString("title"),previous.optString("title")));
+            if(!same)continue;
+            if("NEEDS_REVIEW".equals(state(previous))&&srt.cues>previous.optInt("cues")&&
+                srt.duration>previous.optDouble("durationSeconds")&&
+                SubtitleQuality.assess(srt,0).complete){
+                String existingId=previous.optString("id");
+                File existingFile=new File(dir,existingId+".srt");
+                try(FileOutputStream out=new FileOutputStream(existingFile,false)){
+                    out.write(srt.text.getBytes(StandardCharsets.UTF_8));out.getFD().sync();
+                }
+                previous.put("title",hit.optString("title")).put("release",hit.optString("release"))
+                    .put("sha256",srt.sha256).put("cues",srt.cues)
+                    .put("durationSeconds",srt.duration).put("state","READY")
+                    .remove("stateReason");
+                write(all);
+                return previous;
+            }
+            return previous;
         }
         if(all.length()>=1000)throw new IOException("SRT library has reached its 1000-file storage cap.");
         String id=UUID.randomUUID().toString();
@@ -78,16 +135,16 @@ final class SubtitleShelf {
     }
     String storageLocation(){return dir.getAbsolutePath();}
     synchronized void markQueued(String id,String projectId) throws Exception{
-        if(!SecurityRules.validUuid(id)||!SecurityRules.validUuid(projectId))throw new SecurityException("Invalid queue identity.");
-        JSONArray all=entries();boolean found=false;
-        for(int i=0;i<all.length();i++){
-            JSONObject item=all.optJSONObject(i);
-            if(item!=null&&id.equals(item.optString("id"))){
-                item.put("state","QUEUED");item.put("projectId",projectId);found=true;break;
-            }
-        }
-        if(!found)throw new IOException("Local subtitle not found.");
-        write(all);
+        setState(id,"QUEUED",projectId,"Confirmed by Cloudflare");
+    }
+    synchronized void markSubmitting(String id) throws Exception{
+        setState(id,"SUBMITTING","","Request being sent; reconfirm before any retry");
+    }
+    synchronized void markUnknown(String id,String reason) throws Exception{
+        setState(id,"UNKNOWN","",reason);
+    }
+    synchronized void markNeedsReview(String id,String reason) throws Exception{
+        setState(id,"NEEDS_REVIEW","",reason);
     }
     synchronized String read(String id) throws Exception{
         if(!SecurityRules.validUuid(id))throw new SecurityException("Untrusted subtitle ID.");
@@ -105,6 +162,13 @@ final class SubtitleShelf {
             remaining.put(item);
         }
         if(!found)return;
+        for(int i=0;i<current.length();i++){
+            JSONObject item=current.optJSONObject(i);
+            if(item!=null&&id.equals(item.optString("id"))&&
+                ("QUEUED".equals(state(item))||"UNKNOWN".equals(state(item))||
+                 "SUBMITTING".equals(state(item))))
+                throw new IOException("Cannot remove a queued/uncertain movie. Its index prevents duplicate processing.");
+        }
         write(remaining);
         new File(dir,id+".srt").delete();
     }

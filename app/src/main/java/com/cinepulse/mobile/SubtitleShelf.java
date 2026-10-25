@@ -146,6 +146,22 @@ final class SubtitleShelf {
     synchronized void markNeedsReview(String id,String reason) throws Exception{
         setState(id,"NEEDS_REVIEW","",reason);
     }
+    synchronized void allowRequeue(String id) throws Exception{
+        if(!SecurityRules.validUuid(id))throw new SecurityException("Invalid subtitle ID.");
+        JSONArray all=entries();boolean found=false;
+        for(int i=0;i<all.length();i++){
+            JSONObject item=all.optJSONObject(i);
+            if(item==null||!id.equals(item.optString("id")))continue;
+            if("READY".equals(state(item))||"NEEDS_REVIEW".equals(state(item)))
+                throw new IOException("Movie is not in a submitted/uncertain state.");
+            item.put("state","READY");
+            item.put("requeueApprovedAt",System.currentTimeMillis());
+            item.put("previousProjectId",item.optString("projectId"));
+            item.remove("projectId");item.remove("stateReason");found=true;break;
+        }
+        if(!found)throw new IOException("Movie is absent from device.");
+        write(all);
+    }
     synchronized String read(String id) throws Exception{
         if(!SecurityRules.validUuid(id))throw new SecurityException("Untrusted subtitle ID.");
         File file=new File(dir,id+".srt");

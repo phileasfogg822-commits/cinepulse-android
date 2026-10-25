@@ -451,7 +451,19 @@ public final class SubtitleLibraryActivity extends Activity {
                             if(candidate.equalsIgnoreCase(name)&&!hit.optBoolean("hi",false)){best=hit;break;}
                         }
                         if(best==null){report.append(name).append(": no exact English match\\n");continue;}
-                        SubtitleProvider.Srt subtitle=SubtitleProvider.download(best.getString("path"),key);
+                        SubtitleProvider.Srt subtitle=null;StringBuilder reasons=new StringBuilder();
+                        for(int attempt=0;attempt<Math.min(8,response.hits.length());attempt++){
+                            JSONObject option=response.hits.optJSONObject(attempt);
+                            if(option==null||option.optBoolean("hi",false)||
+                                !option.optString("title").replaceAll("\\s+\\(\\d{4}\\)$","").trim().equalsIgnoreCase(name))continue;
+                            try{
+                                SubtitleProvider.Srt candidate=SubtitleProvider.download(option.getString("path"),key);
+                                if(candidate.cues<100||candidate.duration<2400)
+                                    throw new IOException("Incomplete subtitle: "+candidate.cues+" cues, "+Math.round(candidate.duration/60)+" min");
+                                subtitle=candidate;best=option;break;
+                            }catch(Exception invalid){reasons.append(invalid.getMessage()).append("; ");}
+                        }
+                        if(subtitle==null){report.append(name).append(": no complete subtitle (").append(reasons).append(")\\n");continue;}
                         shelf.save(best,subtitle);
                         saved++;present.add(name.toLowerCase(Locale.ROOT));
                         report.append(name).append(": imported ").append(subtitle.cues).append(" cues\\n");
@@ -528,11 +540,13 @@ public final class SubtitleLibraryActivity extends Activity {
     private void renderSaved(){
         libraryArea.removeAllViews();
         if(library.length()==0){add(libraryArea,label("Your library is empty. Search and download a subtitle first.",12,MUTED,false));return;}
+        add(libraryArea,label("On-device SRT folder: "+shelf.storageLocation()+" (private Android app storage; not visible in Downloads)",11,MUTED,false));
         add(libraryArea,label(library.length()+" downloaded subtitles • "+
             librarySelection.size()+" selected for Cloudflare",12,GREEN,false));
         for(int i=library.length()-1;i>=0;i--){
             JSONObject e=library.optJSONObject(i);if(e==null)continue;
             String id=e.optString("id");
+            if("QUEUED".equals(e.optString("state")))continue;
             CheckBox cb=new CheckBox(this);
             cb.setText(e.optString("title")+"  •  "+e.optString("language")+
                 "\n"+e.optString("release")+"  •  "+e.optInt("cues")+" cues  •  "+
@@ -604,6 +618,8 @@ public final class SubtitleLibraryActivity extends Activity {
                             if(!SecurityRules.validUuid(created.optJSONObject("project")!=null?
                                 created.optJSONObject("project").optString("id"):created.optString("id")))
                                 throw new IOExceptionWithMessage("Cloudflare response did not confirm the new project ID; refresh the project list before retrying.");
+                            shelf.markQueued(id,created.optJSONObject("project")!=null?
+                                created.optJSONObject("project").optString("id"):created.optString("id"));
                             complete++;
                             if(created.optInt("targetMinutes",-1)!=target)unconfirmed++;
                         }catch(Exception error){
@@ -613,7 +629,7 @@ public final class SubtitleLibraryActivity extends Activity {
                     }
                     return new String[]{String.valueOf(complete),String.valueOf(unconfirmed),failures.toString()};
                 },report->{
-                    librarySelection.clear();renderSaved();
+                    librarySelection.clear();reloadLibrary();
                     String summary=report[0]+" project(s) submitted to Cloudflare/Muse. "+
                         ("0".equals(report[1])?"Narration target confirmed for each.":report[1]+" target duration(s) NOT acknowledged by backend.")+
                         "\n\nEach worker must be online and polling to process its jobs. The downloaded SRTs remain saved locally.";

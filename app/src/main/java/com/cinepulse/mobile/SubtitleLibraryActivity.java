@@ -611,73 +611,150 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void batchDialog(){
         List<String> selected=new ArrayList<>(librarySelection);
-        if(selected.isEmpty()){err("Select downloaded SRTs to upload.");return;}
-        if(selected.size()>10){err("Submit a maximum of 10 movies per batch. Keep the remaining SRTs in the library.");return;}
+        if(selected.isEmpty()){err("Select READY subtitles using their checkboxes first.");return;}
+        if(selected.size()>20){err("Submit up to 20 movie projects per batch.");return;}
+        for(String id:selected){
+            JSONObject entry=findEntry(id);
+            if(entry==null||!"READY".equals(SubtitleShelf.state(entry))){
+                err("One of the movies is already queued or needs review. Reload the list.");return;
+            }
+        }
         EditText minutes=new EditText(this);minutes.setInputType(InputType.TYPE_CLASS_NUMBER);
-        minutes.setSingleLine(true);minutes.setText("15");minutes.setHint("Target narration minutes");
-        new AlertDialog.Builder(this).setTitle("Queue "+selected.size()+" movie project(s)")
-            .setMessage("One Cloudflare project per selected SRT. Assigned to enabled Muse workers in rotation (each project keeps its own ID). Set the desired narration duration; Cloudflare must support that field. Keep this screen open until submission finishes. No movie videos will be uploaded.")
-            .setView(minutes)
-            .setNegativeButton("Cancel",null)
-            .setPositiveButton("Queue",(d,w)->{
+        minutes.setSingleLine(true);minutes.setText("15");minutes.setHint("Narration duration for each movie");
+        new AlertDialog.Builder(this).setTitle("Queue "+selected.size()+" selected movie(s)")
+            .setMessage("One Cloudflare project per selected movie, distributed across available Muse workers. The narration duration applies to EACH movie. Subtitles remain on the phone. An unknown server response locks that movie until reconciled, avoiding accidental repeats.")
+            .setView(minutes).setNegativeButton("Cancel",null)
+            .setPositiveButton("Start selected",(d,w)->{
                 int target;
                 try{target=Integer.parseInt(minutes.getText().toString().trim());}
                 catch(NumberFormatException e){err("Enter 3–60 narration minutes.");return;}
                 if(target<3||target>60){err("Choose 3–60 minutes.");return;}
-                work("Checking available Muse workers",()->{
+                work("Checking Cloudflare before starting selected movies",()->{
+                    JSONArray remote=cloud.projects().getJSONArray("projects");
                     JSONObject response=cloud.workers();
                     JSONArray ws=response.optJSONArray("workers");
                     List<String> active=new ArrayList<>();
                     if(ws!=null)for(int i=0;i<ws.length();i++){
                         JSONObject worker=ws.optJSONObject(i);
-                        if(worker!=null&&worker.optBoolean("enabled",true)&&!worker.optBoolean("paused")
-                            &&SecurityRules.validUuid(worker.optString("id")))
-                            active.add(worker.optString("id"));
+                        if(worker!=null&&worker.optBoolean("enabled",true)&&!worker.optBoolean("paused")&&
+                           SecurityRules.validUuid(worker.optString("id")))active.add(worker.optString("id"));
                     }
-                    if(active.isEmpty())throw new IllegalStateException("No enabled/unpaused Muse workers available. Resume a worker first.");
-                    int complete=0;int unconfirmed=0;StringBuilder failures=new StringBuilder();
-                    for(int i=0;i<selected.size();i++){
-                        String id=selected.get(i);
+                    if(active.isEmpty())throw new IllegalStateException("No enabled/unpaused Muse workers. Resume a worker before starting.");
+                    int submitted=0,recognized=0,unknown=0,echoed=0;
+                    StringBuilder failures=new StringBuilder();
+                    for(String id:selected){
                         JSONObject entry=findEntry(id);
-                        if(entry==null){failures.append("Missing local item\n");continue;}
-                        final int done=i+1;info("Uploading movie "+done+"/"+selected.size());
+                        if(entry==null||!"READY".equals(SubtitleShelf.state(entry)))continue;
+                        String title=entry.optString("title","Untitled");
+                        final int count=++recognized;
+                        info("Submitting "+count+"/"+selected.size()+": "+title);
+                        int existing=CloudProjectReceipt.matchingCount(remote,title);
+                        if(existing>0){
+                            String found=CloudProjectReceipt.matchingProjectId(remote,title);
+                            if(SecurityRules.validUuid(found)){
+                                shelf.markQueued(id,found);
+                                failures.append(title).append(": already on Cloudflare; linked to existing project instead of re-submitting.\n");
+                            }else{
+                                shelf.markUnknown(id,"Several matching Cloudflare projects. Resolve duplicates in Projects.");
+                                unknown++;
+                                failures.append(title).append(": multiple matching server projects; no submission made.\n");
+                            }
+                            continue;
+                        }
+                        boolean started=false;
                         try{
-                            String name=entry.optString("title","Untitled").replaceAll("\\s+\\(\\d{4}\\)$","");
+                            // Durable lock is written before the POST. App restarts cannot re-submit this movie silently.
+                            shelf.markSubmitting(id);
+                            started=true;
                             String srt=shelf.read(id);
-                            JSONObject created=cloud.createProject(name,active.get(i%active.size()),srt,48,target);
-                            String projectId=confirmedProjectId(created);
+                            JSONObject created=cloud.createProject(title,active.get((count-1)%active.size()),srt,48,target);
+                            String projectId=CloudProjectReceipt.confirmedId(created);
+                            if(!SecurityRules.validUuid(projectId)){
+                                // The POST may have succeeded. GET reconciliation never sends another POST.
+                                JSONArray fresh=cloud.projects().getJSONArray("projects");
+                                projectId=CloudProjectReceipt.matchingProjectId(fresh,title);
+                                remote=fresh;
+                            }
                             if(!SecurityRules.validUuid(projectId))
-                                throw new IOExceptionWithMessage("Cloudflare returned no recognized project UUID. Submission status is UNKNOWN; do not retry until Projects is checked. Response fields: "+created.names());
+                                throw new IOException("Server response has no confirmed project UUID. No automatic retry permitted.");
                             shelf.markQueued(id,projectId);
-                            complete++;
-                            if(created.optInt("targetMinutes",-1)!=target)unconfirmed++;
-                        }catch(Exception error){
-                            failures.append(entry.optString("title")).append(": ")
-                                .append(error.getMessage()==null?"failed":error.getMessage()).append("\n");
+                            remote.put(new JSONObject().put("id",projectId).put("title",title));
+                            submitted++;
+                            if(created.optInt("targetMinutes",-1)==target||
+                                (created.optJSONObject("project")!=null&&created.optJSONObject("project").optInt("targetMinutes",-1)==target))echoed++;
+                        }catch(Exception failure){
+                            if(started){
+                                try{shelf.markUnknown(id,"Submission outcome unconfirmed. Recheck Projects before retry.");}
+                                catch(Exception ignored){}
+                                unknown++;
+                            }
+                            failures.append(title).append(": ")
+                                .append(failure.getMessage()==null?"submission failed":failure.getMessage())
+                                .append(started?" (LOCKED to prevent duplicate)\n":"\n");
                         }
                     }
-                    return new String[]{String.valueOf(complete),String.valueOf(unconfirmed),failures.toString()};
+                    return new String[]{String.valueOf(submitted),String.valueOf(unknown),
+                        String.valueOf(echoed),failures.toString()};
                 },report->{
                     librarySelection.clear();reloadLibrary();
-                    String summary=report[0]+" project(s) submitted to Cloudflare/Muse. "+
-                        ("0".equals(report[1])?"Narration target confirmed for each.":report[1]+" target duration(s) NOT acknowledged by backend.")+
-                        "\n\nEach worker must be online and polling to process its jobs. The downloaded SRTs remain saved locally.";
-                    if(!report[2].isEmpty())summary+="\n\nFailures:\n"+report[2];
-                    new AlertDialog.Builder(this).setTitle("Batch submission result")
+                    String summary=report[0]+" NEW Cloudflare project(s) confirmed. "+
+                        report[1]+" movie(s) have an uncertain or duplicate state and were LOCKED against retries.\n"+
+                        "Requested "+target+" minutes of narration PER movie; "+
+                        report[2]+" new project response(s) explicitly echoed that setting.\n\n"+
+                        "Confirmed movies move from Ready to Queued in this screen. "+
+                        "Unconfirmed movies stay visible for server reconciliation; no additional POST is sent.";
+                    if(!report[3].isEmpty())summary+="\n\nDetails:\n"+report[3];
+                    new AlertDialog.Builder(this).setTitle("Movie queue submission result")
                         .setMessage(summary).setPositiveButton("OK",null).show();
                 });
             }).show();
     }
-    private static String confirmedProjectId(JSONObject response){
-        JSONObject[] sources={response,response.optJSONObject("project"),response.optJSONObject("data"),response.optJSONObject("result")};
-        for(JSONObject source:sources){
-            if(source==null)continue;
-            for(String key:new String[]{"id","projectId","project_id"}){
-                String value=source.optString(key,"");
-                if(SecurityRules.validUuid(value))return value;
+    private void reconcileUnknownSubmissions(){
+        work("Rechecking Cloudflare for uncertain movies",()->{
+            JSONArray remote=cloud.projects().getJSONArray("projects");
+            JSONArray local=shelf.entries();int linked=0,remaining=0;
+            StringBuilder notes=new StringBuilder();
+            for(int i=0;i<local.length();i++){
+                JSONObject item=local.optJSONObject(i);
+                if(item==null)continue;
+                String state=SubtitleShelf.state(item);
+                if(!"UNKNOWN".equals(state)&&!"SUBMITTING".equals(state))continue;
+                String title=item.optString("title"),id=item.optString("id");
+                String projectId=CloudProjectReceipt.matchingProjectId(remote,title);
+                if(SecurityRules.validUuid(projectId)){
+                    shelf.markQueued(id,projectId);linked++;
+                    notes.append(title).append(": server project found and linked.\n");
+                }else{
+                    remaining++;
+                    notes.append(title).append(": no unique server project. Still locked to prevent duplicates.\n");
+                }
             }
-        }
-        return "";
+            return new String[]{String.valueOf(linked),String.valueOf(remaining),notes.toString()};
+        },report->{
+            librarySelection.clear();reloadLibrary();
+            showCopyableReport("Cloudflare reconciliation",
+                report[0]+" movie(s) linked, "+report[1]+" remain uncertain.\n\n"+report[2]);
+        });
+    }
+    private void confirmMoviePause(String id,String title,boolean pause){
+        if(!SecurityRules.validUuid(id)){err("Movie has no confirmed Cloudflare project ID.");return;}
+        new AlertDialog.Builder(this).setTitle((pause?"Pause ":"Resume ")+title)
+            .setMessage("This controls only this movie project, not the whole Muse worker. Cloudflare must support movie-level pause/resume.")
+            .setNegativeButton("Cancel",null)
+            .setPositiveButton(pause?"Pause movie":"Resume movie",(d,w)->work("Updating movie queue",()->cloud.toggleMovie(id,pause),
+                result->showCopyableReport("Movie control",result.toString()))).show();
+    }
+    private void confirmExplicitRequeue(String id,String title){
+        EditText confirm=new EditText(this);confirm.setSingleLine(true);
+        confirm.setHint("Type REQUEUE");confirm.setTextColor(Color.BLACK);
+        new AlertDialog.Builder(this).setTitle("Explicitly allow another run?")
+            .setMessage("DANGER: Cloudflare may already be processing this movie. Only use this after checking Projects. This overrides automatic duplicate protection. Type REQUEUE.")
+            .setView(confirm).setNegativeButton("Cancel",null)
+            .setPositiveButton("Allow new submission",(d,w)->{
+                if(!"REQUEUE".equals(confirm.getText().toString().trim())){err("No change made.");return;}
+                work("Recording manual requeue approval",()->{shelf.allowRequeue(id);return true;},
+                    ok->{librarySelection.clear();reloadLibrary();});
+            }).show();
     }
     private JSONObject findEntry(String id){
         for(int i=0;i<library.length();i++){

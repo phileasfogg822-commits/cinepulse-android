@@ -521,6 +521,9 @@ public final class SubtitleLibraryActivity extends Activity {
                 for(String id:chosen)shelf.remove(id);return true;
             },x->{librarySelection.clear();reloadLibrary();})).show();
     }
+    private android.content.SharedPreferences submittedMovies(){
+        return getSharedPreferences("cinepulse_submitted_srt_v1",MODE_PRIVATE);
+    }
     private void batchDialog(){
         List<String> selected=new ArrayList<>(librarySelection);
         if(selected.isEmpty()){err("Select downloaded SRTs to upload.");return;}
@@ -547,30 +550,48 @@ public final class SubtitleLibraryActivity extends Activity {
                             active.add(worker.optString("id"));
                     }
                     if(active.isEmpty())throw new IllegalStateException("No enabled/unpaused Muse workers available. Resume a worker first.");
-                    int complete=0;int unconfirmed=0;StringBuilder failures=new StringBuilder();
+                    int complete=0;int unconfirmed=0;int skipped=0;StringBuilder failures=new StringBuilder();
+                    // Local idempotency also protects against accidental re-taps after a confirmed upload.
+                    // A server-side unique source hash / Idempotency-Key is still needed for cross-device guarantees.
+                    JSONObject remote=cloud.projects();
+                    JSONArray existing=remote.optJSONArray("projects");
+                    Set<String> knownTitles=new HashSet<>();
+                    if(existing!=null)for(int j=0;j<existing.length();j++){
+                        JSONObject project=existing.optJSONObject(j);
+                        if(project!=null && !"deleted".equalsIgnoreCase(project.optString("status")))
+                            knownTitles.add(project.optString("title","").trim().toLowerCase(Locale.ROOT));
+                    }
                     for(int i=0;i<selected.size();i++){
                         String id=selected.get(i);
                         JSONObject entry=findEntry(id);
                         if(entry==null){failures.append("Missing local item\n");continue;}
-                        final int done=i+1;info("Uploading movie "+done+"/"+selected.size());
+                        final int done=i+1;info("Checking movie "+done+"/"+selected.size());
                         try{
                             String name=entry.optString("title","Untitled").replaceAll("\\s+\\(\\d{4}\\)$","");
+                            if(submittedMovies().contains("submitted_"+id) ||
+                                knownTitles.contains(name.trim().toLowerCase(Locale.ROOT))){
+                                skipped++;
+                                continue;
+                            }
                             String srt=shelf.read(id);
                             JSONObject created=cloud.createProject(name,active.get(i%active.size()),srt,48,target);
                             if(!SecurityRules.validUuid(created.optJSONObject("project")!=null?
                                 created.optJSONObject("project").optString("id"):created.optString("id")))
                                 throw new IOExceptionWithMessage("Cloudflare response did not confirm the new project ID; refresh the project list before retrying.");
                             complete++;
+                            knownTitles.add(name.trim().toLowerCase(Locale.ROOT));
+                            submittedMovies().edit().putBoolean("submitted_"+id,true).apply();
                             if(created.optInt("targetMinutes",-1)!=target)unconfirmed++;
                         }catch(Exception error){
                             failures.append(entry.optString("title")).append(": ")
                                 .append(error.getMessage()==null?"failed":error.getMessage()).append("\n");
                         }
                     }
-                    return new String[]{String.valueOf(complete),String.valueOf(unconfirmed),failures.toString()};
+                    return new String[]{String.valueOf(complete),String.valueOf(unconfirmed),failures.toString(),String.valueOf(skipped)};
                 },report->{
                     librarySelection.clear();renderSaved();
-                    String summary=report[0]+" project(s) submitted to Cloudflare/Muse. "+
+                    String summary=report[0]+" project(s) submitted to Cloudflare/Muse; "+
+                        report[3]+" already-queued movie(s) skipped. "+
                         ("0".equals(report[1])?"Narration target confirmed for each.":report[1]+" target duration(s) NOT acknowledged by backend.")+
                         "\n\nEach worker must be online and polling to process its jobs. The downloaded SRTs remain saved locally.";
                     if(!report[2].isEmpty())summary+="\n\nFailures:\n"+report[2];

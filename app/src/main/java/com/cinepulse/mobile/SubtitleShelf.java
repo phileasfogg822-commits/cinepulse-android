@@ -77,12 +77,26 @@ final class SubtitleShelf {
         JSONArray all=entries();boolean changed=false;
         for(int i=0;i<all.length();i++){
             JSONObject item=all.optJSONObject(i);
-            if(item==null||!"READY".equals(state(item)))continue;
-            if(item.optInt("cues",0)<75||item.optDouble("durationSeconds",0)<3300){
-                item.put("state","NEEDS_REVIEW");
-                item.put("stateReason","Legacy SRT has insufficient cues or timeline. Collect a better release.");
-                changed=true;
+            if(item==null||!"READY".equals(state(item))||item.optInt("qualityVersion",0)>=1)continue;
+            String reason="";
+            try{
+                String existing=read(item.optString("id"));
+                SubtitleProvider.Srt parsed=SubtitleProvider.parseBytes(existing.getBytes(StandardCharsets.UTF_8));
+                SubtitleQuality.Result check=SubtitleQuality.assess(parsed,0);
+                if(!check.complete)reason=check.reason;
+                else{
+                    item.put("cues",parsed.cues).put("durationSeconds",parsed.duration)
+                        .put("sha256",parsed.sha256).put("qualityVersion",1);
+                }
+            }catch(Exception failure){
+                reason=failure.getMessage()==null?"Stored SRT unreadable":failure.getMessage();
             }
+            if(!reason.isEmpty()){
+                item.put("state","NEEDS_REVIEW");
+                item.put("stateReason","Legacy SRT needs replacement: "+
+                    (reason.length()>100?reason.substring(0,100):reason));
+            }
+            changed=true;
         }
         if(changed)write(all);
     }
@@ -106,7 +120,7 @@ final class SubtitleShelf {
                 }
                 previous.put("title",hit.optString("title")).put("release",hit.optString("release"))
                     .put("sha256",srt.sha256).put("cues",srt.cues)
-                    .put("durationSeconds",srt.duration).put("state","READY")
+                    .put("durationSeconds",srt.duration).put("qualityVersion",1).put("state","READY")
                     .remove("stateReason");
                 write(all);
                 return previous;
@@ -129,6 +143,7 @@ final class SubtitleShelf {
             .put("sha256",srt.sha256)
             .put("durationSeconds",srt.duration)
             .put("cues",srt.cues)
+            .put("qualityVersion",1)
             .put("downloadedAt",System.currentTimeMillis());
         all.put(entry);
         try{write(all);}catch(Exception e){file.delete();throw e;}

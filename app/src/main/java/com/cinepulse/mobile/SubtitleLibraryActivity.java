@@ -781,18 +781,19 @@ public final class SubtitleLibraryActivity extends Activity {
         if(library.length()==0){
             add(libraryArea,label("No stored subtitles yet. Collect 5, 10 or 20 complete SRTs above.",12,MUTED,false));return;
         }
-        int ready=0,queued=0,uncertain=0,review=0;
+        int ready=0,queued=0,finished=0,uncertain=0,review=0;
         for(int i=0;i<library.length();i++){
             JSONObject entry=library.optJSONObject(i);if(entry==null)continue;
             String state=SubtitleShelf.state(entry);
             if("QUEUED".equals(state))queued++;
+            else if("FINISHED".equals(state))finished++;
             else if("UNKNOWN".equals(state)||"SUBMITTING".equals(state))uncertain++;
             else if("NEEDS_REVIEW".equals(state))review++;
             else ready++;
         }
         add(libraryArea,label("READY "+ready+"  •  QUEUED "+queued+"  •  UNCERTAIN "+uncertain+
-            "  •  NEEDS REVIEW "+review+"  •  Selected "+librarySelection.size(),12,GREEN,true));
-        String[] groups={"READY","SUBMITTING","UNKNOWN","QUEUED","NEEDS_REVIEW"};
+            "  •  FINISHED "+finished+"  •  NEEDS REVIEW "+review+"  •  Selected "+librarySelection.size(),12,GREEN,true));
+        String[] groups={"READY","SUBMITTING","UNKNOWN","QUEUED","FINISHED","NEEDS_REVIEW"};
         for(String group:groups){
             boolean printed=false;
             for(int i=library.length()-1;i>=0;i--){
@@ -822,6 +823,9 @@ public final class SubtitleLibraryActivity extends Activity {
                         button(libraryArea,"▶ Resume this movie",()->confirmMoviePause(projectId,title,false));
                         button(libraryArea,"Export this queued SRT",()->openExportFolder(Collections.singletonList(id)));
                         button(libraryArea,"Run this movie AGAIN (explicit override)",()->confirmExplicitRequeue(id,title));
+                    }else if("FINISHED".equals(group)){
+                        button(libraryArea,"Export this finished SRT",()->openExportFolder(Collections.singletonList(id)));
+                        button(libraryArea,"Run movie AGAIN (explicit override)",()->confirmExplicitRequeue(id,title));
                     }else if("SUBMITTING".equals(group)||"UNKNOWN".equals(group)){
                         button(libraryArea,"Check server for "+title,()->reconcileUnknownSubmissions());
                         button(libraryArea,"I verified: allow a new submission",()->confirmExplicitRequeue(id,title));
@@ -943,12 +947,24 @@ public final class SubtitleLibraryActivity extends Activity {
     private void reconcileUnknownSubmissions(){
         work("Rechecking Cloudflare for uncertain movies",()->{
             JSONArray remote=cloud.projects().getJSONArray("projects");
-            JSONArray local=shelf.entries();int linked=0,remaining=0;
+            JSONArray local=shelf.entries();int linked=0,remaining=0,finished=0;
             StringBuilder notes=new StringBuilder();
             for(int i=0;i<local.length();i++){
                 JSONObject item=local.optJSONObject(i);
                 if(item==null)continue;
                 String state=SubtitleShelf.state(item);
+                if("QUEUED".equals(state)){
+                    String projectId=item.optString("projectId","");
+                    for(int j=0;j<remote.length();j++){
+                        JSONObject server=remote.optJSONObject(j);
+                        if(server==null||!projectId.equals(server.optString("id")))continue;
+                        String status=server.optString("status");
+                        if("ready".equals(status)||"needs_review".equals(status)||"completed".equals(status)){
+                            shelf.markFinished(item.optString("id"));finished++;
+                        }
+                    }
+                    continue;
+                }
                 if(!"UNKNOWN".equals(state)&&!"SUBMITTING".equals(state))continue;
                 String title=item.optString("title"),id=item.optString("id");
                 String projectId=CloudProjectReceipt.matchingProjectId(remote,title);
@@ -960,11 +976,11 @@ public final class SubtitleLibraryActivity extends Activity {
                     notes.append(title).append(": no unique server project. Still locked to prevent duplicates.\n");
                 }
             }
-            return new String[]{String.valueOf(linked),String.valueOf(remaining),notes.toString()};
+            return new String[]{String.valueOf(linked),String.valueOf(remaining),String.valueOf(finished),notes.toString()};
         },report->{
             librarySelection.clear();reloadLibrary();
             showCopyableReport("Cloudflare reconciliation",
-                report[0]+" movie(s) linked, "+report[1]+" remain uncertain.\n\n"+report[2]);
+                report[0]+" movie(s) linked, "+report[1]+" remain uncertain; "+report[2]+" completed movie(s) updated.\n\n"+report[3]);
         });
     }
     private void confirmMoviePause(String id,String title,boolean pause){

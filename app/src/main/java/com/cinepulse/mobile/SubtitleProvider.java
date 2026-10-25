@@ -233,12 +233,17 @@ final class SubtitleProvider {
         int movieCount=movies==null?0:movies.length();
         int subtitleCount=subs==null?0:subs.length();
         String foundTitle=title.trim();
+        int movieRuntime=0;String foundImdb="";
         if(movieCount>0){
             JSONObject first=movies.optJSONObject(0);
             if(first!=null){
                 String name=first.optString("name",foundTitle);
                 if(!name.trim().isEmpty())foundTitle=name.trim();
                 if(first.optInt("year",0)>1900)foundTitle+=" ("+first.optInt("year")+")";
+                foundImdb=first.optString("imdb_id","");
+                movieRuntime=first.optInt("runtime",first.optInt("runtime_minutes",0));
+                if(movieRuntime>240&&movieRuntime<14400)movieRuntime/=60;
+                if(movieRuntime<45||movieRuntime>240)movieRuntime=0;
             }
         }
         JSONArray hits=new JSONArray();
@@ -266,7 +271,8 @@ final class SubtitleProvider {
                 try{
                     hit.put("title",foundTitle).put("release",file.optString("release_name",release))
                         .put("language",language).put("path",path)
-                        .put("hi",file.optBoolean("hi",entry.optBoolean("hi",false)));
+                        .put("hi",file.optBoolean("hi",entry.optBoolean("hi",false)))
+                        .put("runtimeMinutes",movieRuntime).put("imdbId",foundImdb);
                 }catch(org.json.JSONException ignored){continue;}
                 if(included.add(path)){hits.put(hit);foundIndividual=true;}
             }
@@ -279,7 +285,8 @@ final class SubtitleProvider {
                 if(included.add(path)){
                     try{
                         hits.put(new JSONObject().put("title",foundTitle).put("release",release)
-                            .put("language",language).put("path",path).put("hi",entry.optBoolean("hi",false)));
+                            .put("language",language).put("path",path).put("hi",entry.optBoolean("hi",false))
+                            .put("runtimeMinutes",movieRuntime).put("imdbId",foundImdb));
                     }catch(org.json.JSONException ignored){}
                 }
             }else if(!foundIndividual)badLinks++;
@@ -581,6 +588,9 @@ final class SubtitleProvider {
         return download(path,null);
     }
     static Srt download(String path,String apiKey) throws Exception{
+        return download(path,apiKey,"EN");
+    }
+    static Srt download(String path,String apiKey,String language) throws Exception{
         byte[] data;
         if(path!=null && path.startsWith("v2:")){
             String id=path.substring(3);
@@ -595,24 +605,40 @@ final class SubtitleProvider {
             data=fetchSubtitleBytes(path);
         }
         if(data.length>=4&&data[0]=='P'&&data[1]=='K'){
-            try(ZipInputStream z=new ZipInputStream(new ByteArrayInputStream(data))){
-                int entries=0;ZipEntry entry;
-                while((entry=z.getNextEntry())!=null){
-                    if(++entries>50)throw new IOException("Too many files in subtitle ZIP.");
-                    if(entry.isDirectory()||!entry.getName().toLowerCase(Locale.ROOT).endsWith(".srt"))continue;
-                    try(ByteArrayOutputStream out=new ByteArrayOutputStream()){
-                        byte[] buf=new byte[8192];int n,total=0;
-                        while((n=z.read(buf))!=-1){
-                            total+=n;if(total>MAX_SRT)throw new IOException("Subtitle ZIP entry expands beyond 2 MiB.");
-                            out.write(buf,0,n);
-                        }
-                        return parseSrt(out.toByteArray());
-                    }
-                }
-            }
-            throw new IOException("SubDL archive has no SRT (it may only contain ASS/SUB). Choose another subtitle release.");
+            return bestSrtFromZip(data,language);
         }
         return parseSrt(data);
+    }
+    static Srt bestSrtFromZip(byte[] data,String wanted) throws Exception{
+        Srt best=null;int bestScore=Integer.MIN_VALUE,entries=0;
+        try(ZipInputStream z=new ZipInputStream(new ByteArrayInputStream(data))){
+            ZipEntry entry;
+            while((entry=z.getNextEntry())!=null){
+                if(++entries>50)throw new IOException("Too many files in subtitle ZIP.");
+                if(entry.isDirectory()||!entry.getName().toLowerCase(Locale.ROOT).endsWith(".srt"))continue;
+                String name=entry.getName().toLowerCase(Locale.ROOT);
+                // Skip files explicitly marked for the opposite language, even if first in ZIP.
+                boolean en=name.matches(".*(?:^|[._\\- /\\[\\(])(en|eng|english)(?:[._\\- /\\]\\)]|$).*");
+                boolean ur=name.matches(".*(?:^|[._\\- /\\[\\(])(ur|urd|urdu)(?:[._\\- /\\]\\)]|$).*");
+                if(("EN".equals(wanted)&&ur&&!en)||("UR".equals(wanted)&&en&&!ur))continue;
+                try(ByteArrayOutputStream out=new ByteArrayOutputStream()){
+                    byte[] buf=new byte[8192];int n,total=0;
+                    while((n=z.read(buf))!=-1){
+                        if((total+=n)>MAX_SRT)throw new IOException("SRT ZIP entry expands beyond 2 MiB.");
+                        out.write(buf,0,n);
+                    }
+                    try{
+                        Srt candidate=parseSrt(out.toByteArray());
+                        int score=(SubtitleQuality.assess(candidate,0).complete?300:0)+
+                            Math.min(240,candidate.cues/8)+(int)Math.min(150,candidate.duration/60);
+                        if(("EN".equals(wanted)&&en)||("UR".equals(wanted)&&ur))score+=500;
+                        if(score>bestScore){best=candidate;bestScore=score;}
+                    }catch(IOException ignored){/* Another archive member may be valid. */}
+                }
+            }
+        }
+        if(best==null)throw new IOException("No valid "+wanted+" SRT found in provider ZIP.");
+        return best;
     }
     /** Some downloads serve an HTML interstitial before file bytes.
      * Repeat once against the SAME trusted URL; never parse/click HTML,

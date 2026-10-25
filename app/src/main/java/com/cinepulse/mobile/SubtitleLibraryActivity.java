@@ -7,6 +7,8 @@ import android.content.ClipboardManager;
 import android.content.ClipData;
 import android.database.Cursor;
 import android.provider.OpenableColumns;
+import android.provider.DocumentsContract;
+import android.content.SharedPreferences;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
@@ -150,7 +152,7 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void buildUi(){
         root=column();root.setBackgroundColor(BG);setContentView(root);
-        TextView heading=label("SRT DOWNLOADER  •  v0.2.5",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
+        TextView heading=label("SRT DOWNLOADER  •  v0.2.6",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
         TextView sub=label("Browse subtitle websites • save to Downloads • import SRT/ZIP",12,MUTED,false);
         sub.setPadding(dp(18),0,dp(18),dp(12));add(root,sub);
         ScrollView scroll=new ScrollView(this);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -163,11 +165,15 @@ public final class SubtitleLibraryActivity extends Activity {
         button(browserBox,"Open verified individual Inception subtitle",()->openSubtitleBrowser("https://subdl.com/s/info/e7iE3R6nMC"));
         button(browserBox,"Try OpenSubtitles",()->openSubtitleBrowser("https://www.opensubtitles.com/"));
         button(browserBox,"Try SubSource",()->openSubtitleBrowser("https://subsource.net/"));
-        button(browserBox,"Import downloaded SRT / ZIP",this::chooseLocalSubtitles);
+        button(browserBox,"Fetch new SRTs from selected Downloads folder",this::fetchNewDownloads);
+        button(browserBox,"Choose Downloads folder (remember location)",this::chooseDownloadsFolder);
+        button(browserBox,"Import selected SRT / ZIP files",this::chooseLocalSubtitles);
+        button(browserBox,"Collect 5 / 10 / 20 via SubDL API (requires key)",this::bulkCollectDialog);
         LinearLayout saved=box(container);
         add(saved,label("My saved SRT files",17,WHITE,true));
         add(saved,label("Keep up to 1,000 subtitles on this device. Select 10 of 100 for example, then submit just those movies to Muse.",12,MUTED,false));
         libraryArea=column();add(saved,libraryArea);
+        add(saved,label("Start sends one selected SRT to Cloudflare. Pause/Stop are available in the main Projects screen when supported by the backend.",12,MUTED,false));
 
 
 
@@ -191,6 +197,43 @@ public final class SubtitleLibraryActivity extends Activity {
         Intent intent=new Intent(this,SubtitleBrowserActivity.class);
         intent.putExtra("url",url);
         startActivityForResult(intent,OPEN_SUBTITLE_BROWSER);
+    }
+    private static final int PICK_DOWNLOADS_FOLDER=8721;
+    private SharedPreferences downloadPrefs(){return getSharedPreferences("subtitle_downloads",MODE_PRIVATE);}
+    private void chooseDownloadsFolder(){
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(intent,PICK_DOWNLOADS_FOLDER);
+    }
+    private void fetchNewDownloads(){
+        String saved=downloadPrefs().getString("tree","");
+        if(saved.isEmpty()){chooseDownloadsFolder();return;}
+        Uri tree=Uri.parse(saved);
+        work("Scanning authorized Downloads folder",()->{
+            Uri children=DocumentsContract.buildChildDocumentsUriUsingTree(tree,DocumentsContract.getTreeDocumentId(tree));
+            int files=0,imported=0;StringBuilder failures=new StringBuilder();
+            try(Cursor cursor=getContentResolver().query(children,
+                new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE},null,null,null)){
+                if(cursor==null)throw new IOException("Downloads folder is not accessible");
+                while(cursor.moveToNext()&&files<200){
+                    String docId=cursor.getString(0),name=cursor.getString(1),type=cursor.getString(2);
+                    if(name==null||DocumentsContract.Document.MIME_TYPE_DIR.equals(type))continue;
+                    String lower=name.toLowerCase(Locale.ROOT);
+                    if(!lower.endsWith(".zip")&&!lower.endsWith(".srt"))continue;
+                    files++;
+                    Uri file=DocumentsContract.buildDocumentUriUsingTree(tree,docId);
+                    try{imported+=importFile(file);}
+                    catch(Exception e){failures.append(name).append(": ").append(e.getMessage()).append("\\n");}
+                }
+            }
+            return new String[]{String.valueOf(files),String.valueOf(imported),failures.toString()};
+        },result->{
+            reloadLibrary();
+            new AlertDialog.Builder(this).setTitle("Downloads scan complete")
+                .setMessage("Checked "+result[0]+" SRT/ZIP files; "+result[1]+" valid SRT entries processed. Duplicate subtitle content is ignored.\\n"+result[2])
+                .setPositiveButton("OK",null).show();
+        });
     }
     private void chooseLocalSubtitles(){
         Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -271,6 +314,17 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);
+        if(request==PICK_DOWNLOADS_FOLDER){
+            if(result==RESULT_OK&&data!=null&&data.getData()!=null){
+                Uri folder=data.getData();
+                try{
+                    getContentResolver().takePersistableUriPermission(folder,Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    downloadPrefs().edit().putString("tree",folder.toString()).apply();
+                    fetchNewDownloads();
+                }catch(Exception e){err("Cannot remember Downloads folder: "+e.getMessage());}
+            }
+            return;
+        }
         if(request==OPEN_SUBTITLE_BROWSER){
             if(result==RESULT_OK&&data!=null&&data.getBooleanExtra("open_import",false))chooseLocalSubtitles();
             return;
@@ -467,6 +521,16 @@ public final class SubtitleLibraryActivity extends Activity {
                 if(selected)librarySelection.add(id);else librarySelection.remove(id);
             });
             add(libraryArea,cb);
+            button(libraryArea,"Start movie: "+e.optString("title"),()->{
+                librarySelection.clear();
+                librarySelection.add(id);
+                batchDialog();
+            });
+            button(libraryArea,"Pause / Stop (open Projects)",()->{
+                new AlertDialog.Builder(this).setTitle("Project controls")
+                    .setMessage("Use the main Projects screen to pause or stop a Cloudflare movie. A locally saved subtitle is not running until you start it.")
+                    .setPositiveButton("OK",null).show();
+            });
         }
     }
     private void deleteSelection(){

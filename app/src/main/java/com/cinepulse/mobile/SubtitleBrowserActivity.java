@@ -23,12 +23,20 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.Toast;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** User-controlled subtitle browsing; never sends provider credentials to a web page. */
 public final class SubtitleBrowserActivity extends Activity {
     private WebView browser;
     private Runnable pendingDownload;
     private static final int STORAGE_PERMISSION=731;
+    private static final Pattern ZIP=Pattern.compile("https://dl\\.subdl\\.com/subtitle/[A-Za-z0-9_-]+\\.zip",Pattern.CASE_INSENSITIVE);
+    private static String zipFrom(String raw){
+        if(raw==null)return null;
+        Matcher m=ZIP.matcher(raw);
+        return m.find()?m.group():null;
+    }
     private static final String HOME="https://subdl.com/subtitle/sd2922/inception/english";
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
@@ -61,6 +69,8 @@ public final class SubtitleBrowserActivity extends Activity {
         browser.setWebChromeClient(new WebChromeClient());
         browser.setWebViewClient(new WebViewClient(){
             @Override public boolean shouldOverrideUrlLoading(WebView view,WebResourceRequest request){
+                String zip=zipFrom(request.getUrl().toString());
+                if(zip!=null){downloadZip(zip);return true;}
                 Uri uri=request.getUrl();
                 if(!"https".equalsIgnoreCase(uri.getScheme()))return true;
                 String host=uri.getHost()==null?"":uri.getHost().toLowerCase(Locale.ROOT);
@@ -75,7 +85,15 @@ public final class SubtitleBrowserActivity extends Activity {
             }
             @Override public void onPageFinished(WebView view,String url){address.setText(url);}
         });
+        browser.setOnLongClickListener(v->{
+            WebView.HitTestResult hit=browser.getHitTestResult();
+            String zip=zipFrom(hit==null?null:hit.getExtra());
+            if(zip==null)return false;
+            downloadZip(zip);return true;
+        });
         browser.setDownloadListener((url,userAgent,disposition,mime,length)->{
+            String zip=zipFrom(url);
+            if(zip!=null){downloadZip(zip);return;}
             Uri uri=Uri.parse(url);
             String host=uri.getHost()==null?"":uri.getHost().toLowerCase(Locale.ROOT);
             if(!"https".equalsIgnoreCase(uri.getScheme())||host.isEmpty()){
@@ -113,6 +131,8 @@ public final class SubtitleBrowserActivity extends Activity {
         setContentView(panel);
         go.setOnClickListener(v->{
             String target=address.getText().toString().trim();
+            String zip=zipFrom(target);
+            if(zip!=null){downloadZip(zip);return;}
             Uri uri=Uri.parse(target);
             if("https".equalsIgnoreCase(uri.getScheme())&&allowed(uri.getHost()==null?"":uri.getHost().toLowerCase(Locale.ROOT)))
                 browser.loadUrl(target);
@@ -128,6 +148,29 @@ public final class SubtitleBrowserActivity extends Activity {
         String initial=getIntent().getStringExtra("url");
         Uri initialUri=Uri.parse(initial==null?HOME:initial);
         browser.loadUrl("https".equalsIgnoreCase(initialUri.getScheme())&&allowed(initialUri.getHost()==null?"":initialUri.getHost().toLowerCase(Locale.ROOT))?initialUri.toString():HOME);
+    }
+    private void downloadZip(String url){
+        new AlertDialog.Builder(this).setTitle("Save SubDL subtitle ZIP?")
+            .setMessage(url).setNegativeButton("Cancel",null)
+            .setPositiveButton("Download",(d,w)->{
+                Runnable action=()->{
+                    try{
+                        DownloadManager.Request req=new DownloadManager.Request(Uri.parse(url));
+                        req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                        req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,"cinepulse-subtitle-"+System.currentTimeMillis()+".zip");
+                        String cookies=CookieManager.getInstance().getCookie(url);
+                        if(cookies!=null)req.addRequestHeader("Cookie",cookies);
+                        String ref=browser.getUrl();
+                        if(ref!=null&&ref.startsWith("https://"))req.addRequestHeader("Referer",ref);
+                        ((DownloadManager)getSystemService(Context.DOWNLOAD_SERVICE)).enqueue(req);
+                        Toast.makeText(this,"Download queued in Downloads",Toast.LENGTH_LONG).show();
+                    }catch(Exception e){Toast.makeText(this,"Download failed: "+e.getClass().getSimpleName(),Toast.LENGTH_LONG).show();}
+                };
+                if(Build.VERSION.SDK_INT<=28&&checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)!=PackageManager.PERMISSION_GRANTED){
+                    pendingDownload=action;
+                    requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},STORAGE_PERMISSION);
+                }else action.run();
+            }).show();
     }
     private static boolean allowed(String host){
         return "subdl.com".equals(host)||"www.subdl.com".equals(host)||"dl.subdl.com".equals(host)||"opensubtitles.com".equals(host)||"www.opensubtitles.com".equals(host)||"subsource.net".equals(host)||"www.subsource.net".equals(host);

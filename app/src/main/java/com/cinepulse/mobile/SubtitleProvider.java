@@ -114,7 +114,7 @@ final class SubtitleProvider {
         Matcher labeled=Pattern.compile("https://dl\\.subdl\\.com/subtitle/[A-Za-z0-9_-]+\\.zip",Pattern.CASE_INSENSITIVE).matcher(p);
         if(labeled.find() && (p.toLowerCase(Locale.ROOT).startsWith("quick download") || p.equals(labeled.group())))p=labeled.group();
         // SubDL API adds an API key to downloadable relative paths. Never expose it to the CDN.
-        if(p.matches("(?i)(?:https://dl\\\\.subdl\\\\.com)?/subtitle/[0-9]+-[0-9]+\\\\.zip\\\\?api_key=[A-Za-z0-9_-]+"))
+        if(p.matches("(?i)(?:https://dl\\.subdl\\.com)?/subtitle/[0-9]+-[0-9]+\\.zip\\?api_key=[A-Za-z0-9_-]+"))
             p=p.substring(0,p.indexOf('?'));
         if(p.startsWith("https://")){
             try{

@@ -615,11 +615,10 @@ public final class SubtitleLibraryActivity extends Activity {
                             String name=entry.optString("title","Untitled").replaceAll("\\s+\\(\\d{4}\\)$","");
                             String srt=shelf.read(id);
                             JSONObject created=cloud.createProject(name,active.get(i%active.size()),srt,48,target);
-                            if(!SecurityRules.validUuid(created.optJSONObject("project")!=null?
-                                created.optJSONObject("project").optString("id"):created.optString("id")))
-                                throw new IOExceptionWithMessage("Cloudflare response did not confirm the new project ID; refresh the project list before retrying.");
-                            shelf.markQueued(id,created.optJSONObject("project")!=null?
-                                created.optJSONObject("project").optString("id"):created.optString("id"));
+                            String projectId=confirmedProjectId(created);
+                            if(!SecurityRules.validUuid(projectId))
+                                throw new IOExceptionWithMessage("Cloudflare returned no recognized project UUID. Submission status is UNKNOWN; do not retry until Projects is checked. Response fields: "+created.names());
+                            shelf.markQueued(id,projectId);
                             complete++;
                             if(created.optInt("targetMinutes",-1)!=target)unconfirmed++;
                         }catch(Exception error){
@@ -638,6 +637,17 @@ public final class SubtitleLibraryActivity extends Activity {
                         .setMessage(summary).setPositiveButton("OK",null).show();
                 });
             }).show();
+    }
+    private static String confirmedProjectId(JSONObject response){
+        JSONObject[] sources={response,response.optJSONObject("project"),response.optJSONObject("data"),response.optJSONObject("result")};
+        for(JSONObject source:sources){
+            if(source==null)continue;
+            for(String key:new String[]{"id","projectId","project_id"}){
+                String value=source.optString(key,"");
+                if(SecurityRules.validUuid(value))return value;
+            }
+        }
+        return "";
     }
     private JSONObject findEntry(String id){
         for(int i=0;i<library.length();i++){

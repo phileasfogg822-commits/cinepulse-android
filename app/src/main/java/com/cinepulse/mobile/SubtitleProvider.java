@@ -111,10 +111,10 @@ final class SubtitleProvider {
     static String normalizeDownloadPath(String raw){
         if(raw==null)return "";
         String p=raw.trim();
-        // SubDL sometimes exposes a labeled link: "Quick Download https://dl.subdl.com/subtitle/123.zip".
-        // Extract ONLY the canonical first-party HTTPS ZIP URL, never arbitrary embedded hosts.
-        Matcher labeled=Pattern.compile("https://dl\\\\.subdl\\\\.com/subtitle/[A-Za-z0-9_-]+\\\\.zip",Pattern.CASE_INSENSITIVE).matcher(p);
+        Matcher labeled=Pattern.compile("https://dl\\.subdl\\.com/subtitle/[A-Za-z0-9_-]+\\.zip",Pattern.CASE_INSENSITIVE).matcher(p);
         if(labeled.find())p=labeled.group();
+        // SubDL API adds an API key to downloadable relative paths. Never expose it to the CDN.
+        p=p.replaceFirst("(?i)\\?api_key=[A-Za-z0-9_-]+$", "");
         if(p.startsWith("https://")){
             try{
                 java.net.URI uri=new java.net.URI(p);
@@ -125,7 +125,7 @@ final class SubtitleProvider {
                 p=uri.getRawPath();
             }catch(Exception ignored){return "";}
         }
-        if(p!=null&&p.startsWith("subtitle/"))p="/"+p;
+        if(p.startsWith("subtitle/"))p="/"+p;
         return cleanTrustedPath(p);
     }
     private static String cleanTrustedPath(String raw){

@@ -152,7 +152,7 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void buildUi(){
         root=column();root.setBackgroundColor(BG);setContentView(root);
-        TextView heading=label("SRT DOWNLOADER  •  v0.2.6",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
+        TextView heading=label("SRT DOWNLOADER  •  v0.2.7",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
         TextView sub=label("Browse subtitle websites • save to Downloads • import SRT/ZIP",12,MUTED,false);
         sub.setPadding(dp(18),0,dp(18),dp(12));add(root,sub);
         ScrollView scroll=new ScrollView(this);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -168,7 +168,15 @@ public final class SubtitleLibraryActivity extends Activity {
         button(browserBox,"Fetch new SRTs from selected Downloads folder",this::fetchNewDownloads);
         button(browserBox,"Choose Downloads folder (remember location)",this::chooseDownloadsFolder);
         button(browserBox,"Import selected SRT / ZIP files",this::chooseLocalSubtitles);
-        button(browserBox,"Collect 5 / 10 / 20 via SubDL API (requires key)",this::bulkCollectDialog);
+
+        LinearLayout automatic=box(container);
+        add(automatic,label("AUTOMATIC SUBTITLE COLLECTOR",17,WHITE,true));
+        add(automatic,label("Separate from manual browsing. Configure your own SubDL API key, then collect English subtitles for 5, 10 or 20 different randomly selected movie titles. Saves locally; does not start Muse.",12,MUTED,false));
+        button(automatic,"1. Enter / update SubDL API key",this::configureKey);
+        button(automatic,"2. Test API connection",this::testSubdlConnection);
+        button(automatic,"3. Collect 5 random movie SRTs",()->collectRandom(5));
+        button(automatic,"4. Collect 10 random movie SRTs",()->collectRandom(10));
+        button(automatic,"5. Collect 20 random movie SRTs",()->collectRandom(20));
         LinearLayout saved=box(container);
         add(saved,label("My saved SRT files",17,WHITE,true));
         add(saved,label("Keep up to 1,000 subtitles on this device. Select 10 of 100 for example, then submit just those movies to Muse.",12,MUTED,false));
@@ -384,68 +392,62 @@ public final class SubtitleLibraryActivity extends Activity {
             .setItems(candidates,(d,w)->{query.setText(candidates[w]);search(candidates[w]);})
             .setNegativeButton("Cancel",null).show();
     }
-    private void bulkCollectDialog(){
-        final String[] sizes={"5 random movie subtitles","10 random movie subtitles","20 random movie subtitles"};
-        final int[] count={10};
-        new AlertDialog.Builder(this).setTitle("Bulk SRT collector")
-            .setSingleChoiceItems(sizes,1,(d,which)->count[0]=new int[]{5,10,20}[which])
-            .setMessage("Search official SubDL movie subtitles and download one valid SRT per available title. Titles are from the built-in rotating ideas list, not a live popularity ranking. Provider quotas apply. Requests run one at a time. Keep CinePulse open. No movies are submitted to Cloudflare.")
+    private void testSubdlConnection(){
+        work("Checking SubDL API key",()->{
+            String key=providerKey.load();
+            if(key==null||key.trim().isEmpty())throw new IOException("Enter your SubDL API key first.");
+            SubtitleProvider.SearchResult result=SubtitleProvider.searchDetailed(key,"Inception","EN");
+            return result.diagnostic;
+        },message->showCopyableReport("SubDL connection test",message));
+    }
+    private void collectRandom(int count){
+        new AlertDialog.Builder(this).setTitle("Collect "+count+" English SRTs")
+            .setMessage("Search up to "+Math.min(70,count*4)+" randomly selected movie titles, download and validate one English subtitle per movie using your SubDL API key. No Cloudflare project will start. Keep this screen open.")
             .setNegativeButton("Cancel",null)
-            .setPositiveButton("Collect",(d,w)->{
-                final String lang=language.getSelectedItemPosition()==1?"UR":"EN";
-                final int n=count[0];
-                work("Collecting "+n+" subtitles",()->{
-                    String key=providerKey.load();
-                    if(key==null)throw new IllegalStateException("Set your SubDL API key first.");
-                    JSONArray existing=shelf.entries();
-                    Set<String> present=new HashSet<>();
-                    for(int i=0;i<existing.length();i++){
-                        JSONObject item=existing.optJSONObject(i);
-                        if(item!=null)present.add(item.optString("title").toLowerCase(Locale.ROOT));
-                    }
-                    List<String> names=new ArrayList<>();Collections.addAll(names,IDEAS);
-                    Collections.shuffle(names);
-                    int saved=0,lookups=0;StringBuilder failures=new StringBuilder();
-                    for(String name:names){
-                        if(saved>=n||lookups>=Math.min(70,n*4))break;
-                        if(present.contains(name.toLowerCase(Locale.ROOT)))continue;
-                        lookups++;
-                        final int completed=saved,attempt=lookups;
-                        info("Subtitle search "+attempt+" • "+saved+"/"+n+" saved");
-                        try{
-                            SubtitleProvider.SearchResult response=SubtitleProvider.searchDetailed(key,name,lang);
-                            JSONArray found=response.hits;
-                            if(found.length()==0)continue;
-                            JSONObject best=null;
-                            // Only accept an exact title (with optional release year), not a loosely related search hit.
-                            for(int i=0;i<found.length();i++){
-                                JSONObject hit=found.optJSONObject(i);
-                                if(hit==null)continue;
-                                String candidate=hit.optString("title").replaceAll("\\s+\\(\\d{4}\\)$","").trim();
-                                if(candidate.equalsIgnoreCase(name) && !hit.optBoolean("hi",false)){best=hit;break;}
-                            }
-                            if(best==null)continue;
-                            SubtitleProvider.Srt subtitle=SubtitleProvider.download(best.getString("path"),key);
-                            shelf.save(best,subtitle);saved++;
-                            present.add(name.toLowerCase(Locale.ROOT));
-                            // Deliberate provider pacing; never parallelize unsolicited batch downloads.
-                            Thread.sleep(900);
-                        }catch(Exception e){
-                            String error=e.getMessage()==null?"provider error":e.getMessage();
-                            if(error.contains("rate limit")||error.contains("quota")){failures.append("Stopped at provider quota / rate limit.");break;}
-                            // Individual absent/invalid subtitles should not abort the entire collection.
+            .setPositiveButton("Collect",(d,w)->work("Collecting "+count+" English SRTs",()->{
+                String key=providerKey.load();
+                if(key==null||key.trim().isEmpty())throw new IOException("Enter your SubDL API key using the separate key button.");
+                JSONArray existing=shelf.entries();
+                Set<String> present=new HashSet<>();
+                for(int i=0;i<existing.length();i++){
+                    JSONObject item=existing.optJSONObject(i);
+                    if(item!=null)present.add(item.optString("title").toLowerCase(Locale.ROOT));
+                }
+                List<String> names=new ArrayList<>();Collections.addAll(names,IDEAS);
+                Collections.shuffle(names);
+                int saved=0,lookups=0;StringBuilder report=new StringBuilder();
+                for(String name:names){
+                    if(saved>=count||lookups>=Math.min(70,count*4))break;
+                    if(present.contains(name.toLowerCase(Locale.ROOT)))continue;
+                    lookups++;
+                    info("SubDL: searching "+lookups+" | imported "+saved+"/"+count+" | "+name);
+                    try{
+                        SubtitleProvider.SearchResult response=SubtitleProvider.searchDetailed(key,name,"EN");
+                        JSONObject best=null;
+                        for(int i=0;i<response.hits.length();i++){
+                            JSONObject hit=response.hits.optJSONObject(i);
+                            if(hit==null)continue;
+                            String candidate=hit.optString("title").replaceAll("\\s+\\(\\d{4}\\)$","").trim();
+                            if(candidate.equalsIgnoreCase(name)&&!hit.optBoolean("hi",false)){best=hit;break;}
                         }
+                        if(best==null){report.append(name).append(": no exact English match\\n");continue;}
+                        SubtitleProvider.Srt subtitle=SubtitleProvider.download(best.getString("path"),key);
+                        shelf.save(best,subtitle);
+                        saved++;present.add(name.toLowerCase(Locale.ROOT));
+                        report.append(name).append(": imported ").append(subtitle.cues).append(" cues\\n");
+                        Thread.sleep(900);
+                    }catch(Exception e){
+                        String reason=e.getMessage()==null?"download error":e.getMessage();
+                        report.append(name).append(": ").append(reason).append("\\n");
+                        if(reason.toLowerCase(Locale.ROOT).contains("rate limit")||reason.toLowerCase(Locale.ROOT).contains("quota")||reason.contains("401")||reason.contains("403"))break;
                     }
-                    return new String[]{String.valueOf(saved),String.valueOf(lookups),failures.toString()};
-                },response->{
-                    reloadLibrary();
-                    new AlertDialog.Builder(this).setTitle("Bulk collection complete")
-                        .setMessage(response[0]+" subtitle(s) saved locally after "+response[1]+" title searches."+
-                            (response[2].isEmpty()?"":"\n"+response[2])+
-                            "\n\nOpen My saved SRT files to select up to 10 for Muse. The provider does not guarantee every title or language.")
-                        .setPositiveButton("OK",null).show();
-                });
-            }).show();
+                }
+                return new String[]{String.valueOf(saved),String.valueOf(lookups),report.toString()};
+            },result->{
+                reloadLibrary();
+                showCopyableReport("Automatic collection report",
+                    "Imported "+result[0]+"/"+count+" English SRTs after "+result[1]+" searches.\\n\\n"+result[2]);
+            })).show();
     }
     private void search(String title){
         final String lang=language.getSelectedItemPosition()==1?"UR":"EN";

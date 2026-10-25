@@ -203,9 +203,10 @@ public final class SubtitleLibraryActivity extends Activity {
         Toast.makeText(this,"Diagnostic copied — no API key included",Toast.LENGTH_LONG).show();
     }
     private void showCopyableReport(String title,String text){
-        new AlertDialog.Builder(this).setTitle(title).setMessage(text)
+        String readable=text.replace("\\n","\n");
+        new AlertDialog.Builder(this).setTitle(title).setMessage(readable)
             .setNegativeButton("Close",null)
-            .setPositiveButton("Copy diagnostic",(dialog,which)->copyDiagnostic(text))
+            .setPositiveButton("Copy diagnostic",(dialog,which)->copyDiagnostic(readable))
             .show();
     }
     private void openSubtitleBrowser(String url){
@@ -249,6 +250,51 @@ public final class SubtitleLibraryActivity extends Activity {
                 .setMessage("Checked "+result[0]+" SRT/ZIP files; "+result[1]+" valid SRT entries processed. Duplicate subtitle content is ignored.\\n"+result[2])
                 .setPositiveButton("OK",null).show();
         });
+    }
+    private void chooseExportFolder(){
+        if(librarySelection.isEmpty()){err("Select one or more READY movies before exporting SRTs.");return;}
+        openExportFolder(new ArrayList<>(librarySelection));
+    }
+    private void openExportFolder(List<String> ids){
+        pendingExportIds.clear();pendingExportIds.addAll(ids);
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|
+            Intent.FLAG_GRANT_WRITE_URI_PERMISSION|
+            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try{startActivityForResult(intent,PICK_EXPORT_FOLDER);}
+        catch(Exception e){err("Android folder picker is unavailable: "+e.getMessage());}
+    }
+    private void exportToFolder(Uri tree,List<String> ids){
+        work("Exporting "+ids.size()+" SRT(s) to selected folder",()->{
+            int exported=0;StringBuilder failed=new StringBuilder();
+            Uri folder=DocumentsContract.buildDocumentUriUsingTree(tree,DocumentsContract.getTreeDocumentId(tree));
+            for(String id:ids){
+                JSONObject entry=findEntry(id);
+                if(entry==null)continue;
+                String name=SecurityRules.safeFolderName(entry.optString("title","Movie"))+
+                    "-"+id.substring(0,8)+".srt";
+                Uri created=null;
+                try{
+                    created=DocumentsContract.createDocument(getContentResolver(),folder,
+                        "application/x-subrip",name);
+                    if(created==null)throw new IOException("Android document provider refused creation.");
+                    byte[] data=shelf.read(id).getBytes(StandardCharsets.UTF_8);
+                    try(OutputStream out=getContentResolver().openOutputStream(created,"w")){
+                        if(out==null)throw new IOException("Cannot write to chosen folder.");
+                        out.write(data);out.flush();
+                    }
+                    exported++;
+                }catch(Exception error){
+                    if(created!=null)try{DocumentsContract.deleteDocument(getContentResolver(),created);}
+                        catch(Exception ignored){}
+                    failed.append(name).append(": ")
+                        .append(error.getMessage()==null?"Export failed":error.getMessage()).append("\n");
+                }
+            }
+            return new String[]{String.valueOf(exported),failed.toString()};
+        },report->showCopyableReport("SRT files exported",
+            report[0]+" SRT file(s) exported to the folder you picked in Android Files. "+
+            "The original CinePulse library remains unchanged.\n"+report[1]));
     }
     private void chooseLocalSubtitles(){
         Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -331,6 +377,19 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);
+        if(request==PICK_EXPORT_FOLDER){
+            if(result==RESULT_OK&&data!=null&&data.getData()!=null){
+                Uri folder=data.getData();
+                List<String> chosen=new ArrayList<>(pendingExportIds);
+                pendingExportIds.clear();
+                try{
+                    getContentResolver().takePersistableUriPermission(folder,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    exportToFolder(folder,chosen);
+                }catch(Exception e){err("Unable to write to selected SRT folder: "+e.getMessage());}
+            }else pendingExportIds.clear();
+            return;
+        }
         if(request==PICK_DOWNLOADS_FOLDER){
             if(result==RESULT_OK&&data!=null&&data.getData()!=null){
                 Uri folder=data.getData();
@@ -410,14 +469,14 @@ public final class SubtitleLibraryActivity extends Activity {
             .setPositiveButton("Inspect",(d,w)->work("Inspecting SubDL API URL fields",
                 ()->SubtitleProvider.inspectLinks(providerKey.load(),title.getText().toString()),
                 report->{
-                    TextView view=new TextView(this);view.setText(report);view.setTextIsSelectable(true);
+                    TextView view=new TextView(this);view.setText(report.replace("\\n","\n"));view.setTextIsSelectable(true);
                     view.setTextSize(12);view.setPadding(dp(14),dp(10),dp(14),dp(10));
                     android.widget.HorizontalScrollView horizontal=new android.widget.HorizontalScrollView(this);
                     horizontal.addView(view);
                     ScrollView scroll=new ScrollView(this);scroll.addView(horizontal);
                     new AlertDialog.Builder(this).setTitle("SubDL URL inspection table")
                         .setView(scroll).setNegativeButton("Close",null)
-                        .setPositiveButton("Copy report",(dialog,which)->copyDiagnostic(report)).show();
+                        .setPositiveButton("Copy report",(dialog,which)->copyDiagnostic(report.replace("\\n","\n"))).show();
                 })).show();
     }
     private void testSubdlConnection(){
@@ -623,6 +682,7 @@ public final class SubtitleLibraryActivity extends Activity {
                         add(libraryArea,label("Cloudflare project: "+projectId,10,MUTED,false));
                         button(libraryArea,"⏸ Pause this movie",()->confirmMoviePause(projectId,title,true));
                         button(libraryArea,"▶ Resume this movie",()->confirmMoviePause(projectId,title,false));
+                        button(libraryArea,"Export this queued SRT",()->openExportFolder(Collections.singletonList(id)));
                         button(libraryArea,"Run this movie AGAIN (explicit override)",()->confirmExplicitRequeue(id,title));
                     }else if("SUBMITTING".equals(group)||"UNKNOWN".equals(group)){
                         button(libraryArea,"Check server for "+title,()->reconcileUnknownSubmissions());

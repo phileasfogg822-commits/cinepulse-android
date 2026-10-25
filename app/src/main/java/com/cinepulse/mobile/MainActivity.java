@@ -244,6 +244,18 @@ public final class MainActivity extends Activity {
             }
             space(c,12);Button open=action(status.equals("ready")?"View & download package →":"View timeline →",()->loadDetail(id),false);
             c.addView(open,new LinearLayout.LayoutParams(-1,dp(42)));
+            // Movie-level controls are shown directly on the project list, not under worker controls.
+            if(!terminalStatus(status)){
+                if(p.has("paused")){
+                    boolean moviePaused=p.optBoolean("paused",false);
+                    space(c,6);
+                    c.addView(action(moviePaused?"▶ Resume this movie":"⏸ Pause this movie",
+                        ()->confirmMoviePause(id,!moviePaused),false));
+                }else{
+                    c.addView(text("Individual pause requires the Cloudflare movie-pause API. Worker pause affects every assigned movie.",11,MUTED,false));
+                }
+                c.addView(text("Stop movie: unavailable until Cloudflare supports cancelling this project's queued jobs safely. Hiding the card does NOT stop processing.",11,0xFFFFC47E,false));
+            }
             space(c,6);
             if(archived)c.addView(action("Restore to active list",()->{setLocalState(id,"active");renderHome();},false));
             else if(terminalStatus(status))c.addView(action("Mark reviewed & archive",()->archiveDialog(id,status,true),false));
@@ -400,7 +412,7 @@ public final class MainActivity extends Activity {
             space(summary,7);
             summary.addView(action("Verify and share complete ZIP (WhatsApp)",()->shareProjectZip(id),false));
         }
-        if("processing".equals(status)||"needs_review".equals(status)){
+        if("processing".equals(status)||"needs_review".equals(status)||"queued".equals(status)){
             space(summary,7);
             if(!project.has("paused")){
                 summary.addView(text("Pause movie unavailable: the matching Cloudflare backend v0.1.7 has not been deployed. Pause worker is a separate operation.",12,0xFFFFC47E,false));

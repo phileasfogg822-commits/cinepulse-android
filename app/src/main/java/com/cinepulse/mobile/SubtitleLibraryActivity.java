@@ -13,6 +13,7 @@ import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -57,6 +58,8 @@ import java.util.function.Consumer;
 public final class SubtitleLibraryActivity extends Activity {
     private static final int PICK_LIBRARY_SRT=717;
     private static final int OPEN_SUBTITLE_BROWSER=718;
+    private static final int PICK_EXPORT_FOLDER=719;
+    private final List<String> pendingExportIds=new ArrayList<>();
     private static final int BG=0xFF0B1021,CARD=0xFF151C32,STROKE=0xFF27314A,
         WHITE=0xFFF8FAFF,MUTED=0xFFA9B5D0,GREEN=0xFF39D3B2,PURPLE=0xFF8578FF;
     private static final String[] IDEAS={
@@ -152,7 +155,7 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private void buildUi(){
         root=column();root.setBackgroundColor(BG);setContentView(root);
-        TextView heading=label("SRT DOWNLOADER  •  v0.2.8",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
+        TextView heading=label("SRT DOWNLOADER  •  v0.3.0",22,WHITE,true);heading.setPadding(dp(18),dp(16),dp(18),0);add(root,heading);
         TextView sub=label("Browse subtitle websites • save to Downloads • import SRT/ZIP",12,MUTED,false);
         sub.setPadding(dp(18),0,dp(18),dp(12));add(root,sub);
         ScrollView scroll=new ScrollView(this);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -181,8 +184,11 @@ public final class SubtitleLibraryActivity extends Activity {
         LinearLayout saved=box(container);
         add(saved,label("My saved SRT files",17,WHITE,true));
         add(saved,label("Keep up to 1,000 subtitles on this device. Select 10 of 100 for example, then submit just those movies to Muse.",12,MUTED,false));
+        button(saved,"▶ Queue SELECTED movies • set narration duration",this::batchDialog);
+        button(saved,"↻ Recheck uncertain submissions against Cloudflare",this::reconcileUnknownSubmissions);
+        button(saved,"⬇ Export SELECTED SRTs to a visible phone folder",this::chooseExportFolder);
         libraryArea=column();add(saved,libraryArea);
-        add(saved,label("Start sends one selected SRT to Cloudflare. Pause/Stop are available in the main Projects screen when supported by the backend.",12,MUTED,false));
+        add(saved,label("Check multiple READY movies, then use Queue SELECTED. Queued movies remain indexed and cannot be started accidentally. Use each movie card for pause/resume when Cloudflare supports it.",12,MUTED,false));
 
 
 
@@ -276,6 +282,8 @@ public final class SubtitleLibraryActivity extends Activity {
     }
     private int importEntry(String movieTitle,String filename,byte[] raw) throws Exception{
         SubtitleProvider.Srt subtitle=SubtitleProvider.parseBytes(raw);
+        SubtitleQuality.Result check=SubtitleQuality.assess(subtitle,0);
+        if(!check.complete)throw new IOException("SRT quality rejected: "+check.reason);
         String title=movieTitle.replaceFirst("(?i)\\.srt$","")
             .replaceFirst("(?i)\\.zip$","")
             .replace('.', ' ').replace('_',' ').trim();
@@ -549,7 +557,9 @@ public final class SubtitleLibraryActivity extends Activity {
                       if(hit==null)continue;
                       final int done=n+1;info("Downloading "+done+"/"+indexes.size());
                       try{
-                          SubtitleProvider.Srt subtitle=SubtitleProvider.download(hit.getString("path"),providerKey.load());
+                          SubtitleProvider.Srt subtitle=SubtitleProvider.download(hit.getString("path"),providerKey.load(),hit.optString("language","EN"));
+                          SubtitleQuality.Result quality=SubtitleQuality.assess(subtitle,hit.optInt("runtimeMinutes",0));
+                          if(!quality.complete)throw new IOException("Incomplete SRT: "+quality.reason);
                           shelf.save(hit,subtitle);saved++;
                       }catch(Exception e){
                           failures.append(hit.optString("release","Unknown")).append(": ")
@@ -565,38 +575,61 @@ public final class SubtitleLibraryActivity extends Activity {
               })).show();
     }
     private void reloadLibrary(){
-        work("Loading saved SRTs",shelf::entries,items->{library=items;renderSaved();info(items.length()+" SRTs saved on this phone.");});
+        work("Loading and checking saved SRTs",()->{shelf.reviewExistingQuality();return shelf.entries();},items->{library=items;renderSaved();info(items.length()+" SRTs saved on this phone.");});
     }
     private void renderSaved(){
         libraryArea.removeAllViews();
-        if(library.length()==0){add(libraryArea,label("Your library is empty. Search and download a subtitle first.",12,MUTED,false));return;}
-        add(libraryArea,label("On-device SRT folder: "+shelf.storageLocation()+" (private Android app storage; not visible in Downloads)",11,MUTED,false));
-        add(libraryArea,label(library.length()+" downloaded subtitles • "+
-            librarySelection.size()+" selected for Cloudflare",12,GREEN,false));
-        for(int i=library.length()-1;i>=0;i--){
-            JSONObject e=library.optJSONObject(i);if(e==null)continue;
-            String id=e.optString("id");
-            if("QUEUED".equals(e.optString("state")))continue;
-            CheckBox cb=new CheckBox(this);
-            cb.setText(e.optString("title")+"  •  "+e.optString("language")+
-                "\n"+e.optString("release")+"  •  "+e.optInt("cues")+" cues  •  "+
-                String.format(Locale.ROOT,"%.0f min",e.optDouble("durationSeconds")/60d));
-            cb.setTextColor(WHITE);cb.setTextSize(12);cb.setChecked(librarySelection.contains(id));
-            cb.setButtonTintList(ColorStateList.valueOf(GREEN));
-            cb.setOnCheckedChangeListener((v,selected)->{
-                if(selected)librarySelection.add(id);else librarySelection.remove(id);
-            });
-            add(libraryArea,cb);
-            button(libraryArea,"Start movie: "+e.optString("title"),()->{
-                librarySelection.clear();
-                librarySelection.add(id);
-                batchDialog();
-            });
-            button(libraryArea,"Pause / Stop (open Projects)",()->{
-                new AlertDialog.Builder(this).setTitle("Project controls")
-                    .setMessage("Use the main Projects screen to pause or stop a Cloudflare movie. A locally saved subtitle is not running until you start it.")
-                    .setPositiveButton("OK",null).show();
-            });
+        add(libraryArea,label("Private on-device location: "+shelf.storageLocation(),11,MUTED,false));
+        add(libraryArea,label("Export selected files above to a folder you choose in Android Files/Downloads.",11,MUTED,false));
+        if(library.length()==0){
+            add(libraryArea,label("No stored subtitles yet. Collect 5, 10 or 20 complete SRTs above.",12,MUTED,false));return;
+        }
+        int ready=0,queued=0,uncertain=0,review=0;
+        for(int i=0;i<library.length();i++){
+            JSONObject entry=library.optJSONObject(i);if(entry==null)continue;
+            String state=SubtitleShelf.state(entry);
+            if("QUEUED".equals(state))queued++;
+            else if("UNKNOWN".equals(state)||"SUBMITTING".equals(state))uncertain++;
+            else if("NEEDS_REVIEW".equals(state))review++;
+            else ready++;
+        }
+        add(libraryArea,label("READY "+ready+"  •  QUEUED "+queued+"  •  UNCERTAIN "+uncertain+
+            "  •  NEEDS REVIEW "+review+"  •  Selected "+librarySelection.size(),12,GREEN,true));
+        String[] groups={"READY","SUBMITTING","UNKNOWN","QUEUED","NEEDS_REVIEW"};
+        for(String group:groups){
+            boolean printed=false;
+            for(int i=library.length()-1;i>=0;i--){
+                JSONObject e=library.optJSONObject(i);if(e==null||!group.equals(SubtitleShelf.state(e)))continue;
+                if(!printed){add(libraryArea,label(group.equals("READY")?
+                    "READY TO START — select multiple movies":group,14,WHITE,true));printed=true;}
+                String id=e.optString("id"),title=e.optString("title","Unknown");
+                String details=title+" • "+e.optString("language")+"\n"+
+                    e.optString("release")+" • "+e.optInt("cues")+" cues • "+
+                    Math.round(e.optDouble("durationSeconds")/60)+" min";
+                if("READY".equals(group)){
+                    CheckBox cb=new CheckBox(this);cb.setText(details);cb.setTextSize(12);
+                    cb.setTextColor(WHITE);cb.setButtonTintList(ColorStateList.valueOf(GREEN));
+                    cb.setChecked(librarySelection.contains(id));
+                    cb.setOnCheckedChangeListener((v,yes)->{
+                        if(yes)librarySelection.add(id);else librarySelection.remove(id);
+                    });
+                    add(libraryArea,cb);
+                }else{
+                    add(libraryArea,label(details,12,MUTED,false));
+                    add(libraryArea,label(e.optString("stateReason",group),11,
+                        "NEEDS_REVIEW".equals(group)?0xFFFFC47E:GREEN,false));
+                    if("QUEUED".equals(group)){
+                        String projectId=e.optString("projectId");
+                        add(libraryArea,label("Cloudflare project: "+projectId,10,MUTED,false));
+                        button(libraryArea,"⏸ Pause this movie",()->confirmMoviePause(projectId,title,true));
+                        button(libraryArea,"▶ Resume this movie",()->confirmMoviePause(projectId,title,false));
+                        button(libraryArea,"Run this movie AGAIN (explicit override)",()->confirmExplicitRequeue(id,title));
+                    }else if("SUBMITTING".equals(group)||"UNKNOWN".equals(group)){
+                        button(libraryArea,"Check server for "+title,()->reconcileUnknownSubmissions());
+                        button(libraryArea,"I verified: allow a new submission",()->confirmExplicitRequeue(id,title));
+                    }
+                }
+            }
         }
     }
     private void deleteSelection(){

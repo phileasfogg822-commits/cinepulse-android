@@ -111,6 +111,11 @@ final class SubtitleProvider {
     static String normalizeDownloadPath(String raw){
         if(raw==null)return "";
         String p=raw.trim();
+        Matcher labeled=Pattern.compile("https://dl\\.subdl\\.com/subtitle/[A-Za-z0-9_-]+\\.zip",Pattern.CASE_INSENSITIVE).matcher(p);
+        if(labeled.find() && (p.toLowerCase(Locale.ROOT).startsWith("quick download") || p.equals(labeled.group())))p=labeled.group();
+        // SubDL API adds an API key to downloadable relative paths. Never expose it to the CDN.
+        if(p.matches("(?i)(?:https://dl\\.subdl\\.com)?/subtitle/[0-9]+-[0-9]+\\.zip\\?api_key=[A-Za-z0-9_-]+"))
+            p=p.substring(0,p.indexOf('?'));
         if(p.startsWith("https://")){
             try{
                 java.net.URI uri=new java.net.URI(p);
@@ -121,7 +126,7 @@ final class SubtitleProvider {
                 p=uri.getRawPath();
             }catch(Exception ignored){return "";}
         }
-        if(p!=null&&p.startsWith("subtitle/"))p="/"+p;
+        if(p.startsWith("subtitle/"))p="/"+p;
         return cleanTrustedPath(p);
     }
     private static String cleanTrustedPath(String raw){
@@ -181,8 +186,11 @@ final class SubtitleProvider {
     }
     private static String canonicalDownload(JSONObject record,JSONObject parent){
         String path=normalizeDownloadPath(record.optString("url",""));
+        if(path.isEmpty())path=normalizeDownloadPath(record.optString("download_link",""));
+        if(path.isEmpty())path=normalizeDownloadPath(record.optString("download",""));
         if(path.isEmpty())path=normalizeDownloadPath(record.optString("download_url",""));
         if(path.isEmpty())path=normalizeDownloadPath(record.optString("downloadUrl",""));
+        if(path.isEmpty())path=normalizeDownloadPath(record.optString("quick_download",""));
         if(!path.isEmpty())return path;
         // V1 unpack_files can identify exact raw file without a usable URL.
         if(parent!=null){
@@ -488,6 +496,63 @@ final class SubtitleProvider {
             " [v2 shape: "+responseShape(v2)+"] [v1 shape: "+responseShape(v1)+"]";
         return new SearchResult(r.hits,r.movieMatches,r.subtitleRecords,
             r.invalidUrls,r.wrongLanguage,r.unsupportedFormat,summary);
+    }
+
+    /** Inspect actual provider download fields without ever displaying API credentials. */
+    static String inspectLinks(String key,String title) throws Exception{
+        if(key==null||key.trim().length()<8)throw new IOException("Enter SubDL API key first.");
+        String movie=title==null||title.trim().isEmpty()?"Inception":title.trim();
+        if(movie.length()>100)throw new IOException("Movie title too long.");
+        StringBuilder report=new StringBuilder("SubDL link inspector | "+movie+" | English\\n");
+        report.append("Source | Row | Field | Original API value | Clean ZIP URL | Status\\n");
+        String[] routes={
+            "/api/v2/subtitles/search?film_name="+encode(movie)+"&type=movie&languages=en&unpack=1&subs_per_page=30",
+            "/api/v1/subtitles?api_key="+encode(key.trim())+"&film_name="+encode(movie)+"&type=movie&languages=EN&subs_per_page=30"
+        };
+        String[] sources={"v2","v1"};
+        for(int k=0;k<routes.length;k++){
+            try{
+                JSONObject response=jsonRequest(routes[k],key);
+                JSONObject body=response.optJSONObject("data");
+                if(body==null)body=response;
+                JSONArray records=body.optJSONArray("subtitles");
+                if(records==null)records=body.optJSONArray("items");
+                if(records==null)records=body.optJSONArray("results");
+                report.append("\\n").append(sources[k]).append(" records: ").append(records==null?0:records.length()).append("\\n");
+                if(records==null)continue;
+                int shown=0;
+                for(int i=0;i<records.length()&&i<40;i++){
+                    JSONObject record=records.optJSONObject(i);
+                    if(record==null)continue;
+                    shown+=appendLinkFields(report,sources[k],i+1,record);
+                    JSONArray unpack=record.optJSONArray("unpack_files");
+                    if(unpack!=null)for(int j=0;j<Math.min(unpack.length(),15);j++){
+                        JSONObject child=unpack.optJSONObject(j);
+                        if(child!=null)shown+=appendLinkFields(report,sources[k],(i+1)+"."+(j+1),child);
+                    }
+                }
+                if(shown==0)report.append("No URL fields returned; inspect IDs / API schema.\\n");
+            }catch(Exception error){report.append(sources[k]).append(" error: ").append(providerError(error)).append("\\n");}
+        }
+        return report.toString();
+    }
+    private static int appendLinkFields(StringBuilder out,String source,Object row,JSONObject obj){
+        String[] keys={"url","download_url","downloadUrl","download_link","download","quick_download","path"};
+        int count=0;
+        for(String field:keys){
+            String raw=obj.optString(field,"");
+            if(raw.isEmpty())continue;
+            String normalized=normalizeDownloadPath(raw);
+            String clean=normalized.isEmpty()?"":("https://dl.subdl.com"+normalized);
+            String safe=raw.replaceAll("(?i)api_key=[^&\\\\s]+","api_key=[REDACTED]")
+                .replaceAll("(?i)Bearer\\\\s+\\\\S+","Bearer [REDACTED]");
+            if(safe.length()>300)safe=safe.substring(0,300)+"...";
+            out.append(source).append(" | ").append(row).append(" | ").append(field)
+                .append(" | ").append(safe).append(" | ").append(clean.isEmpty()?"—":clean)
+                .append(" | ").append(clean.isEmpty()?"REJECTED":"VALID").append("\\n");
+            count++;
+        }
+        return count;
     }
     static JSONArray search(String apiKey,String title,String language) throws Exception {
         return searchDetailed(apiKey,title,language).hits;

@@ -52,7 +52,9 @@ final class SubtitleShelf {
         JSONArray all=entries();
         for(int i=0;i<all.length();i++){
             JSONObject previous=all.optJSONObject(i);
-            if(previous!=null && srt.sha256.equals(previous.optString("sha256")))return previous;
+            if(previous!=null && (srt.sha256.equals(previous.optString("sha256")) ||
+                (hit.optString("title").equalsIgnoreCase(previous.optString("title")) &&
+                "EN".equalsIgnoreCase(previous.optString("language")))))return previous;
         }
         if(all.length()>=1000)throw new IOException("SRT library has reached its 1000-file storage cap.");
         String id=UUID.randomUUID().toString();
@@ -73,6 +75,19 @@ final class SubtitleShelf {
         all.put(entry);
         try{write(all);}catch(Exception e){file.delete();throw e;}
         return entry;
+    }
+    String storageLocation(){return dir.getAbsolutePath();}
+    synchronized void markQueued(String id,String projectId) throws Exception{
+        if(!SecurityRules.validUuid(id)||!SecurityRules.validUuid(projectId))throw new SecurityException("Invalid queue identity.");
+        JSONArray all=entries();boolean found=false;
+        for(int i=0;i<all.length();i++){
+            JSONObject item=all.optJSONObject(i);
+            if(item!=null&&id.equals(item.optString("id"))){
+                item.put("state","QUEUED");item.put("projectId",projectId);found=true;break;
+            }
+        }
+        if(!found)throw new IOException("Local subtitle not found.");
+        write(all);
     }
     synchronized String read(String id) throws Exception{
         if(!SecurityRules.validUuid(id))throw new SecurityException("Untrusted subtitle ID.");

@@ -111,6 +111,10 @@ final class SubtitleProvider {
     static String normalizeDownloadPath(String raw){
         if(raw==null)return "";
         String p=raw.trim();
+        // SubDL sometimes exposes a labeled link: "Quick Download https://dl.subdl.com/subtitle/123.zip".
+        // Extract ONLY the canonical first-party HTTPS ZIP URL, never arbitrary embedded hosts.
+        Matcher labeled=Pattern.compile("https://dl\\\\.subdl\\\\.com/subtitle/[A-Za-z0-9_-]+\\\\.zip",Pattern.CASE_INSENSITIVE).matcher(p);
+        if(labeled.find())p=labeled.group();
         if(p.startsWith("https://")){
             try{
                 java.net.URI uri=new java.net.URI(p);
@@ -181,8 +185,11 @@ final class SubtitleProvider {
     }
     private static String canonicalDownload(JSONObject record,JSONObject parent){
         String path=normalizeDownloadPath(record.optString("url",""));
+        if(path.isEmpty())path=normalizeDownloadPath(record.optString("download_link",""));
+        if(path.isEmpty())path=normalizeDownloadPath(record.optString("download",""));
         if(path.isEmpty())path=normalizeDownloadPath(record.optString("download_url",""));
         if(path.isEmpty())path=normalizeDownloadPath(record.optString("downloadUrl",""));
+        if(path.isEmpty())path=normalizeDownloadPath(record.optString("quick_download",""));
         if(!path.isEmpty())return path;
         // V1 unpack_files can identify exact raw file without a usable URL.
         if(parent!=null){

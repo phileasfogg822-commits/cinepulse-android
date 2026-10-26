@@ -80,9 +80,20 @@ final class CloudApi {
     }
     JSONObject createProject(String title,String workerId,String sourceSrt,int retentionHours,int targetMinutes) throws Exception {
         if(targetMinutes<3||targetMinutes>60)throw new IllegalArgumentException("Choose 3–60 minutes");
+        // The Cloudflare worker must explicitly support this stage policy to skip
+        // unwanted short/viral work. Old workers may ignore unknown JSON fields.
+        JSONObject modules=new JSONObject()
+            .put("sourceDigest",true).put("englishNarration",true)
+            .put("urduNarration",true).put("metadata",true)
+            .put("englishMp3",true).put("urduMp3",true)
+            .put("englishMeasuredSrt",true).put("urduMeasuredSrt",true)
+            .put("sceneMatching",true).put("finalCuts",true)
+            .put("shorts",false).put("virals",false);
         return call("POST","/v1/projects",new JSONObject().put("title",title)
             .put("workerId",checked(workerId)).put("sourceSrt",sourceSrt)
-            .put("retentionHours",retentionHours).put("targetMinutes",targetMinutes));
+            .put("retentionHours",retentionHours).put("targetMinutes",targetMinutes)
+            .put("outputMode","long_form_only")
+            .put("modules",modules));
     }
     private String checked(String id){if(!SecurityRules.validUuid(id))throw new IllegalArgumentException("Invalid project or worker ID");return id;}
 }

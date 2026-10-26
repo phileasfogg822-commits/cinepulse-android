@@ -165,4 +165,19 @@ public class WindowsProjectExportTest {
         assertEquals(0,converted.project.getJSONObject("analysis").getJSONArray("viralClips").length());
     }
 
+    @Test public void cloudProjectCreatesOnlyLongFormAndSeparateMetadataJobs() throws Exception{
+        JSONObject payload=CloudApi.longFormProjectPayload("Movie","123e4567-e89b-42d3-a456-426614174002",
+            "1\n00:00:00,000 --> 00:00:04,000\nTest movie",48,15);
+        assertEquals("long_form_only",payload.getString("outputMode"));
+        assertEquals(15,payload.getInt("targetMinutes"));
+        JSONObject modules=payload.getJSONObject("modules");
+        assertTrue(modules.getBoolean("metadata"));
+        assertTrue(modules.getBoolean("sceneMatching"));
+        assertTrue(modules.getBoolean("finalCuts"));
+        assertTrue(modules.getBoolean("englishMp3"));
+        assertTrue(modules.getBoolean("urduMeasuredSrt"));
+        assertFalse(modules.getBoolean("shorts"));
+        assertFalse(modules.getBoolean("virals"));
+    }
+
 }

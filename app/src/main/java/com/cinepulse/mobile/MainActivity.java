@@ -348,8 +348,8 @@ public final class MainActivity extends Activity {
                     int accepted=r.optInt("targetMinutes",-1);
                     new AlertDialog.Builder(this).setTitle("Movie queued")
                         .setMessage(accepted==target?
-                            "Cloudflare accepted the "+target+"-minute narration target for each language.":
-                            "Movie submitted, but the current backend did NOT confirm the "+target+"-minute narration target. Update Cloudflare before relying on narration length control.")
+                            "Cloudflare accepted the "+target+"-minute narration target. CinePulse requested only English and Urdu long-form processing; verify that your deployed worker supports long_form_only before assuming shorts are skipped.":
+                            "Movie submitted, but this backend has not confirmed the narration target or long_form_only processing policy. Update Cloudflare before relying on those controls.")
                         .setPositiveButton("View projects",(innerDialog,innerWhich)->refresh()).show();
                 });
             }).show();
@@ -403,11 +403,11 @@ public final class MainActivity extends Activity {
         content.addView(action("← All movies",()->{openedProject=null;renderHome();},false),fullWithBottom(15));
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
         summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
-        summary.addView(text(status.equals("ready")?"Verified cloud package ready. Export a Windows-native CinePulse project, source and narration SRTs, both MP3s, and an offline MP3 linker. Final scene cuts still require Windows review.":
+        summary.addView(text(status.equals("ready")?"Long-form export ready for checks. The eight-file Windows package requires complete English/Urdu MP3s, measured SRTs, metadata, digest and non-overlapping final cuts. No shorts or viral files are included.":
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
         space(summary,12);
         if(status.equals("ready")){
-            summary.addView(action("Download Windows-ready package (10 files)",()->startPackageDownload(id),true));
+            summary.addView(action("Download long-form Windows package (8 files)",()->startPackageDownload(id),true));
             space(summary,7);
             summary.addView(action("Verify and share Windows-ready ZIP",()->shareProjectZip(id),false));
         }

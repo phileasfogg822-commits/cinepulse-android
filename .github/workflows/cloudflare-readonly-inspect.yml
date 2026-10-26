@@ -1,0 +1,93 @@
+name: CinePulse Cloudflare production inspection (READ ONLY)
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cloudflare-readonly-inspect.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-cloudflare-readonly
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Check for approved GitHub repository credentials
+        env:
+          CF_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$CF_TOKEN" || -z "$CF_ACCOUNT" ]]; then
+            echo 'CLOUDFLARE_ACCESS_NOT_CONFIGURED'
+            echo 'Add GitHub Actions repository secrets CINEPULSE_CF_API_TOKEN and CINEPULSE_CF_ACCOUNT_ID.'
+            echo 'No Cloudflare API request was made. No deployment or database operation was attempted.'
+            echo 'CF_INSPECT_READY=false' >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [[ ! "$CF_ACCOUNT" =~ ^[a-fA-F0-9]{32}$ ]]; then
+            echo '::error::The Cloudflare account ID must contain exactly 32 hexadecimal characters.'
+            exit 1
+          fi
+          echo 'CF_INSPECT_READY=true' >> "$GITHUB_ENV"
+      - name: Retrieve production Worker metadata and code without modifying Cloudflare
+        if: env.CF_INSPECT_READY == 'true'
+        env:
+          CF_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          WORKER='cinepulse-android-bridge'
+          BASE="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$WORKER"
+          mkdir -p snapshot
+          inspect_json() {
+            local label="$1" route="$2" status
+            status=$(curl --silent --show-error --max-time 45 \
+              -H "Authorization: Bearer $CF_TOKEN" \
+              -H "Accept: application/json" \
+              -o "snapshot/$label.json" \
+              -w '%{http_code}' "$BASE/$route")
+            echo "$label HTTP status: $status"
+            if [[ "$status" != "200" ]]; then
+              jq -r '.errors // [] | map(.message) | join("; ")' "snapshot/$label.json" 2>/dev/null || true
+              echo "::error::Cloudflare $label inspection returned HTTP $status. No mutation attempted."
+              exit 1
+            fi
+            if ! jq -e '.success == true' "snapshot/$label.json" >/dev/null; then
+              echo "::error::Cloudflare $label response did not report success"
+              exit 1
+            fi
+          }
+          inspect_json settings settings
+          inspect_json deployments deployments
+          inspect_json versions versions
+          status=$(curl --silent --show-error --max-time 90 \
+            -H "Authorization: Bearer $CF_TOKEN" \
+            -o snapshot/production-worker-source.bin \
+            -w '%{http_code}' "$BASE/content/v2")
+          echo "production-worker-source HTTP status: $status"
+          if [[ "$status" != "200" ]]; then
+            echo '::error::Cannot read current production Worker source using this token.'
+            rm -f snapshot/production-worker-source.bin
+            exit 1
+          fi
+          test -s snapshot/production-worker-source.bin
+          sha256sum snapshot/production-worker-source.bin | awk '{print "Production source SHA-256: " $1}'
+          echo 'Bound resource names and types (no values or secrets):'
+          jq -r '.result.bindings // [] | .[] | (.name // "unnamed") + " (" + (.type // "unknown") + ")"' snapshot/settings.json || true
+          echo 'Latest deployment version IDs and times (no email addresses):'
+          jq -r '.result // [] | if type=="array" then .[0:4][] | ((.id // "unknown") + " " + (.created_on // "")) else "deployment response available in private artifact" end' snapshot/deployments.json || true
+          echo 'READ_ONLY_INSPECTION_SUCCEEDED — no Wrangler deploy, D1 mutation or R2 mutation.'
+      - name: Save confidential snapshot to private GitHub Actions artifact
+        if: env.CF_INSPECT_READY == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinepulse-production-worker-readonly-snapshot
+          path: snapshot/*
+          retention-days: 2
+          if-no-files-found: error

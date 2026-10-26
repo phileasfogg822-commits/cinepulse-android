@@ -10,10 +10,10 @@ import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Subtitle-grounded short-clip finalization. Frame semantics require actual video. */
+/** Timestamp-only allocation of long-form narration video cuts; no movie frame decoding needed. */
 final class FinalCutPlanner {
     private FinalCutPlanner(){}
-    private static final double CLIP_MAX=6d, EPS=.003;
+    private static final double CLIP_MIN=3d, CLIP_MAX=6d, EPS=.003;
     private static final Pattern TIMES=Pattern.compile(
         "(?m)^(\\d{2}:\\d{2}:\\d{2}[,.]\\d{3})\\s*-->\\s*(\\d{2}:\\d{2}:\\d{2}[,.]\\d{3})");
     static final class Result {
@@ -166,7 +166,7 @@ final class FinalCutPlanner {
             double b=index==pieces-1?Math.round(audioSeconds*1000)/1000d:
                 Math.round(((index+1)*nominal)*1000)/1000d;
             double clip=b-a,mid=(a+b)/2;
-            if(clip<=0||clip>CLIP_MAX+EPS)throw new IOException(language+": invalid output clip length");
+            if(clip<CLIP_MIN-EPS||clip>CLIP_MAX+EPS)throw new IOException(language+": final cut must be 3–6 seconds");
             // Prefer anchors that truly cover the narration time, then scene quality.
             Range choice=null;double score=Double.POSITIVE_INFINITY;
             for(Range r:ranges){
@@ -208,7 +208,7 @@ final class FinalCutPlanner {
         validate(finished,audioSeconds,maxMovie);
         String message=language+": "+finished.length()+" final timing cuts; MP3 "+
             stamp(audioSeconds)+"; source intervals non-overlapping; "+
-            ranges.size()+" scene anchors; video frames NOT inspected.";
+            ranges.size()+" scene anchors; duration and source-overlap checked by timestamps only.";
         return new Result(finished,audioSeconds,footage,ranges.size(),message);
     }
     static void validate(JSONArray cuts,double duration,double sourceEnd) throws Exception{
@@ -219,7 +219,7 @@ final class FinalCutPlanner {
             JSONObject cut=cuts.getJSONObject(i);
             double a=secs(cut.optString("audioStart")),b=secs(cut.optString("audioEnd"));
             double s=secs(cut.optString("movieStart")),e=secs(cut.optString("movieEnd"));
-            if(Math.abs(a-last)>EPS||b<=a||b-a>CLIP_MAX+EPS||s<0||e<=s||e>sourceEnd+EPS)
+            if(Math.abs(a-last)>EPS||b-a<CLIP_MIN-EPS||b-a>CLIP_MAX+EPS||s<0||e-s<CLIP_MIN-EPS||e-s>CLIP_MAX+EPS||e>sourceEnd+EPS)
                 throw new IOException("Invalid final cut chronology or source boundaries at cut "+(i+1));
             if(Math.abs((b-a)-(e-s))>EPS)
                 throw new IOException("Source clip must be the same length as its narration slot");

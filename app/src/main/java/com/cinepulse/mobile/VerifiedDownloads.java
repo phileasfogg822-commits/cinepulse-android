@@ -130,71 +130,103 @@ final class VerifiedDownloads {
      * Android 8/9 requires WRITE_EXTERNAL_STORAGE permission granted by the activity.
      * All four primary files are verified BEFORE any user-visible output is created.
      */
-    private File stagedText(String value) throws IOException{
-        File file=File.createTempFile("cp-portable-", ".part",cache);
-        try(FileOutputStream out=new FileOutputStream(file)){
+    private File stagedText(String value) throws IOException {
+        File target=File.createTempFile("cp-windows-", ".part",cache);
+        try(FileOutputStream out=new FileOutputStream(target)){
             out.write(value.getBytes(StandardCharsets.UTF_8));
-        }catch(Exception e){file.delete();throw e;}
-        return file;
+        }catch(Exception ex){target.delete();throw ex;}
+        return target;
     }
-    /**
-     * Publishes verified originals plus a separate Windows-native ProjectState, an offline
-     * SHA-256 MP3 relinker, and SRT files. Never alters the signed Cloudflare original.
+    private static final String[] BUNDLE_NAMES={
+        "CinePulse_Project.json", "CinePulse_Source.srt",
+        "CinePulse_English.mp3", "CinePulse_Urdu.mp3",
+        "CinePulse_English.srt", "CinePulse_Urdu.srt",
+        "CinePulse_English_Narration.txt", "CinePulse_Urdu_Narration.txt"
+    };
+    static String[] windowsBundleNames(){return BUNDLE_NAMES.clone();}
+    private static final class RenderBundle {
+        final File[] files;
+        final List<File> derived;
+        final String report;
+        RenderBundle(File[] files,List<File> derived,String report){
+            this.files=files;this.derived=derived;this.report=report;
+        }
+        void cleanup(){for(File file:derived)if(file!=null)file.delete();}
+    }
+    /** All eight outputs contain only the native Windows project and its required media.
+     * Input assets are verified against Cloudflare signed manifests BEFORE this method.
      */
-    String downloadToDownloads(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception{
+    private RenderBundle prepareBundle(String projectId,File[] verified) throws Exception {
+        if(verified.length!=4)throw new IOException("Expected verified cloud JSON, 2 MP3s and source SRT");
+        JSONObject original=new JSONObject(new String(
+            java.nio.file.Files.readAllBytes(verified[0].toPath()),StandardCharsets.UTF_8));
+        JSONObject origin=original.optJSONObject("project");
+        if(origin==null||!projectId.equals(origin.optString("id")))
+            throw new SecurityException("Cloud project ID differs from selected movie");
+        String originalSrt=original.optString("sourceSrt","").trim();
+        String actualSrt=new String(java.nio.file.Files.readAllBytes(verified[3].toPath()),StandardCharsets.UTF_8).trim();
+        if(!originalSrt.equals(actualSrt))
+            throw new SecurityException("Source subtitle does not match verified export");
+        double en=measuredMp3Seconds(verified[1]),ur=measuredMp3Seconds(verified[2]);
+        WindowsProjectExport.Result nativeProject=WindowsProjectExport.fromCloud(original,en,ur);
+        JSONObject narration=original.getJSONObject("narrations");
+        JSONObject srts=original.getJSONObject("narrationSrts");
+        String enText=inner(narration.opt("english"),"text");
+        String urText=inner(narration.opt("urdu"),"text");
+        String enSrt=inner(srts.opt("english"),"srt");
+        String urSrt=inner(srts.opt("urdu"),"srt");
+        List<File> derived=new ArrayList<>();
+        try{
+            File[] output=new File[8];
+            output[0]=stagedText(nativeProject.project.toString(2));
+            derived.add(output[0]);
+            output[1]=verified[3];
+            output[2]=verified[1];output[3]=verified[2];
+            output[4]=stagedText(enSrt);derived.add(output[4]);
+            output[5]=stagedText(urSrt);derived.add(output[5]);
+            output[6]=stagedText(enText);derived.add(output[6]);
+            output[7]=stagedText(urText);derived.add(output[7]);
+            return new RenderBundle(output,derived,nativeProject.report);
+        }catch(Exception ex){for(File tmp:derived)tmp.delete();throw ex;}
+    }
+    private File[] downloadOriginals(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
+        String[] kinds={"export_json","english_mp3","urdu_mp3","source_srt"};
+        File[] staged=new File[4];
+        try{
+            Map<String,JSONObject> assets=manifest(detail);
+            JSONObject linksByKind=links.getJSONObject("files");
+            for(int i=0;i<kinds.length;i++){
+                String kind=kinds[i];JSONObject metadata=assets.get(kind);
+                if(metadata==null)throw new SecurityException("Missing hash manifest for "+kind);
+                progress.update("Verifying "+kind+" ("+(i+1)+"/4)");
+                staged[i]="source_srt".equals(kind)&&!linksByKind.has(kind)
+                    ?sourceSrtFromVerifiedJson(staged[0],projectId,metadata)
+                    :receive(linksByKind.getJSONObject(kind).getString("url"),
+                        projectId,kind,metadata.getLong("bytes"),metadata.getString("sha256"));
+            }
+            return staged;
+        }catch(Exception e){for(File file:staged)if(file!=null)file.delete();throw e;}
+    }
+    /** Export one Windows-native JSON and exactly seven companion assets (eight total). */
+    String downloadToDownloads(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
         if(!SecurityRules.validUuid(projectId))throw new SecurityException("Invalid project ID");
         JSONObject project=detail.getJSONObject("project");
         if(!projectId.equals(project.optString("id"))||!"ready".equals(project.optString("status")))
-            throw new SecurityException("Project identity/status mismatch");
-        Map<String,JSONObject> known=manifest(detail);
-        JSONObject files=links.getJSONObject("files");
-        String[] kinds={"export_json","english_mp3","urdu_mp3","source_srt"};
-        File[] originals=new File[kinds.length];
-        List<File> extras=new ArrayList<>(),outputs=new ArrayList<>(),createdFiles=new ArrayList<>();
-        List<String> names=new ArrayList<>();
+            throw new SecurityException("Cloud project is not ready");
+        File[] originals=null;
+        RenderBundle bundle=null;
         List<Uri> createdUris=new ArrayList<>();
+        List<File> createdFiles=new ArrayList<>();
         File legacyFolder=null;
-        String folder=SecurityRules.safeFolderName(project.optString("title"))+"-"+SecurityRules.shortId(projectId)+"-"+Long.toString(System.currentTimeMillis(),36);
+        String folder=SecurityRules.safeFolderName(project.optString("title"))+"-"+
+            SecurityRules.shortId(projectId)+"-"+Long.toString(System.currentTimeMillis(),36);
         String relative=Environment.DIRECTORY_DOWNLOADS+"/CinePulse/"+folder+"/";
         try{
-            for(int i=0;i<kinds.length;i++){
-                String kind=kinds[i];
-                JSONObject meta=known.get(kind);
-                if(meta==null)throw new SecurityException("Missing Cloudflare "+kind+" manifest");
-                progress.update("Verifying signed "+kind+" ("+(i+1)+"/4)");
-                originals[i]="source_srt".equals(kind)&&!files.has(kind)
-                    ?sourceSrtFromVerifiedJson(originals[0],projectId,meta)
-                    :receive(files.getJSONObject(kind).getString("url"),projectId,kind,
-                        meta.getLong("bytes"),meta.getString("sha256"));
-                outputs.add(originals[i]);names.add(SecurityRules.expectedName(kind));
-            }
-            JSONObject original=new JSONObject(new String(
-                java.nio.file.Files.readAllBytes(originals[0].toPath()),StandardCharsets.UTF_8));
-            if(!projectId.equals(original.getJSONObject("project").optString("id")))
-                throw new SecurityException("Downloaded JSON does not match selected Cloudflare project");
-            String originSrt=new String(java.nio.file.Files.readAllBytes(originals[3].toPath()),StandardCharsets.UTF_8);
-            if(!original.optString("sourceSrt").trim().equals(originSrt.trim()))
-                throw new SecurityException("Downloaded source SRT does not match signed project JSON");
-            double enSeconds=measuredMp3Seconds(originals[1]),urSeconds=measuredMp3Seconds(originals[2]);
-            WindowsProjectExport.Result nativeProject=WindowsProjectExport.fromCloud(original,enSeconds,urSeconds);
-            PackageAudit.Result qa=PackageAudit.inspect(original,enSeconds,urSeconds);
-            JSONObject srts=original.optJSONObject("narrationSrts");
-            String en=srts==null?"":inner(srts.opt("english"),"srt");
-            String ur=srts==null?"":inner(srts.opt("urdu"),"srt");
-            String[] extraNames={
-                "CinePulse_Windows_Project.json","CinePulse_English.srt","CinePulse_Urdu.srt",
-                "Prepare_For_Windows.bat","CinePulse_Prepare_Windows.js","CinePulse_Quality_Report.txt"
-            };
-            String[] contents={nativeProject.project.toString(2),en,ur,
-                WindowsPackageBootstrap.bat(),WindowsPackageBootstrap.js(),
-                nativeProject.report+"\n"+qa.report};
-            for(int i=0;i<extraNames.length;i++){
-                File extra=stagedText(contents[i]);extras.add(extra);
-                outputs.add(extra);names.add(extraNames[i]);
-            }
+            originals=downloadOriginals(projectId,detail,links,progress);
+            bundle=prepareBundle(projectId,originals);
             if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q){
-                for(int i=0;i<outputs.size();i++){
-                    String name=names.get(i);
+                for(int i=0;i<BUNDLE_NAMES.length;i++){
+                    String name=BUNDLE_NAMES[i];
                     ContentValues values=new ContentValues();
                     values.put(MediaStore.MediaColumns.DISPLAY_NAME,name);
                     values.put(MediaStore.MediaColumns.MIME_TYPE,name.endsWith(".json")?"application/json":
@@ -206,43 +238,41 @@ final class VerifiedDownloads {
                     if(uri==null)throw new IOException("Cannot publish "+name);
                     createdUris.add(uri);
                     try(OutputStream out=resolver.openOutputStream(uri,"w")){
-                        if(out==null)throw new IOException("Cannot open download "+name);
-                        copy(outputs.get(i),out);
+                        if(out==null)throw new IOException("Cannot create "+name);
+                        copy(bundle.files[i],out);
                     }
-                    progress.update("Saved "+name+" ("+(i+1)+"/"+outputs.size()+")");
+                    progress.update("Saving Windows-ready file "+(i+1)+"/8");
                 }
                 for(Uri uri:createdUris){
                     ContentValues values=new ContentValues();
                     values.put(MediaStore.MediaColumns.IS_PENDING,0);
-                    if(resolver.update(uri,values,null,null)!=1)throw new IOException("Publishing package failed");
+                    if(resolver.update(uri,values,null,null)!=1)
+                        throw new IOException("Could not publish all eight files");
                 }
             }else{
                 File parent=new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),"CinePulse");
                 if(!parent.isDirectory()&&!parent.mkdirs())throw new IOException("Cannot create Downloads/CinePulse");
                 legacyFolder=new File(parent,folder);
-                for(int suffix=2;legacyFolder.exists()&&suffix<=999;suffix++)
-                    legacyFolder=new File(parent,folder+"-"+suffix);
-                if(legacyFolder.exists()||!legacyFolder.mkdirs())throw new IOException("Cannot create movie Downloads folder");
-                for(int i=0;i<outputs.size();i++){
-                    File destination=new File(legacyFolder,names.get(i));
-                    if(!destination.createNewFile())throw new IOException("Download file already exists: "+names.get(i));
-                    createdFiles.add(destination);
-                    try(OutputStream out=new FileOutputStream(destination)){copy(outputs.get(i),out);}
-                    progress.update("Saved "+names.get(i)+" ("+(i+1)+"/"+outputs.size()+")");
+                if(!legacyFolder.mkdirs())throw new IOException("Cannot create movie download folder");
+                for(int i=0;i<BUNDLE_NAMES.length;i++){
+                    File dest=new File(legacyFolder,BUNDLE_NAMES[i]);
+                    if(!dest.createNewFile())throw new IOException("Cannot create "+BUNDLE_NAMES[i]);
+                    createdFiles.add(dest);
+                    try(OutputStream out=new FileOutputStream(dest)){copy(bundle.files[i],out);}
+                    progress.update("Saving Windows-ready file "+(i+1)+"/8");
                 }
             }
-            return "Verified "+outputs.size()+" files in Downloads/CinePulse/"+folder+
-                "/. Transfer the entire folder to Windows, run Prepare_For_Windows.bat,"+
-                " then import CinePulse_Windows_Ready.json using Windows CinePulse > Import team project."+
-                " Original Cloudflare JSON remains in CinePulse_Project.json. Final scene/video coverage still needs Windows review.";
-        }catch(Exception error){
+            return "Saved 8 files to Downloads/CinePulse/"+folder+
+                ". The single JSON is a Windows-native project with subtitle-grounded short final cuts."+
+                " Transfer the whole folder. Windows must resolve local MP3/video paths and verify actual source footage.";
+        }catch(Exception e){
             for(Uri uri:createdUris)try{resolver.delete(uri,null,null);}catch(Exception ignored){}
             for(File file:createdFiles)file.delete();
             if(legacyFolder!=null)legacyFolder.delete();
-            throw error;
+            throw e;
         }finally{
-            for(File file:originals)if(file!=null)file.delete();
-            for(File extra:extras)extra.delete();
+            if(bundle!=null)bundle.cleanup();
+            if(originals!=null)for(File file:originals)if(file!=null)file.delete();
         }
     }
 
@@ -281,74 +311,30 @@ final class VerifiedDownloads {
         copy(f,out);
         out.closeEntry();
     }
-    /** Archives verified original files, extracted SRTs, metadata and a truthful QA audit. */
-    ZipResult createVerifiedZip(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception{
+    /** Create exactly eight Windows-native files from hash-verified source assets. */
+    ZipResult createVerifiedZip(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
         if(!SecurityRules.validUuid(projectId))throw new SecurityException("Invalid project ID");
-        JSONObject p=detail.getJSONObject("project");
-        if(!projectId.equals(p.optString("id"))||!"ready".equals(p.optString("status")))
-            throw new SecurityException("Project must be ready and match downloaded manifest");
-        String[] kinds={"export_json","english_mp3","urdu_mp3","source_srt"};
-        String[] names={"CinePulse_Project.json","CinePulse_English.mp3","CinePulse_Urdu.mp3","CinePulse_Source.srt"};
-        File[] temp=new File[kinds.length];
-        File zip=null;
+        JSONObject project=detail.getJSONObject("project");
+        if(!projectId.equals(project.optString("id"))||!"ready".equals(project.optString("status")))
+            throw new SecurityException("Project not ready");
+        File[] originals=null;RenderBundle bundle=null;File zip=null;
         try{
-            Map<String,JSONObject> assets=manifest(detail);
-            JSONObject linksByKind=links.getJSONObject("files");
-            for(int i=0;i<kinds.length;i++){
-                JSONObject meta=assets.get(kinds[i]);
-                if(meta==null)throw new IOException("Missing Cloudflare "+kinds[i]+" manifest");
-                progress.update("Verifying "+names[i]+" ("+(i+1)+"/4)");
-                if("source_srt".equals(kinds[i])&&!linksByKind.has(kinds[i])){
-                    temp[i]=sourceSrtFromVerifiedJson(temp[0],projectId,meta);
-                }else{
-                    temp[i]=receive(linksByKind.getJSONObject(kinds[i]).getString("url"),
-                        projectId,kinds[i],meta.getLong("bytes"),meta.getString("sha256"));
-                }
-            }
-            byte[] jsonBytes=new byte[(int)Math.min(SecurityRules.MAX_JSON_BYTES,temp[0].length())];
-            try(InputStream in=new FileInputStream(temp[0])){
-                int total=0,n;while(total<jsonBytes.length&&(n=in.read(jsonBytes,total,jsonBytes.length-total))!=-1){total+=n;}
-                if(total!=jsonBytes.length)throw new IOException("Project JSON read incomplete");
-            }
-            JSONObject exported=new JSONObject(new String(jsonBytes,StandardCharsets.UTF_8));
-            JSONObject identity=exported.optJSONObject("project");
-            if(identity==null || !projectId.equals(identity.optString("id")))
-                throw new SecurityException("Exported JSON project ID does not match requested movie");
-            String exportedSource=exported.optString("sourceSrt","");
-            String downloadedSource=new String(java.nio.file.Files.readAllBytes(temp[3].toPath()),StandardCharsets.UTF_8).trim();
-            if(exportedSource.trim().length()>0&&!exportedSource.trim().equals(downloadedSource))
-                throw new SecurityException("Source SRT differs from the exported JSON; package cannot be shared safely.");
-            double enSeconds=measuredMp3Seconds(temp[1]),urSeconds=measuredMp3Seconds(temp[2]);
-            PackageAudit.Result audit=PackageAudit.inspect(exported,enSeconds,urSeconds);
-            WindowsProjectExport.Result nativeProject=WindowsProjectExport.fromCloud(exported,enSeconds,urSeconds);
-            String title=SecurityRules.safeFolderName(p.optString("title"));
-            String name="CinePulse-"+title+"-"+SecurityRules.shortId(projectId)+".zip";
-            zip=File.createTempFile("cinepulse-share-", ".zip",cache);
-            progress.update("Creating shareable ZIP and QA report");
+            originals=downloadOriginals(projectId,detail,links,progress);
+            bundle=prepareBundle(projectId,originals);
+            String name="CinePulse-"+SecurityRules.safeFolderName(project.optString("title"))+"-"+
+                SecurityRules.shortId(projectId)+"-Windows-ready.zip";
+            zip=File.createTempFile("cinepulse-windows-", ".zip",cache);
+            progress.update("Packaging eight Windows-compatible files");
             try(ZipOutputStream out=new ZipOutputStream(new FileOutputStream(zip))){
-                for(int i=0;i<kinds.length;i++)zipFile(out,names[i],temp[i]);
-                zipText(out,"CinePulse_Windows_Project.json",nativeProject.project.toString(2));
-                zipText(out,"Prepare_For_Windows.bat",WindowsPackageBootstrap.bat());
-                zipText(out,"CinePulse_Prepare_Windows.js",WindowsPackageBootstrap.js());
-                JSONObject subtitles=exported.optJSONObject("narrationSrts");
-                if(subtitles!=null){
-                    String en=inner(subtitles.opt("english"),"srt");
-                    String ur=inner(subtitles.opt("urdu"),"srt");
-                    if(!en.isEmpty())zipText(out,"CinePulse_English.srt",en);
-                    if(!ur.isEmpty())zipText(out,"CinePulse_Urdu.srt",ur);
-                }
-                JSONObject metadata=exported.optJSONObject("metadata");
-                if(metadata!=null)zipText(out,"CinePulse_Metadata.json",metadata.toString(2));
-                zipText(out,"CinePulse_Quality_Report.txt",nativeProject.report+"\n"+audit.report);
+                for(int i=0;i<BUNDLE_NAMES.length;i++)zipFile(out,BUNDLE_NAMES[i],bundle.files[i]);
             }
-            if(zip.length()<=0)throw new IOException("Cannot generate project ZIP");
-            progress.update("ZIP created, audit complete. Share with WhatsApp or transfer to Windows.");
-            return new ZipResult(zip,name,audit.report);
-        }catch(Exception error){
-            if(zip!=null)zip.delete();
-            throw error;
-        }finally{
-            for(File file:temp)if(file!=null)file.delete();
+            if(zip.length()<=0)throw new IOException("Empty Windows export ZIP");
+            return new ZipResult(zip,name,bundle.report);
+        }catch(Exception e){if(zip!=null)zip.delete();throw e;}
+        finally{
+            if(bundle!=null)bundle.cleanup();
+            if(originals!=null)for(File file:originals)if(file!=null)file.delete();
         }
     }
+
 }

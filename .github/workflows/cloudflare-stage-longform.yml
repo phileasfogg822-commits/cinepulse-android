@@ -1,0 +1,98 @@
+name: Stage CinePulse Cloudflare long-form version (NO PRODUCTION DEPLOYMENT)
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths:
+      - '.github/workflows/cloudflare-stage-longform.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-cloudflare-release
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      CF_SCRIPT: cinepulse-android-bridge
+      EXPECTED_LIVE_VERSION: f5082b36-794c-4553-8bcd-81f4a4e86477
+      EXPECTED_PRODUCTION_SHA256: c6c077fc416a12d9b8c4bc4db23ce111d4cf7dd993cfa3fad44be36658674733
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Assert production configuration and secret presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-fA-F0-9]{32}$ ]]
+          node --check src/index.mjs
+          node --check src/helpers.mjs
+          node --check src/longform-policy.mjs
+          node -e 'const c=require("./wrangler.json");if(c.name!=="cinepulse-android-bridge"||!c.keep_vars||c.d1_databases?.[0]?.database_id!=="bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd"||c.r2_buckets?.[0]?.bucket_name!=="cinepulse-android-assets")process.exit(1)'
+      - name: Regression tests (NO D1 or R2 writes)
+        run: node --test tests/*.test.mjs
+      - name: Install pinned Wrangler major version
+        run: npm install --no-audit --no-fund
+      - name: Bundle dry-run (NO DEPLOYMENT)
+        run: npx wrangler deploy --dry-run --outdir build-dry-run
+      - name: Verify production Worker has not changed since audited snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$CF_SCRIPT"
+          mkdir -p snapshot
+          status=$(curl -sS --max-time 70 \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -o snapshot/production.bin -w '%{http_code}' "$BASE/content/v2")
+          test "$status" = 200
+          got=$(sha256sum snapshot/production.bin | awk '{print $1}')
+          if [[ "$got" != "$EXPECTED_PRODUCTION_SHA256" ]]; then
+            echo '::error::Live production code changed since the approved snapshot; staging aborted.'
+            exit 1
+          fi
+          curl -fsS --max-time 50 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "$BASE/deployments" -o snapshot/deployments.json
+          active=$(jq -r '.result.deployments[0].versions[] | select(.percentage==100) | .version_id' snapshot/deployments.json)
+          if [[ "$active" != "$EXPECTED_LIVE_VERSION" ]]; then
+            echo "::error::Current production version changed ($active); staging aborted."
+            exit 1
+          fi
+          curl -fsS --max-time 50 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "$BASE/settings" -o snapshot/settings.json
+          jq -e --arg db 'bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd' \
+            '.result.bindings | any(.name=="DB" and .type=="d1" and .id==$db)' snapshot/settings.json >/dev/null
+          jq -e '.result.bindings | any(.name=="FILES" and .type=="r2_bucket" and .bucket_name=="cinepulse-android-assets")' snapshot/settings.json >/dev/null
+          jq -e '.result.bindings | any(.name=="ADMIN_TOKEN" and .type=="secret_text")' snapshot/settings.json >/dev/null
+          jq -e '.result.bindings | any(.name=="DOWNLOAD_SIGNING_KEY" and .type=="secret_text")' snapshot/settings.json >/dev/null
+          echo 'PRODUCTION_SOURCE_AND_BINDINGS_VERIFIED, data untouched'
+      - name: Upload a new INACTIVE Worker version only
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions upload --tag cinepulse-lf-v020 --message "CinePulse long-form only: metadata stage, two languages, 3-6 second cut validation; no D1/R2 migration"
+          curl -fsS --max-time 50 \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$CF_SCRIPT/versions" \
+            -o snapshot/versions-after.json
+          new=$(jq -r '.result.items[0].id // empty' snapshot/versions-after.json)
+          test -n "$new"
+          test "$new" != "$EXPECTED_LIVE_VERSION"
+          printf 'NEW_INACTIVE_VERSION=%s\nPREVIOUS_ACTIVE_VERSION=%s\n' "$new" "$EXPECTED_LIVE_VERSION" > snapshot/staged-version.txt
+          echo "NEW_INACTIVE_VERSION=$new"
+          echo 'VERSION_STAGED_NOT_DEPLOYED'
+      - name: Preserve nonsecret stage proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinepulse-staged-cloudflare-version
+          path: cloudflare/cinepulse-android/snapshot/staged-version.txt
+          if-no-files-found: error
+          retention-days: 7

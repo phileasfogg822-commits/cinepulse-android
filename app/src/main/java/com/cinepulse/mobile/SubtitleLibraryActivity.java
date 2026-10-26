@@ -875,7 +875,7 @@ public final class SubtitleLibraryActivity extends Activity {
                            SecurityRules.validUuid(worker.optString("id")))active.add(worker.optString("id"));
                     }
                     if(active.isEmpty())throw new IllegalStateException("No enabled/unpaused Muse workers. Resume a worker before starting.");
-                    int submitted=0,recognized=0,unknown=0,echoed=0;
+                    int submitted=0,recognized=0,unknown=0,echoed=0,modeConfirmed=0;
                     StringBuilder failures=new StringBuilder();
                     for(String id:selected){
                         JSONObject entry=findEntry(id);
@@ -917,6 +917,9 @@ public final class SubtitleLibraryActivity extends Activity {
                             submitted++;
                             if(created.optInt("targetMinutes",-1)==target||
                                 (created.optJSONObject("project")!=null&&created.optJSONObject("project").optInt("targetMinutes",-1)==target))echoed++;
+                            if("long_form_only".equals(created.optString("outputMode"))||
+                                (created.optJSONObject("project")!=null&&
+                                "long_form_only".equals(created.optJSONObject("project").optString("outputMode"))))modeConfirmed++;
                         }catch(Exception failure){
                             if(started){
                                 try{shelf.markUnknown(id,"Submission outcome unconfirmed. Recheck Projects before retry.");}
@@ -929,16 +932,19 @@ public final class SubtitleLibraryActivity extends Activity {
                         }
                     }
                     return new String[]{String.valueOf(submitted),String.valueOf(unknown),
-                        String.valueOf(echoed),failures.toString()};
+                        String.valueOf(echoed),String.valueOf(modeConfirmed),failures.toString()};
                 },report->{
                     librarySelection.clear();reloadLibrary();
                     String summary=report[0]+" NEW Cloudflare project(s) confirmed. "+
                         report[1]+" movie(s) have an uncertain or duplicate state and were LOCKED against retries.\n"+
                         "Requested "+target+" minutes of narration PER movie; "+
-                        report[2]+" new project response(s) explicitly echoed that setting.\n\n"+
+                        report[2]+" new project response(s) explicitly echoed that setting.\n"+
+                         "Requested English + Urdu long-form only; "+report[3]+
+                         " server response(s) explicitly acknowledged outputMode=long_form_only. "+
+                         "An older Cloudflare worker may still create Shorts/Viral jobs until its backend is upgraded.\n\n"+
                         "Confirmed movies move from Ready to Queued in this screen. "+
                         "Unconfirmed movies stay visible for server reconciliation; no additional POST is sent.";
-                    if(!report[3].isEmpty())summary+="\n\nDetails:\n"+report[3];
+                    if(!report[4].isEmpty())summary+="\n\nDetails:\n"+report[4];
                     new AlertDialog.Builder(this).setTitle("Movie queue submission result")
                         .setMessage(summary).setPositiveButton("OK",null).show();
                 });

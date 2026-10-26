@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/wrangler",
+  "name": "cinepulse-android-bridge",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-10-01",
+  "keep_vars": true,
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cinepulse-android-db",
+      "database_id": "bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "cinepulse-android-assets"
+    }
+  ],
+  "secrets": {
+    "required": [
+      "ADMIN_TOKEN",
+      "DOWNLOAD_SIGNING_KEY"
+    ]
+  }
+}

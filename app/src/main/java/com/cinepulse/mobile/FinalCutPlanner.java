@@ -67,9 +67,11 @@ final class FinalCutPlanner {
     private static void add(List<Range> all,double ss,double se,double as,double ae,double quality,double maxMovie){
         if(!Double.isFinite(ss)||!Double.isFinite(se)||!Double.isFinite(as)||!Double.isFinite(ae))return;
         if(ss<0||as<0||se<=ss||ae<=as||ss>=maxMovie-1||se>maxMovie+90)return;
-        // A full-film or multi-reel raw window is NOT a verified scene anchor.
-        if(se-ss>Math.max(300d,(ae-as)*12d))return;
-        all.add(new Range(ss,Math.min(se,maxMovie),as,ae,quality));
+        // These are long-form scene SEARCH WINDOWS, never short/viral output jobs.
+        // Broad windows are lower-confidence anchors; footage is still cut to the MP3 timeline.
+        if(se-ss>Math.min(3600d,maxMovie*.9d))return;
+        double evidence=se-ss>Math.max(180d,(ae-as)*10d)?Math.min(quality,.58d):quality;
+        all.add(new Range(ss,Math.min(se,maxMovie),as,ae,evidence));
     }
     private static List<Range> anchors(JSONObject original,String language,double maxMovie){
         List<Range> all=new ArrayList<>();
@@ -106,7 +108,7 @@ final class FinalCutPlanner {
     private static double chooseSource(double desired,double clip,Range anchor,
         double maxMovie,List<Double> cues,List<double[]> used){
         // An anchor may need a few seconds of adjacent footage for a hook/voiceover.
-        double margin=Math.min(12,Math.max(4,clip*2));
+        double margin=Math.min(30,Math.max(12,clip*4));
         double lo=Math.max(0,anchor.sourceStart-margin);
         double hi=Math.min(maxMovie-clip,anchor.sourceEnd+margin-clip);
         if(hi<lo)return -1;
@@ -158,7 +160,7 @@ final class FinalCutPlanner {
         double nominal=audioSeconds/pieces;
         List<double[]> used=new ArrayList<>();
         JSONArray finished=new JSONArray();
-        double footage=0,weak=0;
+        double footage=0;int weak=0;
         for(int index=0;index<pieces;index++){
             double a=Math.round((index*nominal)*1000)/1000d;
             double b=index==pieces-1?Math.round(audioSeconds*1000)/1000d:

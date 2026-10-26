@@ -131,4 +131,38 @@ public class WindowsProjectExportTest {
         assertEquals("CinePulse_English_Narration.txt",names[6]);
         assertEquals("CinePulse_Urdu_Narration.txt",names[7]);
     }
+    @Test public void minecraftSizedTwoLanguagePlanHasOnlyTwoFullMovieTimelines() throws Exception {
+        JSONObject c=cloud();
+        c.put("sourceSrt",srt(1600,6300));
+        c.getJSONObject("narrationSrts")
+            .put("english",new JSONObject().put("srt",srt(79,452.160)).toString())
+            .put("urdu",new JSONObject().put("srt",srt(207,523.139)).toString());
+        double[] sourceStart={56,80,214,294,509,764,1673,2129,2380,3255,4022,4547,5452};
+        double[] sourceEnd={72,212,294,508,763,1667,2124,2376,3255,4022,4546,5449,6033};
+        double[] enEnd={22,53,81,135,166,216,245,281,321,370,393,425,452.160};
+        double[] urEnd={27,60,94,156,192,250,285,326,372,427,454,490,523.139};
+        JSONArray regions=new JSONArray();
+        for(String lang:new String[]{"english","urdu"}){
+            double[] ends=lang.equals("english")?enEnd:urEnd;
+            double previous=0;
+            for(int i=0;i<13;i++){
+                regions.put(new JSONObject()
+                    .put("language",lang).put("sourceStartSeconds",sourceStart[i])
+                    .put("sourceEndSeconds",sourceEnd[i])
+                    .put("narrationStartSeconds",previous)
+                    .put("narrationEndSeconds",ends[i]));
+                previous=ends[i];
+            }
+        }
+        c.put("cutPlan",regions);
+        WindowsProjectExport.Result converted=WindowsProjectExport.fromCloud(c,452.160,523.139);
+        JSONObject tracks=converted.project.getJSONObject("tracks");
+        FinalCutPlanner.validate(tracks.getJSONObject("english").getJSONArray("cuts"),452.160,6300);
+        FinalCutPlanner.validate(tracks.getJSONObject("hindiUrdu").getJSONArray("cuts"),523.139,6300);
+        assertTrue(tracks.getJSONObject("english").getJSONArray("cuts").length()>80);
+        assertTrue(tracks.getJSONObject("hindiUrdu").getJSONArray("cuts").length()>95);
+        assertEquals(0,converted.project.getJSONObject("analysis").getJSONArray("shorts").length());
+        assertEquals(0,converted.project.getJSONObject("analysis").getJSONArray("viralClips").length());
+    }
+
 }

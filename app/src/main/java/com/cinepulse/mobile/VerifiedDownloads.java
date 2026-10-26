@@ -264,7 +264,7 @@ final class VerifiedDownloads {
             }
             return "Saved 8 files to Downloads/CinePulse/"+folder+
                 ". The single JSON is a Windows-native project with subtitle-grounded short final cuts."+
-                " Transfer the whole folder. Windows must resolve local MP3/video paths and verify actual source footage.";
+                " Transfer the whole folder. Windows must resolve MP3 and source-video paths. Frame analysis is not required for timeline-only validation.";
         }catch(Exception e){
             for(Uri uri:createdUris)try{resolver.delete(uri,null,null);}catch(Exception ignored){}
             for(File file:createdFiles)file.delete();

@@ -67,11 +67,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --show-error --silent --retry 3 --retry-delay 2 --max-time 35 "$PRODUCTION_URL" -o current-health.json
-          jq -e '.status=="online" and .build=="android-cloud-backend-0.2.0-longform-only" and
+          # A successful version deployment can precede edge propagation.
+          # Poll until all public production health invariants are visible.
+          observed=0
+          for attempt in $(seq 1 18); do
+            curl --fail --show-error --silent --max-time 25 "$PRODUCTION_URL" -o current-health.json || true
+            if jq -e '.status=="online" and .build=="android-cloud-backend-0.2.0-longform-only" and
                  .policy.newMovies=="long_form_only" and .policy.shorts==false and .policy.virals==false and
                  .policy.metadata==true and .policy.cutMinSeconds==3 and .policy.cutMaxSeconds==6 and
-                 .policy.legacyJobsPreserved==true' current-health.json >/dev/null
+                 .policy.legacyJobsPreserved==true' current-health.json >/dev/null 2>&1; then
+              observed=1
+              echo "New production health policy verified after check $attempt"
+              break
+            fi
+            echo "Waiting for Cloudflare edge rollout; check $attempt/18"
+            sleep 5
+          done
+          if [[ "$observed" != 1 ]]; then
+            echo '::error::New production health never became available; safety rollback required.'
+            exit 1
+          fi
           BASE="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$CF_SCRIPT"
           curl --fail --show-error --silent --max-time 35 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$BASE/deployments" -o deployed-list.json
           active=$(jq -r '.result.deployments[0].versions[] | select(.percentage==100) | .version_id' deployed-list.json)

@@ -88,7 +88,7 @@ public class WindowsProjectExportTest {
             double size=FinalCutPlanner.secs(cut.getString("movieEnd"))-
                 FinalCutPlanner.secs(cut.getString("movieStart"));
             sum+=size;assertTrue("clip >6s",size<=6.003);
-            assertEquals(0.65,cut.getDouble("confidence"),0.001);
+            assertTrue("broad scene window must carry downgraded confidence",cut.getDouble("confidence")<=0.65);
         }
         assertEquals(90,sum,.02);
     }

@@ -19,7 +19,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
       CF_SCRIPT: cinepulse-android-bridge
       EXPECTED_LIVE_VERSION: f5082b36-794c-4553-8bcd-81f4a4e86477
-      EXPECTED_PRODUCTION_SHA256: c6c077fc416a12d9b8c4bc4db23ce111d4cf7dd993cfa3fad44be36658674733
+      EXPECTED_PRODUCTION_MODULE_SHA256: f9743f810c17a178855d8bd381bbe226b4366442f128d921bd9755bce0da279c
     defaults:
       run:
         working-directory: cloudflare/cinepulse-android
@@ -54,9 +54,24 @@ jobs:
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             -o snapshot/production.bin -w '%{http_code}' "$BASE/content/v2")
           test "$status" = 200
-          got=$(sha256sum snapshot/production.bin | awk '{print $1}')
-          if [[ "$got" != "$EXPECTED_PRODUCTION_SHA256" ]]; then
-            echo '::error::Live production code changed since the approved snapshot; staging aborted.'
+          # content/v2 is multipart with a NEW random boundary every request;
+          # hash the actual deployed index.js module rather than multipart envelope.
+          got=$(python3 - <<'PY'
+          from pathlib import Path
+          from email.parser import BytesParser
+          from email import policy
+          import hashlib
+          raw=Path('snapshot/production.bin').read_bytes()
+          boundary=raw.split(b'\r\n',1)[0][2:].decode('ascii')
+          msg=BytesParser(policy=policy.default).parsebytes(
+              b'Content-Type: multipart/form-data; boundary='+boundary.encode()+b'\r\nMIME-Version: 1.0\r\n\r\n'+raw)
+          part=next((p for p in msg.iter_parts() if p.get_filename()=='index.js'),None)
+          if part is None: raise SystemExit('Live Worker index.js module missing')
+          print(hashlib.sha256(part.get_payload(decode=True)).hexdigest())
+          PY
+          )
+          if [[ "$got" != "$EXPECTED_PRODUCTION_MODULE_SHA256" ]]; then
+            echo '::error::Live production JS module changed since the approved snapshot; staging aborted.'
             exit 1
           fi
           curl -fsS --max-time 50 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \

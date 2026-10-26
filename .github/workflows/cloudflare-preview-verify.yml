@@ -1,0 +1,40 @@
+name: Verify staged CinePulse Cloudflare Worker preview (NO DEPLOYMENT)
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cloudflare-preview-verify.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert preview long-form policy and prior production unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREVIEW='https://4234dfab-cinepulse-android-bridge.maryumblog.workers.dev/health'
+          LIVE='https://cinepulse-android-bridge.maryumblog.workers.dev/health'
+          curl --fail --show-error --silent --retry 3 --max-time 35 "$PREVIEW" -o preview.json
+          jq -e '
+            .status=="online" and
+            .build=="android-cloud-backend-0.2.0-longform-only" and
+            .cloudOrigin==true and
+            .policy.newMovies=="long_form_only" and
+            .policy.shorts==false and
+            .policy.virals==false and
+            .policy.metadata==true and
+            .policy.cutMinSeconds==3 and
+            .policy.cutMaxSeconds==6 and
+            .policy.legacyJobsPreserved==true
+          ' preview.json >/dev/null
+          echo 'STAGED_LONGFORM_POLICY_VERIFIED'
+          curl --fail --show-error --silent --retry 3 --max-time 35 "$LIVE" -o production.json
+          if jq -e '.build == "android-cloud-backend-0.2.0-longform-only"' production.json >/dev/null;then
+            echo '::error::Production has already changed; abort without further updates.'
+            exit 1
+          fi
+          echo 'ORIGINAL_PRODUCTION_STILL_ACTIVE'
+          echo 'Preview health and policy tests passed; no production changes.'

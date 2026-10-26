@@ -91,125 +91,148 @@ final class WindowsProjectExport {
             .put("movieFile","CinePulse_Source.srt").put("confidence",0)
             .put("narrationExcerpt","");
     }
+    /** Windows native ProjectState; export only after both audio timelines and cuts pass. */
     static Result fromCloud(JSONObject cloud,double enSeconds,double urSeconds) throws Exception{
         if(!"cinepulse.render-project.v1".equals(cloud.optString("schema")))
-            throw new IOException("Expected verified cinepulse.render-project.v1 export");
+            throw new IOException("Expected hash-verified Cloudflare movie export");
         JSONObject origin=cloud.optJSONObject("project");
         if(origin==null||!SecurityRules.validUuid(origin.optString("id")))
-            throw new IOException("Cloudflare project identity is missing");
-        String source=cloud.optString("sourceSrt","");
-        if(source.length()<20||!source.contains("-->"))throw new IOException("Original movie SRT missing");
+            throw new IOException("Cloudflare movie ID is missing or invalid");
         String title=origin.optString("title","Movie");
-        JSONObject narr=cloud.optJSONObject("narrations"),srts=cloud.optJSONObject("narrationSrts");
+        String source=cloud.optString("sourceSrt","");
+        if(PackageAudit.srtCueCount(source)<75||PackageAudit.srtEnd(source)<3300)
+            throw new IOException("Original source SRT is incomplete. Export stopped for "+title);
+        JSONObject narr=cloud.optJSONObject("narrations");
+        JSONObject srts=cloud.optJSONObject("narrationSrts");
         String english=narr==null?"":unwrap(narr.opt("english"),"text");
         String urdu=narr==null?"":unwrap(narr.opt("urdu"),"text");
         String enSrt=srts==null?"":unwrap(srts.opt("english"),"srt");
         String urSrt=srts==null?"":unwrap(srts.opt("urdu"),"srt");
-        List<String> issues=new ArrayList<>();
-        int sourceCues=PackageAudit.srtCueCount(source);
-        double sourceEnd=PackageAudit.srtEnd(source);
-        if(sourceCues<75||sourceEnd<3300)
-            issues.add("Original movie SRT appears incomplete: "+sourceCues+" cues, last timestamp "+stamp(sourceEnd));
-        JSONObject en=track(enSrt,enSeconds,issues,"English"),ur=track(urSrt,urSeconds,issues,"Urdu");
-        double enRecall=PackageAudit.lexicalRecall(english,enSrt);
-        double urRecall=PackageAudit.lexicalRecall(urdu,urSrt);
-        if(enRecall>=0&&enRecall<0.70)
-            issues.add("English narration/SRT text agreement below 70%: "+Math.round(100*enRecall)+"%");
-        if(urRecall>=0&&urRecall<0.45)
-            issues.add("Urdu narration/SRT text agreement below 45%: "+Math.round(100*urRecall)+"%");
-        if(english.length()<25)issues.add("English narration missing");
-        if(urdu.length()<25)issues.add("Urdu narration missing");
+        if(english.length()<25||urdu.length()<25)
+            throw new IOException("English and Urdu narration must both be complete before exporting");
+        if(enSrt.trim().isEmpty()||urSrt.trim().isEmpty())
+            throw new IOException("Both measured narration SRTs are required");
+        String digest=unwrap(cloud.opt("digest"),"text");
+        if(digest.length()<25)throw new IOException("Movie digest is missing or incomplete");
         JSONObject meta=cloud.optJSONObject("metadata");
         JSONArray keywords=meta==null?null:meta.optJSONArray("keywords");
         JSONArray hashtags=meta==null?null:meta.optJSONArray("hashtags");
         String description=meta==null?"":meta.optString("description","");
-        boolean hasMetadata=description.length()>=20&&keywords!=null&&keywords.length()>0;
-        if(!hasMetadata)issues.add("Publishing metadata missing");
-        String digest=unwrap(cloud.opt("digest"),"text");
-        JSONArray completed=new JSONArray();
-        if(!digest.isEmpty()){completed.put("source-digest");completed.put("story-core");}
-        else issues.add("Story digest missing");
-        if(english.length()>25)completed.put("english-narration");
-        if(urdu.length()>25)completed.put("hindi-narration");
-        if(hasMetadata)completed.put("publishing-metadata");
-        if(cloud.optJSONArray("viralScenes")!=null&&cloud.optJSONArray("viralScenes").length()>0)
-            completed.put("viral-plan");
+        if(description.trim().length()<20||keywords==null||keywords.length()==0||
+            hashtags==null||hashtags.length()==0)
+            throw new IOException("Publishing metadata needs a description, keywords and hashtags");
+        double enRecall=PackageAudit.lexicalRecall(english,enSrt);
+        double urRecall=PackageAudit.lexicalRecall(urdu,urSrt);
+        if(enRecall>=0&&enRecall<.70)
+            throw new IOException("English narration SRT text coverage too low ("+
+                Math.round(enRecall*100)+"%); regenerate SRT before exporting");
+        if(urRecall>=0&&urRecall<.45)
+            throw new IOException("Urdu narration SRT text coverage too low ("+
+                Math.round(urRecall*100)+"%); regenerate SRT before exporting");
+        if(!(enSeconds>30)||!(urSeconds>30))
+            throw new IOException("Both MP3 lengths must be measured on this phone to finalize cuts");
+        List<String> issues=new ArrayList<>();
+        JSONObject en=track(enSrt,enSeconds,issues,"English");
+        JSONObject ur=track(urSrt,urSeconds,issues,"Urdu");
+        if(!issues.isEmpty())throw new IOException("Narration timing check failed: "+String.join("; ",issues));
+        FinalCutPlanner.Result enPlan=FinalCutPlanner.finalizePlan(cloud,"english",enSeconds);
+        FinalCutPlanner.Result urPlan=FinalCutPlanner.finalizePlan(cloud,"urdu",urSeconds);
+        en.put("cuts",enPlan.cuts).put("status","ready")
+            .put("message","Narration-length, non-overlapping, subtitle-anchored cuts finalized on Android.");
+        ur.put("cuts",urPlan.cuts).put("status","ready")
+            .put("message","Narration-length, non-overlapping, subtitle-anchored cuts finalized on Android.");
+        for(int i=0;i<2;i++){
+            JSONObject lane=i==0?en:ur;
+            JSONArray finalized=i==0?enPlan.cuts:urPlan.cuts;
+            int total=lane.getJSONArray("segments").length();
+            lane.put("sceneMatch",new JSONObject().put("signature","apk-subtitle-aligned-v1")
+                .put("batchSize",5).put("totalBatches",Math.max(1,(total+4)/5))
+                .put("completedBatches",Math.max(1,(total+4)/5)).put("completedSegments",total)
+                .put("rawCuts",finalized).put("anchors",new JSONArray())
+                .put("localResolvedSegments",total).put("aiResolvedSegments",0)
+                .put("status","complete").put("lastError",""));
+            // Portable sibling media names. Windows must resolve them against the imported JSON folder.
+            lane.put("mp3Path",i==0?"CinePulse_English.mp3":"CinePulse_Urdu.mp3");
+        }
         JSONObject analysis=new JSONObject().put("narrations",new JSONObject()
             .put("english",english).put("hindiUrdu",urdu))
             .put("metadata",new JSONObject().put("english",new JSONObject()
-                .put("title",title).put("description",description)
-                .put("keywords",keywords==null?new JSONArray():keywords)
-                .put("hashtags",hashtags==null?new JSONArray():hashtags)))
-            .put("research",new JSONObject()).put("storyMap",new JSONArray())
-            .put("viralMoments",new JSONArray()).put("hooks",new JSONArray())
-            .put("longFormPlan",new JSONArray()).put("retentionBeats",new JSONArray())
-            .put("scenePlan",new JSONArray()).put("audioPlan",new JSONArray())
-            .put("shorts",new JSONArray()).put("viralClips",new JSONArray())
-            .put("qa",new JSONObject()).put("clarifyingQuestions",new JSONArray())
-            .put("agentSuggestions",new JSONArray());
-        JSONArray enRaw=new JSONArray(),urRaw=new JSONArray(),plan=cloud.optJSONArray("cutPlan");
-        if(plan!=null)for(int i=0;i<plan.length();i++){
-            JSONObject record=plan.optJSONObject(i);if(record==null)continue;
-            JSONObject candidate=rawCut(record);if(candidate==null)continue;
-            if("english".equalsIgnoreCase(record.optString("language")))enRaw.put(candidate);
-            else if("urdu".equalsIgnoreCase(record.optString("language")))urRaw.put(candidate);
+                .put("titles",new JSONArray().put(title)).put("description",description)
+                .put("shortDescription",description.length()>150?description.substring(0,150):description)
+                .put("keywords",keywords).put("hashtags",hashtags)
+                .put("thumbnailIdeas",new JSONArray()).put("pinnedComment","")
+                .put("categoryTags",new JSONArray())))
+            .put("research",new JSONObject()
+                .put("verifiedSynopsis",digest).put("characters",new JSONArray())
+                .put("themes",new JSONArray()).put("contentWarnings",new JSONArray())
+                .put("sources",new JSONArray()))
+            .put("storyMap",new JSONArray()).put("viralMoments",new JSONArray())
+            .put("hooks",new JSONArray()).put("longFormPlan",new JSONArray())
+            .put("retentionBeats",new JSONArray()).put("scenePlan",new JSONArray())
+            .put("audioPlan",new JSONArray()).put("shorts",new JSONArray())
+            .put("viralClips",new JSONArray())
+            .put("qa",new JSONObject().put("storyAccuracy",0).put("retention",0)
+                .put("clarity",0).put("transformative",0).put("notes",new JSONArray()))
+            .put("clarifyingQuestions",new JSONArray()).put("agentSuggestions",new JSONArray());
+        JSONArray completed=new JSONArray()
+            .put("source-digest").put("story-core").put("english-narration")
+            .put("hindi-narration").put("publishing-metadata")
+            .put("publishing-clips").put("publishing");
+        JSONObject pipeline=new JSONObject().put("completed",completed)
+            .put("skipped",new JSONArray().put("shorts").put("viral-clips"))
+            .put("currentStep","Narration and SRT complete; subtitle-anchored long cuts finalized. Attach video to render.")
+            .put("progress",95).put("sourceDigest",digest).put("movieBible",digest)
+            .put("digestParts",new JSONArray().put(digest))
+            .put("englishParts",new JSONArray().put(english))
+            .put("hindiParts",new JSONArray().put(urdu))
+            .put("hindiRecovery",new JSONObject()).put("movieMap",new JSONArray())
+            .put("canonicalBlocks",new JSONArray()).put("lastError","");
+        JSONObject manifest=cloud.optJSONObject("audio");
+        if(manifest==null)throw new IOException("Cloud audio hash manifests missing");
+        for(String lang:new String[]{"english","urdu"}){
+            JSONObject mp3=manifest.optJSONObject(lang);
+            if(mp3==null||mp3.optLong("bytes")<=0||
+                !mp3.optString("sha256").matches("(?i)[0-9a-f]{64}"))
+                throw new IOException(lang+" MP3 hash manifest missing");
         }
-        for(int i=0;i<2;i++){
-            JSONObject track=i==0?en:ur;
-            JSONArray raw=i==0?enRaw:urRaw;
-            int total=track.getJSONArray("segments").length();
-            track.put("sceneMatch",new JSONObject().put("signature","cloud-import-unverified")
-                .put("batchSize",5).put("totalBatches",Math.max(1,(total+4)/5))
-                .put("completedBatches",0).put("completedSegments",0)
-                .put("rawCuts",raw).put("anchors",new JSONArray())
-                .put("localResolvedSegments",0).put("aiResolvedSegments",0)
-                .put("status","paused").put("lastError",
-                    "Cloud source matches preserved, not finalized. Match to attached Windows movie footage."));
-        }
-        if(enRaw.length()==0)issues.add("No English raw scene matches");
-        if(urRaw.length()==0)issues.add("No Urdu raw scene matches");
-        JSONObject audio=cloud.optJSONObject("audio");
-        JSONObject portable=new JSONObject().put("schema","cinepulse.windows-portable.v1")
+        JSONObject receipt=new JSONObject().put("schema","cinepulse.windows-portable.v2")
             .put("cloudProjectId",origin.optString("id"))
-            .put("audio",audio==null?new JSONObject():audio)
-            .put("sceneMatchesFinalized",false).put("issues",new JSONArray(issues));
+            .put("audio",manifest)
+            .put("sceneMatchesFinalized",true).put("sourceVideoFrameVerified",false)
+            .put("method","subtitle-and-cloud-scene-anchors; actual movie frames not supplied")
+            .put("englishCutCount",enPlan.cuts.length())
+            .put("urduCutCount",urPlan.cuts.length())
+            .put("englishRuntimeSeconds",enSeconds).put("urduRuntimeSeconds",urSeconds)
+            .put("sourceSrtLastTimestamp",PackageAudit.srtEnd(source))
+            .put("requiredWindowsAction","Resolve MP3 sibling paths; attach original video; render");
+        Matcher year=YEAR.matcher(title);
         JSONObject config=new JSONObject().put("sourceType","movie")
             .put("durationMinutes",Math.max(3,Math.min(60,origin.optInt("targetMinutes",
                 (int)Math.ceil(Math.max(enSeconds,urSeconds)/60d)))))
-            .put("contentGoal","Story recap + review").put("tone","Cinematic")
+            .put("contentGoal","Story recap").put("tone","Cinematic")
+            .put("audience","General audience").put("spoilerMode","Full story")
+            .put("pacing","Cinematic").put("researchDepth","Subtitle-grounded")
             .put("sceneMatchBatchSize",5).put("maxMovieClipSeconds",6)
-            .put("preferredGapSeconds",1).put("shortsCount",0)
-            .put("transformativeCommentary",true);
-        Matcher year=YEAR.matcher(title);
-        JSONObject result=new JSONObject().put("title",title).put("releaseYear",year.find()?year.group(1):"")
+            .put("preferredGapSeconds",0).put("shortsCount",0)
+            .put("platforms",new JSONArray()).put("includeMusic",false)
+            .put("includeSuspense",false).put("includeVoiceDirection",false)
+            .put("includeOnScreenText",false).put("transformativeCommentary",true);
+        JSONObject result=new JSONObject()
+            .put("title",title).put("releaseYear",year.find()?year.group(1):"")
             .put("videoPath","")
             .put("sourceFiles",new JSONArray().put(new JSONObject()
-                .put("name","CinePulse_Source.srt").put("text",source).put("cues",new JSONArray())))
+                .put("name","CinePulse_Source.srt").put("text",source)
+                .put("cues",new JSONArray())))
             .put("researchUrls",new JSONArray()).put("config",config)
             .put("analysis",analysis).put("answers",new JSONObject())
             .put("tracks",new JSONObject().put("english",en).put("hindiUrdu",ur))
-            .put("pipeline",new JSONObject().put("completed",completed).put("skipped",new JSONArray())
-                .put("currentStep","Cloud import — verify MP3s, SRTs and finalize movie matching")
-                .put("progress",75).put("sourceDigest",digest).put("movieBible",digest)
-                .put("digestParts",new JSONArray().put(digest))
-                .put("englishParts",new JSONArray().put(english))
-                .put("hindiParts",new JSONArray().put(urdu))
-                .put("hindiRecovery",new JSONObject()).put("movieMap",new JSONArray())
-                .put("canonicalBlocks",new JSONArray()).put("lastError",""))
-            .put("shortAudioPaths",new JSONObject()).put("viralAudioPaths",new JSONObject())
-            .put("cloudImport",portable);
-        StringBuilder report=new StringBuilder("CinePulse portable Windows import verification\nMovie: ")
-            .append(title).append("\nCloud ID: ").append(origin.optString("id"))
-            .append("\nEnglish SRT blocks: ").append(en.getJSONArray("segments").length())
-            .append("; MP3 seconds: ").append(enSeconds)
-            .append("\nUrdu SRT blocks: ").append(ur.getJSONArray("segments").length())
-            .append("; MP3 seconds: ").append(urSeconds)
-            .append("\nRaw scene matches (not final cuts): EN ").append(enRaw.length())
-            .append(", UR ").append(urRaw.length())
-            .append("\nFinished cuts: 0 (never invent source footage)\n");
-        for(String issue:issues)report.append("REVIEW: ").append(issue).append('\n');
-        report.append("Run Prepare_For_Windows.bat to hash-link both MP3s, then import Windows_Ready.json. ")
-            .append("Attach the original movie and finalize scene matching before rendering.\n");
-        return new Result(result,report.toString());
+            .put("pipeline",pipeline).put("shortAudioPaths",new JSONObject())
+            .put("viralAudioPaths",new JSONObject()).put("cloudImport",receipt);
+        String report="Windows native project created: "+title+"\n"+
+            enPlan.report+"\n"+urPlan.report+"\n"+
+            "Digest, narrations, SRT, and metadata present. Shorts/viral processing excluded.\n"+
+            "No source ranges overlap within a language. Video frames and local Windows paths "+
+            "must still be checked on the receiving computer.";
+        return new Result(result,report);
     }
 }

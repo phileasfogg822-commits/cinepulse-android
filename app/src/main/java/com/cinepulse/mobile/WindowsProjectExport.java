@@ -106,7 +106,17 @@ final class WindowsProjectExport {
         String enSrt=srts==null?"":unwrap(srts.opt("english"),"srt");
         String urSrt=srts==null?"":unwrap(srts.opt("urdu"),"srt");
         List<String> issues=new ArrayList<>();
+        int sourceCues=PackageAudit.srtCueCount(source);
+        double sourceEnd=PackageAudit.srtEnd(source);
+        if(sourceCues<75||sourceEnd<3300)
+            issues.add("Original movie SRT appears incomplete: "+sourceCues+" cues, last timestamp "+stamp(sourceEnd));
         JSONObject en=track(enSrt,enSeconds,issues,"English"),ur=track(urSrt,urSeconds,issues,"Urdu");
+        double enRecall=PackageAudit.lexicalRecall(english,enSrt);
+        double urRecall=PackageAudit.lexicalRecall(urdu,urSrt);
+        if(enRecall>=0&&enRecall<0.70)
+            issues.add("English narration/SRT text agreement below 70%: "+Math.round(100*enRecall)+"%");
+        if(urRecall>=0&&urRecall<0.45)
+            issues.add("Urdu narration/SRT text agreement below 45%: "+Math.round(100*urRecall)+"%");
         if(english.length()<25)issues.add("English narration missing");
         if(urdu.length()<25)issues.add("Urdu narration missing");
         JSONObject meta=cloud.optJSONObject("metadata");

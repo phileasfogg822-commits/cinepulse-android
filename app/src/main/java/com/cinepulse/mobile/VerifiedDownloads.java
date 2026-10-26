@@ -154,7 +154,7 @@ final class VerifiedDownloads {
         List<String> names=new ArrayList<>();
         List<Uri> createdUris=new ArrayList<>();
         File legacyFolder=null;
-        String folder=SecurityRules.safeFolderName(project.optString("title"))+"-"+SecurityRules.shortId(projectId);
+        String folder=SecurityRules.safeFolderName(project.optString("title"))+"-"+SecurityRules.shortId(projectId)+"-"+Long.toString(System.currentTimeMillis(),36);
         String relative=Environment.DIRECTORY_DOWNLOADS+"/CinePulse/"+folder+"/";
         try{
             for(int i=0;i<kinds.length;i++){

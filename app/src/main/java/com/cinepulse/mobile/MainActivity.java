@@ -403,13 +403,13 @@ public final class MainActivity extends Activity {
         content.addView(action("← All movies",()->{openedProject=null;renderHome();},false),fullWithBottom(15));
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
         summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
-        summary.addView(text(status.equals("ready")?"Project JSON, original movie SRT and English/Urdu MP3s are ready. Download four primary files into Downloads/CinePulse.":
+        summary.addView(text(status.equals("ready")?"Verified cloud package ready. Export a Windows-native CinePulse project, source and narration SRTs, both MP3s, and an offline MP3 linker. Final scene cuts still require Windows review.":
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
         space(summary,12);
         if(status.equals("ready")){
-            summary.addView(action("Download 4 files: JSON + 2 MP3 + source SRT",()->startPackageDownload(id),true));
+            summary.addView(action("Download Windows-ready package (10 files)",()->startPackageDownload(id),true));
             space(summary,7);
-            summary.addView(action("Verify and share complete ZIP (WhatsApp)",()->shareProjectZip(id),false));
+            summary.addView(action("Verify and share Windows-ready ZIP",()->shareProjectZip(id),false));
         }
         if("processing".equals(status)||"needs_review".equals(status)){
             space(summary,7);

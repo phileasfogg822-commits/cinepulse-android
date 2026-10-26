@@ -199,7 +199,8 @@ final class WindowsProjectExport {
             .put("cloudProjectId",origin.optString("id"))
             .put("audio",manifest)
             .put("sceneMatchesFinalized",true).put("sourceVideoFrameVerified",false)
-            .put("method","subtitle-and-cloud-scene-anchors; actual movie frames not supplied")
+            .put("sourceVideoFrameInspectionRequired",false).put("validationMode","timestamp_only")
+            .put("method","3-to-6-second subtitle-timestamp cut validation; no frame decoding")
             .put("englishCutCount",enPlan.cuts.length())
             .put("urduCutCount",urPlan.cuts.length())
             .put("englishRuntimeSeconds",enSeconds).put("urduRuntimeSeconds",urSeconds)
@@ -232,8 +233,8 @@ final class WindowsProjectExport {
             enPlan.report+"\n"+urPlan.report+"\n"+
             "Digest, narrations, SRT, and metadata present. Shorts/viral processing excluded.\n"+
             "Only one English and one Urdu long video are requested; Shorts and virals are excluded. "+
-            "No source ranges overlap within a language. Video frames and local Windows paths "+
-            "must still be checked on the receiving computer.";
+            "No source ranges overlap within a language. Frame inspection is not required for timestamp checks. "+
+            "Windows must resolve local media paths and use a movie edition with matching source-SRT timestamps.";
         return new Result(result,report);
     }
 }

@@ -122,6 +122,32 @@ public class WindowsProjectExportTest {
         try{WindowsProjectExport.fromCloud(c,90,90);fail();}
         catch(IOException expected){assertTrue(expected.getMessage().contains("metadata"));}
     }
+
+    @Test public void rejectsCutsShorterThanThreeOrLongerThanSixSeconds() throws Exception{
+        WindowsProjectExport.Result p=WindowsProjectExport.fromCloud(cloud(),90,90);
+        JSONArray cuts=p.project.getJSONObject("tracks").getJSONObject("english").getJSONArray("cuts");
+        for(int i=0;i<cuts.length();i++){
+            double start=FinalCutPlanner.secs(cuts.getJSONObject(i).getString("audioStart"));
+            double end=FinalCutPlanner.secs(cuts.getJSONObject(i).getString("audioEnd"));
+            assertTrue("Too short at "+i,end-start>=2.997);
+            assertTrue("Too long at "+i,end-start<=6.003);
+        }
+        JSONObject c=cuts.getJSONObject(0);
+        c.put("audioEnd","00:00:02.999");
+        try{FinalCutPlanner.validate(cuts,90,6800);fail("Sub-three-second cut accepted");}
+        catch(IOException expected){}
+        c.put("audioEnd","00:00:06.501");
+        try{FinalCutPlanner.validate(cuts,90,6800);fail("Over-six-second cut accepted");}
+        catch(IOException expected){}
+    }
+    @Test public void rejectsSourceIntervalReuseEvenWhenNarrationSlotsDoNotOverlap() throws Exception{
+        JSONArray cuts=WindowsProjectExport.fromCloud(cloud(),90,90).project
+            .getJSONObject("tracks").getJSONObject("english").getJSONArray("cuts");
+        cuts.getJSONObject(1).put("movieStart",cuts.getJSONObject(0).getString("movieStart"));
+        cuts.getJSONObject(1).put("movieEnd",cuts.getJSONObject(0).getString("movieEnd"));
+        try{FinalCutPlanner.validate(cuts,90,6800);fail("Overlapping source footage accepted");}
+        catch(IOException expected){}
+    }
     @Test public void hasExactlyEightFilesWithOneNativeJson(){
         String[] names=VerifiedDownloads.windowsBundleNames();
         assertEquals(8,names.length);

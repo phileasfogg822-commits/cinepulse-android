@@ -177,9 +177,9 @@ final class WindowsProjectExport {
         JSONArray completed=new JSONArray()
             .put("source-digest").put("story-core").put("english-narration")
             .put("hindi-narration").put("publishing-metadata")
-            .put("publishing-clips").put("publishing");
+            .put("publishing");
         JSONObject pipeline=new JSONObject().put("completed",completed)
-            .put("skipped",new JSONArray().put("shorts").put("viral-clips"))
+            .put("skipped",new JSONArray().put("publishing-clips").put("shorts").put("viral-clips"))
             .put("currentStep","Narration and SRT complete; subtitle-anchored long cuts finalized. Attach video to render.")
             .put("progress",95).put("sourceDigest",digest).put("movieBible",digest)
             .put("digestParts",new JSONArray().put(digest))
@@ -231,6 +231,7 @@ final class WindowsProjectExport {
         String report="Windows native project created: "+title+"\n"+
             enPlan.report+"\n"+urPlan.report+"\n"+
             "Digest, narrations, SRT, and metadata present. Shorts/viral processing excluded.\n"+
+            "Only one English and one Urdu long video are requested; Shorts and virals are excluded. "+
             "No source ranges overlap within a language. Video frames and local Windows paths "+
             "must still be checked on the receiving computer.";
         return new Result(result,report);

@@ -1,98 +1,134 @@
 package com.cinepulse.mobile;
 
-import org.junit.Test;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.junit.Test;
+import java.io.IOException;
+import java.util.Locale;
 import static org.junit.Assert.*;
 
-/** Regression tests for exported Windows-native import contract. */
+/** Checks complete dual-language Windows output and strict failure on missing footage. */
 public class WindowsProjectExportTest {
-    private static final String PROJECT_ID="123e4567-e89b-42d3-a456-426614174001";
-    private static String srt(String language){
-        return "1\n00:00:00,000 --> 00:00:04,000\n"+language+" narration one\n\n"+
-               "2\n00:00:04,000 --> 00:00:08,000\n"+language+" narration two\n\n"+
-               "3\n00:00:08,000 --> 00:00:12,000\n"+language+" narration three\n";
+    private static final String ID="123e4567-e89b-42d3-a456-426614174001";
+    private static String stamp(double sec){
+        long ms=Math.round(sec*1000);
+        return String.format(Locale.ROOT,"%02d:%02d:%02d,%03d",ms/3600000,
+            (ms/60000)%60,(ms/1000)%60,ms%1000);
     }
-    private static JSONObject cloud() throws Exception {
-        JSONObject narration=new JSONObject().put("text","A complete narration story with enough text to be a realistic summary.");
-        JSONObject metadata=new JSONObject().put("description","A cinematic recap for a full feature movie.")
-            .put("keywords",new JSONArray().put("film recap")).put("hashtags",new JSONArray().put("#Film"));
-        JSONObject cut=new JSONObject().put("sourceStartSeconds",200)
-            .put("sourceEndSeconds",2300).put("narrationStartSeconds",0)
-            .put("narrationEndSeconds",8).put("language","english");
-        JSONObject cloud=new JSONObject().put("schema","cinepulse.render-project.v1")
-            .put("project",new JSONObject().put("id",PROJECT_ID)
-                .put("title","A.Minecraft.Movie.2025.1080p").put("targetMinutes",8))
-            .put("sourceSrt","1\n00:00:00,000 --> 00:00:05,000\nMovie dialogue\n")
-            .put("digest",new JSONObject().put("text","The story begins with adventure and continues."))
-            .put("narrations",new JSONObject().put("english",narration.toString())
-                .put("urdu",new JSONObject().put("text","ایک مکمل فلم کی کہانی اور راوی کا بیان").toString()))
-            .put("narrationSrts",new JSONObject().put("english",new JSONObject().put("srt",srt("English")).toString())
-                .put("urdu",new JSONObject().put("srt",srt("Urdu")).toString()))
-            .put("cutPlan",new JSONArray().put(cut))
-            .put("metadata",metadata)
-            .put("audio",new JSONObject().put("english",new JSONObject()
-                 .put("filename","CinePulse_English.mp3").put("bytes",100)
-                 .put("sha256","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
-                .put("urdu",new JSONObject().put("filename","CinePulse_Urdu.mp3").put("bytes",100)
-                 .put("sha256","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")));
-        return cloud;
+    private static String srt(int count,double seconds){
+        StringBuilder b=new StringBuilder();
+        for(int i=0;i<count;i++){
+            double start=i*seconds/count,end=(i+1)*seconds/count;
+            b.append(i+1).append('\n').append(stamp(start)).append(" --> ")
+                .append(stamp(end)).append("\nHero begins the story narration about the movie\n\n");
+        }
+        return b.toString();
     }
-    @Test public void convertsRawCloudJsonIntoNativeWindowsProject() throws Exception {
-        WindowsProjectExport.Result result=WindowsProjectExport.fromCloud(cloud(),12,12);
-        JSONObject nativeProject=result.project;
-        assertEquals("A.Minecraft.Movie.2025.1080p",nativeProject.getString("title"));
-        assertEquals("2025",nativeProject.getString("releaseYear"));
-        assertEquals("",nativeProject.getString("videoPath"));
-        assertEquals(1,nativeProject.getJSONArray("sourceFiles").length());
-        assertEquals(3,nativeProject.getJSONObject("tracks").getJSONObject("english").getJSONArray("segments").length());
-        assertEquals(3,nativeProject.getJSONObject("tracks").getJSONObject("hindiUrdu").getJSONArray("segments").length());
-        assertEquals("A complete narration story with enough text to be a realistic summary.",
-            nativeProject.getJSONObject("analysis").getJSONObject("narrations").getString("english"));
-        assertEquals(PROJECT_ID,nativeProject.getJSONObject("cloudImport").getString("cloudProjectId"));
-        assertEquals("cinepulse.windows-portable.v1",nativeProject.getJSONObject("cloudImport").getString("schema"));
-        assertTrue(nativeProject.getJSONObject("pipeline").getJSONArray("completed").toString().contains("publishing-metadata"));
+    private static JSONObject cloud() throws Exception{
+        JSONArray plans=new JSONArray();
+        for(String language:new String[]{"english","urdu"}){
+            for(int i=0;i<4;i++)plans.put(new JSONObject()
+                .put("language",language).put("narrationStartSeconds",i*22.5)
+                .put("narrationEndSeconds",(i+1)*22.5)
+                .put("sourceStartSeconds",150+i*450).put("sourceEndSeconds",550+i*450));
+        }
+        String narration="Hero begins the story narration about the movie. ".repeat(30);
+        return new JSONObject().put("schema","cinepulse.render-project.v1")
+            .put("project",new JSONObject().put("id",ID).put("title","A.Minecraft.Movie.2025")
+                .put("targetMinutes",5))
+            .put("sourceSrt",srt(700,6800))
+            .put("digest",new JSONObject().put("text","This film follows the story of a hero on a substantial adventure."))
+            .put("narrations",new JSONObject().put("english",new JSONObject().put("text",narration).toString())
+                .put("urdu",new JSONObject().put("text",narration).toString()))
+            .put("narrationSrts",new JSONObject().put("english",new JSONObject().put("srt",srt(30,90)).toString())
+                .put("urdu",new JSONObject().put("srt",srt(30,90)).toString()))
+            .put("cutPlan",plans)
+            .put("metadata",new JSONObject().put("description",
+                "An adventurous tale of a hero and a fantastic world.")
+                .put("keywords",new JSONArray().put("cinematic movie recap"))
+                .put("hashtags",new JSONArray().put("#Cinema")))
+            .put("audio",new JSONObject()
+                .put("english",new JSONObject().put("filename","CinePulse_English.mp3")
+                    .put("bytes",100).put("sha256","a".repeat(64)))
+                .put("urdu",new JSONObject().put("filename","CinePulse_Urdu.mp3")
+                    .put("bytes",100).put("sha256","b".repeat(64))))
+            .put("viralScenes",new JSONArray().put(new JSONObject().put("title","ignore me")));
     }
-    @Test public void doesNotPromoteTwoThousandSecondMovieCutToFinalVideo() throws Exception{
-        JSONObject en=WindowsProjectExport.fromCloud(cloud(),12,12).project.getJSONObject("tracks").getJSONObject("english");
-        assertEquals(0,en.getJSONArray("cuts").length());
-        assertEquals(1,en.getJSONObject("sceneMatch").getJSONArray("rawCuts").length());
-        assertEquals("paused",en.getJSONObject("sceneMatch").getString("status"));
-        assertEquals(0,en.getJSONObject("sceneMatch").getInt("completedBatches"));
-        assertEquals("cloud-import-unverified",en.getJSONObject("sceneMatch").getString("signature"));
+    @Test public void makesWindowsNativeProjectWithFinalCutsInBothTracks() throws Exception{
+        WindowsProjectExport.Result result=WindowsProjectExport.fromCloud(cloud(),90,90);
+        JSONObject p=result.project;
+        assertEquals("A.Minecraft.Movie.2025",p.getString("title"));
+        assertEquals("2025",p.getString("releaseYear"));
+        assertEquals("",p.getString("videoPath"));
+        JSONObject tracks=p.getJSONObject("tracks");
+        for(String lang:new String[]{"english","hindiUrdu"}){
+            JSONObject track=tracks.getJSONObject(lang);
+            JSONArray cuts=track.getJSONArray("cuts");
+            assertTrue(cuts.length()>=15);
+            FinalCutPlanner.validate(cuts,90,6800);
+            assertEquals("complete",track.getJSONObject("sceneMatch").getString("status"));
+            assertEquals(track.getJSONArray("segments").length(),
+                track.getJSONObject("sceneMatch").getInt("completedSegments"));
+        }
+        assertEquals(ID,p.getJSONObject("cloudImport").getString("cloudProjectId"));
+        assertTrue(p.getJSONObject("cloudImport").getBoolean("sceneMatchesFinalized"));
+        assertFalse(p.getJSONObject("cloudImport").getBoolean("sourceVideoFrameVerified"));
+        assertEquals(0,p.getJSONObject("analysis").getJSONArray("shorts").length());
+        assertEquals(0,p.getJSONObject("analysis").getJSONArray("viralClips").length());
+        assertTrue(p.getJSONObject("pipeline").getJSONArray("completed").toString().contains("publishing-metadata"));
+        assertEquals("CinePulse_English.mp3",tracks.getJSONObject("english").getString("mp3Path"));
     }
-    @Test public void detectsAudioDurationMismatchAndPreservesSrtTimings() throws Exception{
-        WindowsProjectExport.Result result=WindowsProjectExport.fromCloud(cloud(),35,12);
-        assertTrue(result.report.contains("MP3/SRT duration mismatch"));
-        JSONObject segment=result.project.getJSONObject("tracks").getJSONObject("english")
-            .getJSONArray("segments").getJSONObject(2);
-        assertEquals(12.0,segment.getDouble("end"),0.001);
-        assertEquals("English narration three",segment.getString("text"));
+    @Test public void noOverlapAndExactMp3RuntimeEvenWhenSourceRangesAreLong() throws Exception{
+        JSONObject p=cloud();
+        WindowsProjectExport.Result result=WindowsProjectExport.fromCloud(p,90,90);
+        JSONArray cuts=result.project.getJSONObject("tracks").getJSONObject("english").getJSONArray("cuts");
+        double sum=0;
+        for(int i=0;i<cuts.length();i++){
+            JSONObject cut=cuts.getJSONObject(i);
+            double size=FinalCutPlanner.secs(cut.getString("movieEnd"))-
+                FinalCutPlanner.secs(cut.getString("movieStart"));
+            sum+=size;assertTrue("clip >6s",size<=6.003);
+            assertEquals(0.65,cut.getDouble("confidence"),0.001);
+        }
+        assertEquals(90,sum,.02);
     }
-    @Test public void invalidSchemaOrProjectIdentityIsRejected() throws Exception{
+    @Test public void refusesToFinalizeWhenUrduAnchorsAreMissing() throws Exception{
+        JSONObject c=cloud();JSONArray onlyEnglish=new JSONArray();
+        for(int i=0;i<c.getJSONArray("cutPlan").length();i++){
+            JSONObject v=c.getJSONArray("cutPlan").getJSONObject(i);
+            if("english".equals(v.getString("language")))onlyEnglish.put(v);
+        }
+        c.put("cutPlan",onlyEnglish);
+        try{WindowsProjectExport.fromCloud(c,90,90);fail("Created missing Urdu cuts");}
+        catch(IOException expected){assertTrue(expected.getMessage().contains("urdu"));}
+    }
+    @Test public void refusesIncompleteSrtAndAudioMismatch() throws Exception{
         JSONObject c=cloud();
-        c.put("schema","other");
-        try {WindowsProjectExport.fromCloud(c,12,12);fail("Unsafe schema accepted");}
-        catch(java.io.IOException expected){}
-        c.put("schema","cinepulse.render-project.v1");
-        c.getJSONObject("project").put("id","not-a-uuid");
-        try {WindowsProjectExport.fromCloud(c,12,12);fail("Invalid cloud identity accepted");}
-        catch(java.io.IOException expected){}
+        c.put("sourceSrt",srt(8,4000));
+        try{WindowsProjectExport.fromCloud(c,90,90);fail("Incomplete source SRT accepted");}
+        catch(IOException expected){assertTrue(expected.getMessage().contains("incomplete"));}
+        c=cloud();
+        try{WindowsProjectExport.fromCloud(c,40,90);fail("Audio mismatch accepted");}
+        catch(IOException expected){assertTrue(expected.getMessage().contains("English"));}
     }
-    @Test public void localWindowsPreparationRequiresSha256ManifestAndDoesNotCallNetwork(){
-        String js=WindowsPackageBootstrap.js();
-        assertTrue(js.contains("sha256"));
-        assertTrue(js.contains("CinePulse_Windows_Ready.json"));
-        assertFalse(js.contains("https://"));
+    @Test public void refusesMalformedProjectMetadataOrIdentity() throws Exception{
+        JSONObject c=cloud();c.put("schema","unsafe");
+        try{WindowsProjectExport.fromCloud(c,90,90);fail();}
+        catch(IOException expected){}
+        c=cloud();c.getJSONObject("project").put("id","bad");
+        try{WindowsProjectExport.fromCloud(c,90,90);fail();}
+        catch(IOException expected){}
+        c=cloud();c.getJSONObject("metadata").put("keywords",new JSONArray());
+        try{WindowsProjectExport.fromCloud(c,90,90);fail();}
+        catch(IOException expected){assertTrue(expected.getMessage().contains("metadata"));}
     }
-    @Test public void emptySrtAndBadRangesNeverBecomeReady() throws Exception{
-        JSONObject c=cloud();
-        c.getJSONObject("narrationSrts").put("english",new JSONObject().put("srt","").toString());
-        WindowsProjectExport.Result result=WindowsProjectExport.fromCloud(c,12,12);
-        assertEquals(0,result.project.getJSONObject("tracks").getJSONObject("english").getJSONArray("segments").length());
-        assertTrue(result.report.contains("English: narration SRT is missing"));
-        try {WindowsProjectExport.segments("1\n00:00:09,000 --> 00:00:04,000\nBad");
-            fail("Reversed timestamp accepted");
-        }catch(java.io.IOException expected){}
+    @Test public void hasExactlyEightFilesWithOneNativeJson(){
+        String[] names=VerifiedDownloads.windowsBundleNames();
+        assertEquals(8,names.length);
+        assertEquals("CinePulse_Project.json",names[0]);
+        assertEquals("CinePulse_English.mp3",names[2]);
+        assertEquals("CinePulse_Urdu.mp3",names[3]);
+        assertEquals("CinePulse_English_Narration.txt",names[6]);
+        assertEquals("CinePulse_Urdu_Narration.txt",names[7]);
     }
 }

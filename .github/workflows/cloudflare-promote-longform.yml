@@ -1,0 +1,95 @@
+name: Promote CinePulse long-form Worker to Cloudflare production
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cloudflare-promote-longform.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-cloudflare-release
+  cancel-in-progress: false
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      CF_SCRIPT: cinepulse-android-bridge
+      PREVIOUS_VERSION: f5082b36-794c-4553-8bcd-81f4a4e86477
+      STAGED_VERSION: 4234dfab-f8da-4297-b1f4-03c54d03b61f
+      STAGED_PREVIEW_URL: https://4234dfab-cinepulse-android-bridge.maryumblog.workers.dev/health
+      PRODUCTION_URL: https://cinepulse-android-bridge.maryumblog.workers.dev/health
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Preflight local integration tests and Cloudflare credentials
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]]
+          node --test tests/*.test.mjs
+          npm install --no-audit --no-fund
+      - name: Confirm existing production and staged version IDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$CF_SCRIPT"
+          curl --fail --show-error --silent --max-time 35 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$BASE/deployments" -o old-deployment.json
+          active=$(jq -r '.result.deployments[0].versions[] | select(.percentage==100) | .version_id' old-deployment.json)
+          if [[ "$active" != "$PREVIOUS_VERSION" ]];then
+            echo "::error::Unexpected production version $active, refusing to overwrite it."
+            exit 1
+          fi
+          curl --fail --show-error --silent --max-time 35 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$BASE/versions" -o all-versions.json
+          jq -e --arg id "$STAGED_VERSION" '.result.items | any(.id==$id)' all-versions.json >/dev/null
+          curl --fail --show-error --silent --retry 2 --max-time 35 "$STAGED_PREVIEW_URL" -o staged-health.json
+          jq -e '.status=="online" and .build=="android-cloud-backend-0.2.0-longform-only" and
+                 .policy.newMovies=="long_form_only" and .policy.shorts==false and .policy.virals==false and
+                 .policy.metadata==true and .policy.cutMinSeconds==3 and .policy.cutMaxSeconds==6' staged-health.json >/dev/null
+          echo "PROMOTION_PREFLIGHT_PASSED old=$PREVIOUS_VERSION new=$STAGED_VERSION"
+      - name: Deploy approved new version to 100% of production traffic
+        id: promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "$STAGED_VERSION@100%" \
+            --name "$CF_SCRIPT" --message "CinePulse metadata only; no Shorts or viral scenes; English+Urdu long form; 3-6s timestamp cuts" \
+            --yes
+          echo 'PRODUCTION_VERSION_PROMOTED'
+      - name: Verify live health and unchanged storage bindings
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent --retry 3 --retry-delay 2 --max-time 35 "$PRODUCTION_URL" -o current-health.json
+          jq -e '.status=="online" and .build=="android-cloud-backend-0.2.0-longform-only" and
+                 .policy.newMovies=="long_form_only" and .policy.shorts==false and .policy.virals==false and
+                 .policy.metadata==true and .policy.cutMinSeconds==3 and .policy.cutMaxSeconds==6 and
+                 .policy.legacyJobsPreserved==true' current-health.json >/dev/null
+          BASE="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$CF_SCRIPT"
+          curl --fail --show-error --silent --max-time 35 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$BASE/deployments" -o deployed-list.json
+          active=$(jq -r '.result.deployments[0].versions[] | select(.percentage==100) | .version_id' deployed-list.json)
+          test "$active" = "$STAGED_VERSION"
+          curl --fail --show-error --silent --max-time 35 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$BASE/settings" -o current-settings.json
+          jq -e '.result.bindings | any(.name=="DB" and .type=="d1" and .id=="bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd")' current-settings.json >/dev/null
+          jq -e '.result.bindings | any(.name=="FILES" and .type=="r2_bucket" and .bucket_name=="cinepulse-android-assets")' current-settings.json >/dev/null
+          jq -e '.result.bindings | any(.name=="ADMIN_TOKEN" and .type=="secret_text")' current-settings.json >/dev/null
+          jq -e '.result.bindings | any(.name=="DOWNLOAD_SIGNING_KEY" and .type=="secret_text")' current-settings.json >/dev/null
+          echo "CINEPULSE_CLOUDFLARE_PRODUCTION_UPDATED_AND_VERIFIED"
+          echo "VERSION=$STAGED_VERSION"
+          echo 'D1_AND_R2_BINDINGS_PRESERVED'
+      - name: Automatic rollback if live verification fails
+        if: failure() && steps.promotion.outcome == 'success' && steps.check.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '::warning::Post-deploy verification failed; restoring the previous Cloudflare Worker version.'
+          npx wrangler versions deploy "$PREVIOUS_VERSION@100%" --name "$CF_SCRIPT" \
+            --message "Automatic rollback after failed CinePulse long-form verification" --yes
+          echo 'PRODUCTION_ROLLED_BACK_TO_PREVIOUS_VERSION'

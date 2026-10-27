@@ -1,0 +1,97 @@
+name: Deploy CinePulse Muse canonical analysis hotfix V0.4.1
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cloudflare-promote-muse-analysis-hotfix-v041.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-cloudflare-muse-v041
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      PREVIOUS_VERSION: 29775922-cb18-4ef0-aae7-5c6db1758056
+      STAGED_VERSION: 348d9d19-5fb3-4a73-8934-587a7c9ad272
+      WORKER: cinepulse-android-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Recheck all regression tests and live Worker version
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-fA-F0-9]{32}$ ]]
+          node --check src/index.mjs
+          node --test tests/*.test.mjs
+          npm install --no-audit --no-fund
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 40 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/deployments" -o prior.json
+          active=$(jq -r '.result.deployments[0].versions[]|select(.percentage==100)|.version_id' prior.json)
+          [[ "$active" == "$PREVIOUS_VERSION" ]] || { echo "::error::Unexpected production version $active, refusing to replace";exit 1; }
+          curl -fsS --max-time 40 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/versions" -o versions.json
+          jq -e --arg id "$STAGED_VERSION" '.result.items|any(.id==$id)' versions.json >/dev/null
+          curl -fsS --max-time 40 "https://348d9d19-$WORKER.maryumblog.workers.dev/health" -o staged.json
+          jq -e '.status=="online" and .build=="android-cloud-backend-0.4.1-muse-project-canonical-analysis" and
+            .policy.museOwnsCuts==true and .policy.museAuthorsWindowsProject==true and
+            .policy.analysisReferenceOnWindowsTask==true and
+            .policy.museFailureDiagnostics=="exact_field_and_first_difference" and
+            .policy.serverCutAllocator==false and .policy.shorts==false and .policy.virals==false and
+            .policy.windowsAssetCount==8' staged.json >/dev/null
+          echo 'PETER_RABBIT_ANALYSIS_HOTFIX_PREFLIGHT_PASSED'
+      - name: Promote the already tested version to 100 percent production
+        id: promote
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "$STAGED_VERSION@100%" --name "$WORKER" --yes             --message "Muse exact prior narration/digest analysisReference and field-specific Windows project 422; existing leases/jobs untouched"
+          echo 'PETER_RABBIT_MUSE_HOTFIX_PROMOTION_ACCEPTED'
+      - name: Verify new live contract, unchanged D1/R2 and version identity
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          observed=0
+          for attempt in $(seq 1 20);do
+            curl -fsS --max-time 30 "https://$WORKER.maryumblog.workers.dev/health" -o live.json || true
+            if jq -e '.status=="online" and .build=="android-cloud-backend-0.4.1-muse-project-canonical-analysis" and
+              .policy.museOwnsCuts==true and .policy.museAuthorsWindowsProject==true and
+              .policy.analysisReferenceOnWindowsTask==true and
+              .policy.museFailureDiagnostics=="exact_field_and_first_difference" and
+              .policy.serverCutAllocator==false and .policy.shorts==false and
+              .policy.virals==false and .policy.windowsAssetCount==8 and
+              .policy.legacyJobsPreserved==true' live.json >/dev/null 2>&1;then
+              observed=1;break
+            fi
+            echo "Waiting Cloudflare production edge propagation ($attempt/20)"
+            sleep 5
+          done
+          [[ "$observed" == 1 ]] || { echo '::error::Hotfix health check not yet propagated';exit 1; }
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 40 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/deployments" -o live-deployment.json
+          active=$(jq -r '.result.deployments[0].versions[]|select(.percentage==100)|.version_id' live-deployment.json)
+          [[ "$active" == "$STAGED_VERSION" ]] || { echo "::error::Live deployment ID changed";exit 1; }
+          curl -fsS --max-time 40 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/settings" -o live-bindings.json
+          jq -e '.result.bindings|any(.name=="DB" and .type=="d1" and .id=="bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd")' live-bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="FILES" and .type=="r2_bucket" and .bucket_name=="cinepulse-android-assets")' live-bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="ADMIN_TOKEN" and .type=="secret_text")' live-bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="DOWNLOAD_SIGNING_KEY" and .type=="secret_text")' live-bindings.json >/dev/null
+          echo "CINEPULSE_PETER_RABBIT_CANONICAL_ANALYSIS_LIVE_VERSION=$STAGED_VERSION"
+          echo 'MUSE_WINDOWS_PROJECT_EXACT_FIELD_DIAGNOSTICS_LIVE'
+          echo 'EXISTING_D1_R2_SECRETS_PRESERVED'
+      - name: Automatic rollback if production verification fails
+        if: failure() && steps.promote.outcome == 'success' && steps.verify.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "$PREVIOUS_VERSION@100%" --name "$WORKER" --yes             --message "Rollback CinePulse Muse Windows project canonical analysis hotfix after failed production verification"
+          echo 'PRIOR_CINEPULSE_WORKER_RESTORED'

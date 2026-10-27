@@ -1,4 +1,5 @@
 name: Stage Muse-owned CinePulse v0.4 without production traffic
+# Revalidate the latest V4 authenticated 10MB Windows ProjectState upload support.
 on:
   push:
     branches: ['ops/cloudflare-deploy-bridge']

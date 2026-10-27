@@ -148,6 +148,47 @@ public class WindowsProjectExportTest {
         try{FinalCutPlanner.validate(cuts,90,6800);fail("Overlapping source footage accepted");}
         catch(IOException expected){}
     }
+
+    @Test public void urduSceneExhaustionNearSevenMinutesTwentyOneSecondsRecoversFromSourceSrt() throws Exception {
+        JSONObject movie=cloud();
+        // Reproduce a real-world failure: broad but highly concentrated narration
+        // matches repeatedly attempt to reuse the same 5-second movie footage.
+        movie.put("sourceSrt",srt(1400,6700));
+        movie.getJSONObject("narrationSrts").put("english",
+            new JSONObject().put("srt",srt(120,480)).toString());
+        movie.getJSONObject("narrationSrts").put("urdu",
+            new JSONObject().put("srt",srt(120,480)).toString());
+        JSONArray crowded=new JSONArray();
+        for(String lang:new String[]{"english","urdu"}){
+            for(int i=0;i<13;i++){
+                double at=480d*i/13d;
+                crowded.put(new JSONObject().put("language",lang)
+                    .put("sourceStartSeconds",1000+(i%2)*5)
+                    .put("sourceEndSeconds",1015+(i%2)*5)
+                    .put("narrationStartSeconds",at)
+                    .put("narrationEndSeconds",480d*(i+1)/13d));
+            }
+        }
+        movie.put("cutPlan",crowded);
+        WindowsProjectExport.Result result=WindowsProjectExport.fromCloud(movie,480,480);
+        for(String lane:new String[]{"english","hindiUrdu"}){
+            JSONArray cuts=result.project.getJSONObject("tracks")
+                .getJSONObject(lane).getJSONArray("cuts");
+            FinalCutPlanner.validate(cuts,480,6700);
+            boolean hasCutAt441=false,usedFallback=false;
+            for(int i=0;i<cuts.length();i++){
+                JSONObject cut=cuts.getJSONObject(i);
+                double start=FinalCutPlanner.secs(cut.getString("audioStart"));
+                double end=FinalCutPlanner.secs(cut.getString("audioEnd"));
+                if(start<=441 && end>441)hasCutAt441=true;
+                if("source_srt_timeline_fallback".equals(cut.optString("sourceEvidence")))
+                    usedFallback=true;
+            }
+            assertTrue("Urdu/English narration at 07:21 must be covered",hasCutAt441);
+            assertTrue("SRT fallback must be used when scene windows repeat",usedFallback);
+            assertTrue("Expected at least 80 unique cuts",cuts.length()>=80);
+        }
+    }
     @Test public void hasExactlyEightFilesWithOneNativeJson(){
         String[] names=VerifiedDownloads.windowsBundleNames();
         assertEquals(8,names.length);

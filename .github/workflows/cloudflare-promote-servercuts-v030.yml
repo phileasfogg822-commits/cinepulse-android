@@ -1,0 +1,97 @@
+name: Promote CinePulse v0.3 SERVER cut planner and eight-file export
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cloudflare-promote-servercuts-v030.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-cloudflare-v030
+  cancel-in-progress: false
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      OLD_VERSION: 4234dfab-f8da-4297-b1f4-03c54d03b61f
+      NEW_VERSION: 81c6e3be-f78d-4485-99ee-11925b14c6ed
+      WORKER: cinepulse-android-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Recheck Cloudflare and Muse workflow tests
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9A-F]{32}$ ]]
+          node --check src/index.mjs
+          node --test tests/*.test.mjs
+          npm install --no-audit --no-fund
+      - name: Confirm unchanged previous production and valid staged preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/deployments" -o deploy-before.json
+          active=$(jq -r '.result.deployments[0].versions[]|select(.percentage==100)|.version_id' deploy-before.json)
+          [[ "$active" == "$OLD_VERSION" ]] || { echo "::error::Unknown production version $active; refuse promotion";exit 1; }
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/versions" -o all-versions.json
+          jq -e --arg id "$NEW_VERSION" '.result.items|any(.id==$id)' all-versions.json >/dev/null
+          curl -fsS --max-time 45 "https://81c6e3be-$WORKER.maryumblog.workers.dev/health" -o preview.json
+          jq -e '.status=="online" and .build=="android-cloud-backend-0.3.0-server-cuts-eight-files" and
+            .policy.serverCutAllocator==true and .policy.windowsAssetCount==8 and
+            .policy.shorts==false and .policy.virals==false and .policy.cutMinSeconds==3 and .policy.cutMaxSeconds==6' preview.json >/dev/null
+          echo 'DEPLOYMENT_PREFLIGHT_AND_STAGED_MUSE_SERVER_CUTS_VERIFIED'
+      - name: Promote staged Worker version to production
+        id: promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "$NEW_VERSION@100%" --name "$WORKER" --yes             --message "Muse scene matching; Cloudflare final 3-6s cuts + eight Windows media assets. Preserve legacy jobs and R2/D1."
+          echo 'PRODUCTION_PROMOTION_ACCEPTED'
+      - name: Verify production health, new cut ownership, and persistent DB/R2 bindings
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          live="https://$WORKER.maryumblog.workers.dev/health"
+          ok=0
+          for attempt in $(seq 1 20); do
+            curl -fsS --max-time 35 "$live" -o live-health.json || true
+            if jq -e '.status=="online" and .build=="android-cloud-backend-0.3.0-server-cuts-eight-files" and
+              .policy.serverCutAllocator==true and .policy.windowsAssetCount==8 and
+              .policy.shorts==false and .policy.virals==false and
+              .policy.metadata==true and .policy.legacyJobsPreserved==true and
+              .policy.cutMinSeconds==3 and .policy.cutMaxSeconds==6' live-health.json >/dev/null 2>&1; then
+              ok=1;break
+            fi
+            echo "Production edge update pending, attempt $attempt/20"
+            sleep 5
+          done
+          [[ "$ok" == 1 ]] || { echo '::error::v0.3 did not propagate to production';exit 1; }
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/deployments" -o deployed.json
+          active=$(jq -r '.result.deployments[0].versions[]|select(.percentage==100)|.version_id' deployed.json)
+          [[ "$active" == "$NEW_VERSION" ]] || { echo '::error::Wrong live version ID'; exit 1; }
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/settings" -o bindings.json
+          jq -e '.result.bindings|any(.name=="DB" and .type=="d1" and .id=="bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd")' bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="FILES" and .type=="r2_bucket" and .bucket_name=="cinepulse-android-assets")' bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="ADMIN_TOKEN" and .type=="secret_text")' bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="DOWNLOAD_SIGNING_KEY" and .type=="secret_text")' bindings.json >/dev/null
+          echo "CINEPULSE_V030_LIVE_VERSION=$NEW_VERSION"
+          echo 'CLOUDFLARE_OWNS_FINAL_CUTS_AND_EIGHT_WINDOWS_ASSETS'
+          echo 'D1_R2_AND_WORKER_SECRETS_PRESERVED'
+      - name: Restore previous version on production verification failure
+        if: failure() && steps.promotion.outcome == 'success' && steps.verify.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "$OLD_VERSION@100%" --name "$WORKER" --yes             --message "Automatic rollback: CinePulse v0.3 failed production verification"
+          echo 'ROLLED_BACK_TO_PREVIOUS_CINEPULSE_VERSION'

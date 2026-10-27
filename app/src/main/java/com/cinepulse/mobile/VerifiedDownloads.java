@@ -284,7 +284,8 @@ final class VerifiedDownloads {
             originals=downloadOriginals(projectId,detail,links,progress);
             try {
                 bundle=prepareBundle(projectId,originals);
-            } catch(IOException conversionFailure) {
+            } catch(Exception conversionFailure) {
+                if(conversionFailure instanceof SecurityException)throw conversionFailure;
                 progress.update("Final cuts not ready. Saving verified media in a REVIEW folder.");
                 bundle=prepareRecoveryBundle(projectId,originals,conversionFailure);
             }
@@ -385,6 +386,21 @@ final class VerifiedDownloads {
         copy(f,out);
         out.closeEntry();
     }
+    /** Shared between Android export and JVM regression tests: rejects any missing entry. */
+    static void writePackageZip(ZipOutputStream out,String[] names,File[] files) throws IOException {
+        if(names==null||files==null||names.length!=files.length||names.length==0)
+            throw new IOException("Bundle name/file count mismatch");
+        java.util.HashSet<String> seen=new java.util.HashSet<>();
+        for(int i=0;i<names.length;i++){
+            String name=names[i];
+            File file=files[i];
+            if(name==null||name.isEmpty()||name.contains("/")||name.contains("\\")||
+                !seen.add(name)||file==null||!file.isFile()||file.length()<=0)
+                throw new IOException("Incomplete or unsafe export entry: "+name);
+            zipFile(out,name,file);
+        }
+    }
+
     /** Create exactly eight Windows-native files from hash-verified source assets. */
     ZipResult createVerifiedZip(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
         if(!SecurityRules.validUuid(projectId))throw new SecurityException("Invalid project ID");
@@ -406,7 +422,7 @@ final class VerifiedDownloads {
             progress.update(bundle.renderReady?"Packaging eight Windows-compatible files":
                 "Packaging verified recovery files; final-cut validation requires review");
             try(ZipOutputStream out=new ZipOutputStream(new FileOutputStream(zip))){
-                for(int i=0;i<bundle.names.length;i++)zipFile(out,bundle.names[i],bundle.files[i]);
+                writePackageZip(out,bundle.names,bundle.files);
             }
             if(zip.length()<=0)throw new IOException("Empty Windows export ZIP");
             return new ZipResult(zip,name,bundle.report);

@@ -81,6 +81,7 @@ export function verifyMuseWindowsProject(candidate,{
     if(!Array.isArray(analysis[name])||analysis[name].length)
       throw Error('Muse must exclude Shorts and viral generation: '+name);
   if(!c.tracks||typeof c.tracks!=='object')throw Error('Muse Windows tracks missing');
+  const reconstructedCuts=[];
   for(const [language,field,mp3,srt,script] of [
     ['english','english',WINDOWS_FILE_NAMES.english_mp3,narrationSrts.english,narrations.english],
     ['urdu','hindiUrdu',WINDOWS_FILE_NAMES.urdu_mp3,narrationSrts.urdu,narrations.urdu]
@@ -114,8 +115,11 @@ export function verifyMuseWindowsProject(candidate,{
       return {language,sourceStartSeconds:ss,sourceEndSeconds:se,
         narrationStartSeconds:as,narrationEndSeconds:ae};
     });
-    validateFinalCutPlan(numericCuts,{sourceSrt,englishSrt:srt,urduSrt:srt});
+    reconstructedCuts.push(...numericCuts);
   }
+  validateFinalCutPlan(reconstructedCuts,{
+    sourceSrt,englishSrt:narrationSrts.english,urduSrt:narrationSrts.urdu
+  });
   if(c.cloudImport?.outputMode!=='long_form_only'||
       c.cloudImport?.longVideoCount!==2||
       c.cloudImport?.optionalShortsGenerated!==false||

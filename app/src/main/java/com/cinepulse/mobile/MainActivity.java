@@ -402,8 +402,8 @@ public final class MainActivity extends Activity {
         begin("MOVIE",project.optString("title","Movie"),"Project #"+SecurityRules.shortId(id)+"  ·  "+status.toUpperCase());
         content.addView(action("← All movies",()->{openedProject=null;renderHome();},false),fullWithBottom(15));
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
-        summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
-        summary.addView(text(status.equals("ready")?"Long-form export ready for checks. The eight-file Windows package requires complete English/Urdu MP3s, measured SRTs, metadata, digest and non-overlapping final cuts. No shorts or viral files are included.":
+        summary.addView(text(status.equals("ready")?"Cloud source assets ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
+        summary.addView(text(status.equals("ready")?"Cloudflare provides four verified inputs. Android builds the eight-file Windows package from them, including final non-overlapping cuts. If those cuts cannot be finalized, a separate REVIEW backup preserves the media. No shorts or viral files.":
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
         space(summary,12);
         if(status.equals("ready")){
@@ -791,14 +791,17 @@ public final class MainActivity extends Activity {
     }
     private void shareProjectZip(String id){
         if(!SecurityRules.validUuid(id)){showError("Invalid project ID");return;}
-        task("Downloading and verifying complete ZIP",()->{
+        task("Building 8-file Windows ZIP (4 Cloudflare inputs)",()->{
             JSONObject detail=api.project(id),links=api.downloads(id);
             return new VerifiedDownloads(getContentResolver(),getCacheDir()).createVerifiedZip(id,detail,links,
                 step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
         },result->{
             String excerpt=result.report.length()>1500?result.report.substring(0,1500)+"\n… full report is in ZIP":result.report;
-            new AlertDialog.Builder(this).setTitle("Project QA and ZIP ready")
-                .setMessage(excerpt+"\n\nThe ZIP includes verified JSON, both MP3s, both SRTs (if present), metadata and this QA report. It does not contain movie footage.")
+            new AlertDialog.Builder(this).setTitle(result.name.contains("REVIEW")?
+                    "Review-only ZIP — render not ready":"Windows-native ZIP — 8 files ready")
+                .setMessage(excerpt+"\n\n"+(result.name.contains("REVIEW")?
+                    "This recovery ZIP preserves original verified media and a diagnostic. It is NOT a Windows-ready project.":
+                    "Exactly eight files: Windows-native JSON, source SRT, English and Urdu MP3, two narration SRTs, and two narration scripts. No viral or Shorts jobs."))
                 .setNegativeButton("Close",null)
                 .setPositiveButton("Share ZIP",(d,w)->{
                     try{
@@ -832,12 +835,13 @@ public final class MainActivity extends Activity {
         }
     }
     private void downloadProject(String id){
-        task("Downloading 4 files to Downloads/CinePulse",()->{
+        task("Verifying 4 Cloudflare assets and building 8 Windows files",()->{
             // Fresh signed links on every click; verify all files before publishing any.
             JSONObject detail=api.project(id),urls=api.downloads(id);
             return new VerifiedDownloads(getContentResolver(),getCacheDir()).downloadToDownloads(
                 id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
-        },message->new AlertDialog.Builder(this).setTitle("Verified Windows package downloaded")
+        },message->new AlertDialog.Builder(this).setTitle(message.startsWith("REVIEW REQUIRED")?
+                "Export blocked — recovery saved":"Windows-ready package — 8 files saved")
             .setMessage(message).setPositiveButton("Done",null).show());
     }
     @Override protected void onActivityResult(int request,int result,Intent data){

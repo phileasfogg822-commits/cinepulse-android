@@ -99,5 +99,5 @@ test('rejects incomplete Muse SRT timeline and changed English narration',()=>{
   assert.throws(()=>verifyMuseWindowsProject(f.mockMuseResponse,approved(f)),/segments do not cover/);
   f=fixture();
   f.mockMuseResponse.analysis.narrations.english='Changed';
-  assert.throws(()=>verifyMuseWindowsProject(f.mockMuseResponse,approved(f)),/scripts\/digest/);
+  assert.throws(()=>verifyMuseWindowsProject(f.mockMuseResponse,approved(f)),/analysis\.narrations\.english: exact previous Muse stage text mismatch/);
 });

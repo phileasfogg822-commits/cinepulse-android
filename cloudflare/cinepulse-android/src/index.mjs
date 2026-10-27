@@ -2,7 +2,7 @@ import { API_BUILD, HttpError, json, nowSeconds, dayUTC, newId, isUuid, sha256, 
 import { LONGFORM_MODE, LONGFORM_MARKER, isLongFormCreateRequest, normalizePublishingMetadata, validateFinalCutPlan } from './longform-policy.mjs';
 import { allocateFinalLongFormCuts } from './server-cut-planner.mjs';
 import { buildWindowsProject, WINDOWS_FILE_KINDS, WINDOWS_FILE_NAMES } from './windows-export.mjs';
-import { MUSE_V4_MARKER, MUSE_V4_STAGES, museStageInstructions, verifyMuseWindowsProject } from './muse-production-contract.mjs';
+import { MUSE_V4_MARKER, MUSE_V4_STAGES, museStageInstructions, verifyMuseWindowsProject, canonicalMuseAnalysis } from './muse-production-contract.mjs';
 
 // Legacy projects continue through their original stages. New projects use metadata only.
 const STAGES = ['digest','narration_english','narration_urdu','viral_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
@@ -109,6 +109,13 @@ async function taskDetail(env,job) {
   const movie=await getProject(env,job.project_id);
   const audioRows=policy.museOwnsCuts?await Promise.all(['english_mp3','urdu_mp3'].map(k=>assetByKind(env,job.project_id,k))):[];
   const audioManifest=policy.museOwnsCuts?Object.fromEntries(['english','urdu'].map((lang,i)=>[lang,audioRows[i]?{bytes:audioRows[i].bytes,sha256:audioRows[i].sha256,filename:lang==='english'?'CinePulse_English.mp3':'CinePulse_Urdu.mp3'}:null])):null;
+  // V4 Windows projects must reuse Muse's previously ACCEPTED outputs without
+  // paraphrasing. Expose the exact canonical field names/values to Muse on its
+  // already-authenticated task claim (including currently working jobs).
+  const analysisReference=policy.museOwnsCuts&&job.step_id==='windows_project'?
+    canonicalMuseAnalysis({narrations:{
+      english:outputs.narration_english,urdu:outputs.narration_urdu
+    },digest:outputs.digest}):undefined;
   const kind=job.step_id==='srt_english'?'english_mp3':job.step_id==='srt_urdu'?'urdu_mp3':'source_srt';
   const assetPath=`/tasks/${job.id}/asset`;
   return {...publicJob(job),lease:job.lease,
@@ -117,11 +124,19 @@ async function taskDetail(env,job) {
     movie:policy.museOwnsCuts?{id:movie.id,title:movie.title,targetMinutes:policy.targetMinutes,workerId:movie.worker_id}:undefined,
     sourceSrtAsset:policy.museOwnsCuts?{path:assetPath+'/source_srt',mime:ASSET_TYPES.source_srt,name:'CinePulse_Source.srt'}:undefined,
     audioManifest:audioManifest||undefined,
+    analysisReference,
+    analysisFieldPaths:analysisReference?{
+      'analysis.narrations.english':'analysisReference.narrations.english',
+      'analysis.narrations.hindiUrdu':'analysisReference.narrations.hindiUrdu',
+      'analysis.research.verifiedSynopsis':'analysisReference.research.verifiedSynopsis'
+    }:undefined,
     productionContract:policy.museOwnsCuts?{owner:'Muse',clipMinSeconds:3,clipMaxSeconds:6,noOverlap:true,shorts:false,virals:false,
       finalRenderVideos:['english','urdu'],taskOutputOwnedBy:'Muse',cloudflareRole:'validate/store/deliver',androidRole:'download only'}:undefined,
     outputMode:policy.longForm?LONGFORM_MODE:'legacy',
     previousOutputs:context,inputAsset:{path:assetPath,name:kind==='source_srt'?'movie.srt':`${kind}.mp3`,mime:ASSET_TYPES[kind]},
-    notice:policy.museOwnsCuts?'All reasoning, edit math, fallback source decisions and Windows ProjectState authoring belong to Muse. Cloudflare only checks, stores and delivers Muse outputs. Correct rejected work and resubmit during your active lease.':policy.serverCuts?'Legacy v3: Cloudflare allocates cuts for this older project. New movies use Muse V4.':'An authorized Muse worker must remain active and return valid task results.'};
+    notice:policy.museOwnsCuts?(job.step_id==='windows_project'?
+      'Muse Windows JSON uses exact text copies from task.analysisReference. Keep all previously completed cuts/MP3s/SRTs unchanged. On 422, read the exact failing JSON field path and correct only that field, then resubmit the same leased task.':
+      'All reasoning, edit math, fallback source decisions and Windows ProjectState authoring belong to Muse. Cloudflare only checks, stores and delivers Muse outputs. Correct rejected work and resubmit during your active lease.'):policy.serverCuts?'Legacy v3: Cloudflare allocates cuts for this older project. New movies use Muse V4.':'An authorized Muse worker must remain active and return valid task results.'};
 }
 async function putR2(env,projectId,kind,bytes) {
   const key=objectKey(projectId,kind);const digest=await sha256(bytes);const time=nowSeconds();

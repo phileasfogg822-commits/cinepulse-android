@@ -402,8 +402,8 @@ public final class MainActivity extends Activity {
         begin("MOVIE",project.optString("title","Movie"),"Project #"+SecurityRules.shortId(id)+"  ·  "+status.toUpperCase());
         content.addView(action("← All movies",()->{openedProject=null;renderHome();},false),fullWithBottom(15));
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
-        summary.addView(text(status.equals("ready")?"Cloud source assets ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
-        summary.addView(text(status.equals("ready")?"Cloudflare and Muse finish digest, narrations, MP3s, measured SRTs, metadata and final non-overlapping English/Urdu cuts. Cloudflare creates all 8 Windows files before setting Ready; this APK ONLY downloads and verifies them.":
+        summary.addView(text(status.equals("ready")?"Muse project package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
+        summary.addView(text(status.equals("ready")?"Muse creates both complete explanations, measured narration SRTs, ALL non-overlapping 3–6-second cuts and the Windows-native JSON. Cloudflare verifies and stores Muse outputs plus both MP3s, then exposes the 8 completed files. This APK ONLY downloads and verifies.":
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
         space(summary,12);
         if(status.equals("ready")){

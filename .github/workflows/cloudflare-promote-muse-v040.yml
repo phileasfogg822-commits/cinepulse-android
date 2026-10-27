@@ -1,0 +1,98 @@
+name: Promote Muse-first CinePulse v0.4 to Cloudflare production
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cloudflare-promote-muse-v040.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-cloudflare-muse-v040
+  cancel-in-progress: false
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      PREVIOUS_VERSION: 81c6e3be-f78d-4485-99ee-11925b14c6ed
+      NEW_VERSION: 29775922-cb18-4ef0-aae7-5c6db1758056
+      WORKER: cinepulse-android-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Revalidate Muse per-movie instructions, strict non-overlap and project integrity
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]]
+          node --check src/index.mjs
+          node --test tests/*.test.mjs
+          npm install --no-audit --no-fund
+      - name: Require unchanged production and verified V4 staged preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 40 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/deployments" -o prior-deployment.json
+          active=$(jq -r '.result.deployments[0].versions[] | select(.percentage==100) | .version_id' prior-deployment.json)
+          [[ "$active" == "$PREVIOUS_VERSION" ]] || { echo "::error::Unexpected live Worker version: $active";exit 1; }
+          curl -fsS --max-time 40 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/versions" -o existing-versions.json
+          jq -e --arg id "$NEW_VERSION" '.result.items|any(.id==$id)' existing-versions.json >/dev/null
+          curl -fsS --max-time 40 "https://29775922-$WORKER.maryumblog.workers.dev/health" -o preview-health.json
+          jq -e '.status=="online" and .build=="android-cloud-backend-0.4.0-muse-owns-edits-and-windows-project" and
+            .policy.museOwnsCuts==true and .policy.museAuthorsWindowsProject==true and
+            .policy.serverCutAllocator==false and .policy.windowsAssetCount==8 and
+            .policy.shorts==false and .policy.virals==false and .policy.metadata==true and
+            .policy.cutMinSeconds==3 and .policy.cutMaxSeconds==6' preview-health.json >/dev/null
+          echo 'MUSE_FIRST_DEPLOYMENT_PREFLIGHT_PASSED'
+      - name: Promote Muse V4 to production at 100 percent
+        id: promotion
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "$NEW_VERSION@100%" --name "$WORKER" --yes             --message "CinePulse Muse V4: per-movie brain, scene reasoning, final 3–6s cuts and Windows JSON all authored by Muse. Cloudflare checks and delivers only."
+          echo 'MUSE_V4_VERSION_PROMOTION_ACCEPTED'
+      - name: Verify live deployment, Muse ownership and original D1/R2/secret bindings
+        id: verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          verified=0
+          for attempt in $(seq 1 20);do
+            curl -fsS --max-time 35 "https://$WORKER.maryumblog.workers.dev/health" -o live-health.json || true
+            if jq -e '.status=="online" and .build=="android-cloud-backend-0.4.0-muse-owns-edits-and-windows-project" and
+              .policy.newMovies=="long_form_only" and .policy.museOwnsCuts==true and
+              .policy.museAuthorsWindowsProject==true and .policy.serverCutAllocator==false and
+              .policy.windowsAssetCount==8 and .policy.shorts==false and .policy.virals==false and
+              .policy.metadata==true and .policy.cutMinSeconds==3 and .policy.cutMaxSeconds==6 and
+              .policy.legacyJobsPreserved==true' live-health.json >/dev/null 2>&1;then
+              verified=1;break
+            fi
+            echo "Awaiting edge propagation $attempt/20"
+            sleep 5
+          done
+          [[ "$verified" == 1 ]] || { echo '::error::Muse-first Worker did not reach public production';exit 1; }
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/deployments" -o deployed.json
+          active=$(jq -r '.result.deployments[0].versions[]|select(.percentage==100)|.version_id' deployed.json)
+          [[ "$active" == "$NEW_VERSION" ]] || { echo "::error::Deployment version mismatch: $active";exit 1; }
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/settings" -o bindings.json
+          jq -e '.result.bindings|any(.name=="DB" and .type=="d1" and .id=="bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd")' bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="FILES" and .type=="r2_bucket" and .bucket_name=="cinepulse-android-assets")' bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="ADMIN_TOKEN" and .type=="secret_text")' bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="DOWNLOAD_SIGNING_KEY" and .type=="secret_text")' bindings.json >/dev/null
+          echo "CINEPULSE_MUSE_V4_PRODUCTION_VERIFIED=$NEW_VERSION"
+          echo 'MUSE_OWNS_ALL_NEW_MOVIE_EDIT_DECISIONS'
+          echo 'CLOUDFLARE_D1_R2_SECRETS_PRESERVED'
+      - name: Automatically restore prior Worker if promotion verification fails
+        if: failure() && steps.promotion.outcome == 'success' && steps.verification.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "$PREVIOUS_VERSION@100%" --name "$WORKER" --yes             --message "Automatic rollback of Muse V4 after failed production verification"
+          echo 'RESTORED_PREVIOUS_WORKER'

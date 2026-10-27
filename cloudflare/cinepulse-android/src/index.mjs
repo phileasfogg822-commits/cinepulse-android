@@ -29,6 +29,7 @@ const ASSET_TYPES = {
   english_narration:'text/plain; charset=utf-8',urdu_narration:'text/plain; charset=utf-8'
 };
 const MAX_JSON = 2_500_000;
+const MAX_MUSE_WINDOWS_RESULT = 10_000_000; // Only for the authenticated final Muse Windows ProjectState.
 const LEASE_SECONDS = 15 * 60;
 const DOWNLOAD_LINK_SECONDS = 15 * 60;
 const MAX_INACTIVE_DAYS = 7;
@@ -45,11 +46,11 @@ async function authWorker(request,env,id) {
   if(!token || !secureEqual(await hashWorkerToken(token),worker.token_hash))fail(401,'Invalid worker token');
   return worker;
 }
-const getJson = async request => {
+const getJson = async (request,limit=MAX_JSON) => {
   const size=Number(request.headers.get('content-length')||0);
-  if(size>MAX_JSON)fail(413,'JSON body too large');
+  if(size>limit)fail(413,'JSON body too large');
   const body=await request.text();
-  if(body.length>MAX_JSON)fail(413,'JSON body too large');
+  if(body.length>limit)fail(413,'JSON body too large');
   try {return JSON.parse(body||'{}');} catch {fail(400,'Invalid JSON body');}
 };
 const requireUUID = v=>{if(!isUuid(v))fail(400,'Invalid identifier');return v;};
@@ -434,7 +435,9 @@ async function route(request,env){
         return json({ok:true,leaseUntil:nowSeconds()+LEASE_SECONDS});
       }
       if(method==='POST'&&action==='result'){
-        const body=await getJson(request);
+        const policy=await projectPolicy(env,job.project_id);
+        const limit=policy.museOwnsCuts&&job.step_id==='windows_project'?MAX_MUSE_WINDOWS_RESULT:MAX_JSON;
+        const body=await getJson(request,limit);
         if(job.status!=='working'||job.lease_until<=nowSeconds()||!secureEqual(body.lease||'',job.lease||''))fail(409,'Task lease expired or changed');
         if(body.error){
           const reason=requireString(String(body.error),'Muse failure reason',1200);
@@ -444,7 +447,7 @@ async function route(request,env){
           return json({id:jid,status:'error',pipeline:{status:'needs_review'},reason,notice:'Task reported failure and processing stopped safely. No fake MP3/SRT generated.'});
         }
         const output=typeof body.output==='string'?body.output:JSON.stringify(body.output??'');
-        if(!output.trim()||output.length>MAX_JSON)fail(422,'Nonempty task output required');
+        if(!output.trim()||output.length>limit)fail(422,'Nonempty task output required within stage size limit');
         if(job.step_id==='mp3_english'&&!await assetByKind(env,job.project_id,'english_mp3'))fail(409,'Real English MP3 upload required');
         if(job.step_id==='mp3_urdu'&&!await assetByKind(env,job.project_id,'urdu_mp3'))fail(409,'Real Urdu MP3 upload required');
         if(['srt_english','srt_urdu'].includes(job.step_id))normalizeSrt(output);

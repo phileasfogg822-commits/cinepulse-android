@@ -39,7 +39,7 @@ const fixture=()=>{
   // builder is used HERE IN TESTS to ensure compatibility, NOT in V4 production.
   const mockMuseResponse=buildWindowsProject({
     project,sourceSrt,digest,narrations,narrationSrts,cuts:cutPlan,
-    metadata,mp3s:mp3Manifest,metrics
+    metadata,mp3s:structuredClone(mp3Manifest),metrics
   });
   mockMuseResponse.cloudImport.schema=MUSE_V4_PROJECT_SCHEMA;
   return {projectId,title,sourceSrt,digest,narrations,narrationSrts,

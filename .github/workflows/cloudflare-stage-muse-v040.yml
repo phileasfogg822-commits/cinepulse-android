@@ -1,0 +1,83 @@
+name: Stage Muse-owned CinePulse v0.4 without production traffic
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cloudflare-stage-muse-v040.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-cloudflare-muse-v040
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      OLD_VERSION: 81c6e3be-f78d-4485-99ee-11925b14c6ed
+      WORKER: cinepulse-android-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate all Muse instructions, exact cut handling and project verification
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-fA-F0-9]{32}$ ]]
+          node --check src/index.mjs
+          node --check src/muse-production-contract.mjs
+          node --test tests/*.test.mjs
+          npm install --no-audit --no-fund
+          npx wrangler deploy --dry-run --outdir build-v4
+          node -e 'const c=require("./wrangler.json");if(c.name!=="cinepulse-android-bridge"||c.keep_vars!==true||c.d1_databases[0].database_name!=="cinepulse-android-db"||c.r2_buckets[0].bucket_name!=="cinepulse-android-assets")throw Error("Unexpected Worker configuration");'
+      - name: Confirm previous production and all storage bindings are still intact
+        run: |
+          set -euo pipefail
+          mkdir -p stage-proof
+          base="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 50 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$base/deployments" -o stage-proof/active.json
+          active=$(jq -r '.result.deployments[0].versions[]|select(.percentage==100)|.version_id' stage-proof/active.json)
+          [[ "$active" == "$OLD_VERSION" ]] || { echo "::error::Live version changed unexpectedly: $active"; exit 1; }
+          curl -fsS --max-time 50 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$base/settings" -o stage-proof/bindings.json
+          jq -e '.result.bindings | any(.name=="DB" and .type=="d1" and .id=="bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd")' stage-proof/bindings.json >/dev/null
+          jq -e '.result.bindings | any(.name=="FILES" and .type=="r2_bucket" and .bucket_name=="cinepulse-android-assets")' stage-proof/bindings.json >/dev/null
+          jq -e '.result.bindings | any(.name=="ADMIN_TOKEN" and .type=="secret_text")' stage-proof/bindings.json >/dev/null
+          jq -e '.result.bindings | any(.name=="DOWNLOAD_SIGNING_KEY" and .type=="secret_text")' stage-proof/bindings.json >/dev/null
+          echo 'PRODUCTION_V030_D1_R2_AND_SECRETS_UNCHANGED'
+      - name: Upload INACTIVE Muse V4 Worker version and verify preview
+        run: |
+          set -euo pipefail
+          npx wrangler versions upload --tag cinepulse-muse-v040 --message "Muse executes every movie instruction, all final EN/UR cuts, and Windows JSON. Cloudflare validates and stores only."
+          base="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 50 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$base/versions" -o stage-proof/versions.json
+          id=$(jq -r '.result.items[0].id // empty' stage-proof/versions.json)
+          test -n "$id"
+          test "$id" != "$OLD_VERSION"
+          printf '%s\n' "$id" > stage-proof/inactive-version.txt
+          echo "MUSE_V4_INACTIVE_VERSION=$id"
+          url="https://${id:0:8}-$WORKER.maryumblog.workers.dev/health"
+          healthy=0
+          for attempt in $(seq 1 15);do
+            curl -fsS --max-time 35 "$url" -o stage-proof/preview-health.json || true
+            if jq -e '.status=="online" and .build=="android-cloud-backend-0.4.0-muse-owns-edits-and-windows-project" and
+              .policy.newMovies=="long_form_only" and .policy.museOwnsCuts==true and
+              .policy.museAuthorsWindowsProject==true and .policy.serverCutAllocator==false and
+              .policy.shorts==false and .policy.virals==false and .policy.metadata==true and
+              .policy.cutMinSeconds==3 and .policy.cutMaxSeconds==6 and .policy.windowsAssetCount==8' stage-proof/preview-health.json >/dev/null 2>&1; then
+              healthy=1;break
+            fi
+            sleep 5
+          done
+          test "$healthy" = 1 || { echo '::error::Muse V4 preview health mismatch';exit 1; }
+          echo 'MUSE_V4_PREVIEW_VERIFIED_NO_PRODUCTION_TRAFFIC'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cinepulse-muse-v040-inactive-version
+          path: cloudflare/cinepulse-android/stage-proof/inactive-version.txt
+          retention-days: 7

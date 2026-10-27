@@ -1,20 +1,31 @@
 import { API_BUILD, HttpError, json, nowSeconds, dayUTC, newId, isUuid, sha256, hashWorkerToken, requireString, normalizeSrt, validateManifest, randomToken, secureEqual, signDownload, verifyDownload, fileNames, isProbablyMp3 } from './helpers.mjs';
 import { LONGFORM_MODE, LONGFORM_MARKER, isLongFormCreateRequest, normalizePublishingMetadata, validateFinalCutPlan } from './longform-policy.mjs';
+import { allocateFinalLongFormCuts } from './server-cut-planner.mjs';
+import { buildWindowsProject, WINDOWS_FILE_KINDS, WINDOWS_FILE_NAMES } from './windows-export.mjs';
 
 // Legacy projects continue through their original stages. New projects use metadata only.
 const STAGES = ['digest','narration_english','narration_urdu','viral_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
 const LONGFORM_STAGES = ['digest','narration_english','narration_urdu','publishing_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
-const LONGFORM_BUILD = 'android-cloud-backend-0.2.0-longform-only';
+const LONGFORM_STAGES_V3 = LONGFORM_STAGES.filter(step=>step!=='cut_plan');
+const LONGFORM_MARKER_V3='[CINEPULSE-LONGFORM-V3-SERVER-CUTS]';
+const LONGFORM_BUILD = 'android-cloud-backend-0.3.0-server-cuts-eight-files';
 async function projectPolicy(env,projectId){
   // No D1 migration: distinguish new and legacy projects by the durable digest job prompt.
   const row=await env.DB.prepare("SELECT prompt FROM jobs WHERE project_id=? AND step_id='digest' ORDER BY created_at ASC LIMIT 1").bind(projectId).first();
   const prompt=String(row?.prompt||'');
-  const longForm=prompt.startsWith(LONGFORM_MARKER);
+  const serverCuts=prompt.startsWith(LONGFORM_MARKER_V3);
+  const longForm=serverCuts||prompt.startsWith(LONGFORM_MARKER);
   const targetMinutes=longForm ? Number(/targetMinutes=(\d+)/.exec(prompt)?.[1]||10) : null;
-  return {longForm,targetMinutes,stages:longForm?LONGFORM_STAGES:STAGES};
+  return {longForm,serverCuts,targetMinutes,
+    stages:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
 }
 
-const ASSET_TYPES = {source_srt:'application/x-subrip',english_mp3:'audio/mpeg',urdu_mp3:'audio/mpeg',export_json:'application/json'};
+const ASSET_TYPES = {
+  source_srt:'application/x-subrip',english_mp3:'audio/mpeg',urdu_mp3:'audio/mpeg',
+  export_json:'application/json',windows_project_json:'application/json',
+  english_srt:'application/x-subrip',urdu_srt:'application/x-subrip',
+  english_narration:'text/plain; charset=utf-8',urdu_narration:'text/plain; charset=utf-8'
+};
 const MAX_JSON = 2_500_000;
 const LEASE_SECONDS = 15 * 60;
 const DOWNLOAD_LINK_SECONDS = 15 * 60;
@@ -65,7 +76,7 @@ function promptFor(step) {
     case 'srt_english':return 'Use the ACTUAL generated English MP3 available at this task\'s inputAsset path. Use remote STT or measured alignment with online tools (e.g. Whisper/Hugging Face when authorized). Return a complete timecoded English SRT as plain text. Do not use approximate script fallback.';
     case 'mp3_urdu':return 'Generate the full Urdu narration MP3 using an authorized ONLINE text-to-speech tool. Upload the actual MP3 to /tasks/{task_id}/asset/urdu_mp3 using worker credential and task lease. Do not mark task complete before successful MP3 upload.';
     case 'srt_urdu':return 'Use the ACTUAL generated Urdu MP3 at inputAsset. Produce genuinely timed, full Urdu narration SRT using an authorized remote STT/alignment tool. Do not substitute invented timestamps.';
-    case 'scene_matching':return 'Use source SRT plus narration SRT timestamps to produce structured scene matches with source timecodes, narration timecodes and confidence; identify where subtitle-only evidence is insufficient. Return JSON {"matches":[]}.';
+    case 'scene_matching':return 'Muse: analyze ONLY the two full long-form explanatory videos, not Shorts or viral clips. Use original movie SRT plus ENGLISH and URDU genuinely measured narration SRTs. Return JSON {"matches":[{"language":"english"|"urdu","sourceStartSeconds":number,"sourceEndSeconds":number,"narrationStartSeconds":number,"narrationEndSeconds":number,"confidence":0.0-1.0}]}. Include chronological source-to-narration scene evidence for BOTH languages. These are broad SEARCH REFERENCES, not final video cuts. Do not reuse unrelated movie scenes or fabricate subtitle evidence. Cloudflare will allocate every 3–6-second final cut, resolve collisions, validate duration and store the Windows project. Do not output Shorts or virals.';
     case 'cut_plan':return 'FINAL LONG-FORM CUTS ONLY, for exactly ONE English and ONE Urdu explanatory video. Use the original source SRT, the scene_matching output and both already MEASURED narration SRTs in previousOutputs. Return JSON array with {"sourceStartSeconds":number,"sourceEndSeconds":number,"narrationStartSeconds":number,"narrationEndSeconds":number,"language":"english"|"urdu"}. EACH source and narration clip MUST be >=3 and <=6 seconds, be the SAME length, source clips MUST NOT overlap or reuse footage WITHIN each language, narration cuts must begin at zero, cover the COMPLETE language SRT timeline WITHOUT GAPS or overlaps, and every source interval must end within movie source-SRT duration. This may require ~100 short edit decisions for a 9-minute narration, but these are cuts of ONE long movie per language, NOT Shorts/viral videos. No frame decoding is needed for numeric timing checks. If there is insufficient source subtitle evidence, return a task error, not invented timestamps.';
     default: return '';
   }
@@ -95,10 +106,11 @@ async function taskDetail(env,job) {
   const kind=job.step_id==='srt_english'?'english_mp3':job.step_id==='srt_urdu'?'urdu_mp3':'source_srt';
   const assetPath=`/tasks/${job.id}/asset`;
   return {...publicJob(job),lease:job.lease,
-    prompt:policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
+    prompt:policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):
+      policy.serverCuts&&job.step_id==='scene_matching'?promptFor('scene_matching'):job.prompt,
     outputMode:policy.longForm?LONGFORM_MODE:'legacy',
     previousOutputs:context,inputAsset:{path:assetPath,name:kind==='source_srt'?'movie.srt':`${kind}.mp3`,mime:ASSET_TYPES[kind]},
-    notice:'The CinePulse online bridge stores the queue, not a Muse model. Work requires an active authorized Muse worker. After returning a valid result, check /agent/next for the next task.'};
+    notice:policy.serverCuts?'Muse supplies movie scene matching. Cloudflare itself generates and validates all final English and Urdu footage cuts, creates all 8 signed Windows media assets, and stops before rendering. After returning a valid result, poll /agent/next.':'An authorized Muse worker must remain active and return valid task results.'};
 }
 async function putR2(env,projectId,kind,bytes) {
   const key=objectKey(projectId,kind);const digest=await sha256(bytes);const time=nowSeconds();
@@ -188,6 +200,28 @@ async function finalizeProject(env,project,manifest) {
   const encoded=new TextEncoder().encode(JSON.stringify(document));
   if(encoded.byteLength>10*1024*1024)fail(413,'Export JSON exceeds 10 MiB');
   await putR2(env,project.id,'export_json',encoded);
+  if(policy.serverCuts){
+    // The Worker, not the Android APK, constructs the finalized Windows project
+    // and all separate narration media. Publish ready only after every R2 write.
+    const projectJson=buildWindowsProject({
+      project,sourceSrt,digest:manifest.digest,narrations:manifest.narrations,
+      narrationSrts:manifest.narrationSrts,cuts:manifest.cutPlan,
+      metadata:manifest.metadata,mp3s:document.audio,metrics:cutMetrics
+    });
+    const serverFiles={
+      windows_project_json:JSON.stringify(projectJson),
+      english_srt:manifest.narrationSrts.english,urdu_srt:manifest.narrationSrts.urdu,
+      english_narration:manifest.narrations.english,urdu_narration:manifest.narrations.urdu
+    };
+    for(const [kind,content] of Object.entries(serverFiles)){
+      const bytes=new TextEncoder().encode(content);
+      if(!bytes.byteLength||bytes.byteLength>10*1024*1024)fail(413,'Invalid generated '+kind+' size');
+      await putR2(env,project.id,kind,bytes);
+    }
+    for(const kind of WINDOWS_FILE_KINDS){
+      if(!await assetByKind(env,project.id,kind))fail(500,'Missing generated Windows asset: '+kind);
+    }
+  }
   await env.DB.prepare("UPDATE projects SET status='ready',ready_at=COALESCE(ready_at,?),export_key=?,updated_at=? WHERE id=?").bind(nowSeconds(),objectKey(project.id,'export_json'),nowSeconds(),project.id).run();
   return {status:'ready',files:[fileNames.export_json,fileNames.english_mp3,fileNames.urdu_mp3]};
 }
@@ -198,12 +232,36 @@ async function autoFinalize(env,project){
     const policy=await projectPolicy(env,project.id);
     const meta=policy.longForm?normalizePublishingMetadata(parse('publishing_metadata')):parse('viral_metadata');
     const matches=parse('scene_matching');
-    const cuts=parse('cut_plan');
+    let cuts;
+    if(policy.serverCuts){
+      // Muse provides scene intelligence. Cloudflare owns ALL deterministic
+      // final-cut allocation, global collision recovery, and interval QA.
+      const source=await env.FILES.get(project.source_srt_key);
+      if(!source)fail(409,'Original source subtitles unavailable');
+      const cutResult=allocateFinalLongFormCuts({
+        sourceSrt:await source.text(),
+        englishSrt:outputs.srt_english,urduSrt:outputs.srt_urdu,
+        sceneMatches:Array.isArray(matches)?matches:matches.matches||[]
+      });
+      cuts=cutResult.cuts;
+    }else{
+      cuts=parse('cut_plan');
+    }
     const m={digest:outputs.digest,narrations:{english:outputs.narration_english,urdu:outputs.narration_urdu},
       narrationSrts:{english:outputs.srt_english,urdu:outputs.srt_urdu},
       viralScenes:policy.longForm?[]:meta.viralScenes,metadata:policy.longForm?meta:meta.metadata,
-      sceneMatches:matches.matches,cutPlan:cuts};
-    return await finalizeProject(env,project,m);
+      sceneMatches:Array.isArray(matches)?matches:matches.matches||[],cutPlan:cuts};
+    const finished=await finalizeProject(env,project,m);
+    if(policy.serverCuts&&finished.status==='ready'){
+      // Audit record, not a Muse task: an already-finished server cut_plan job.
+      const exists=await env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND step_id='cut_plan' LIMIT 1").bind(project.id).first();
+      if(!exists){
+        const stamp=nowSeconds();
+        await env.DB.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,prompt,output,created_at,finished_at) VALUES(?,?,?,'cut_plan','done',?,?,?,?)")
+          .bind(newId(),project.id,project.worker_id,'Generated deterministically by Cloudflare after Muse scene matching',JSON.stringify(cuts),stamp,stamp).run();
+      }
+    }
+    return finished;
   }catch(error){
     // Preserve the completed task. APK can show and repair malformed stage output.
     await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?").bind(nowSeconds(),project.id).run();
@@ -229,16 +287,22 @@ async function signedLinks(env,request,project){
   const now=nowSeconds();
   const expiry=Math.min(now+DOWNLOAD_LINK_SECONDS,project.expires_at||now+DOWNLOAD_LINK_SECONDS);
   const files={};
-  for(const kind of ['export_json','english_mp3','urdu_mp3']){
-    if(!await assetByKind(env,project.id,kind))fail(409,`Export missing ${kind}`);
+  const format=new URL(request.url).searchParams.get('format');
+  if(format && format!=='windows')fail(400,'Unknown download format');
+  const kinds=format==='windows'?WINDOWS_FILE_KINDS:['export_json','english_mp3','urdu_mp3'];
+  for(const kind of kinds){
+    const asset=await assetByKind(env,project.id,kind);
+    if(!asset)fail(409,`Server-owned Windows export missing ${kind}. This old project must use legacy download mode; no APK-side cut correction is allowed.`);
     const sig=await signDownload(env.DOWNLOAD_SIGNING_KEY,project.id,kind,expiry);
-    files[kind]={filename:fileNames[kind],url:`${base}/dl/${project.id}/${kind}?exp=${expiry}&sig=${sig}`,linkExpiresAt:expiry};
+    files[kind]={filename:WINDOWS_FILE_NAMES[kind]||fileNames[kind],bytes:asset.bytes,sha256:asset.sha256,
+      url:`${base}/dl/${project.id}/${kind}?exp=${expiry}&sig=${sig}`,linkExpiresAt:expiry};
   }
-  return {project:publicProject(project),files,retentionHours:project.retention_hours,info:'Each link is valid for up to 15 minutes. Get fresh links from the APK if they expire. Cloud retention starts on first successful download.'};
+  return {project:publicProject(project),files,format:format==='windows'?'windows_eight_verified':'legacy_three',
+    retentionHours:project.retention_hours,info:'Cloudflare prepared all Windows files; Android only verifies SHA-256 and downloads them. Signed links expire after 15 minutes.'};
 }
 async function download(req,env,parts,url){
   const [, ,pid,kind]=parts;
-  if(!isUuid(pid)||!['export_json','english_mp3','urdu_mp3'].includes(kind))fail(404,'File not found');
+  if(!isUuid(pid)||!['export_json',...WINDOWS_FILE_KINDS].includes(kind))fail(404,'File not found');
   const exp=url.searchParams.get('exp'),sig=url.searchParams.get('sig');
   if(!await verifyDownload(env.DOWNLOAD_SIGNING_KEY,pid,kind,exp,sig||''))fail(403,'Download link expired or invalid');
   const project=await getProject(env,pid);
@@ -250,7 +314,7 @@ async function download(req,env,parts,url){
   // First *successful* download starts the post-download 24/48-hour retention clock.
   await env.DB.prepare('UPDATE projects SET first_downloaded_at=COALESCE(first_downloaded_at,?),expires_at=COALESCE(expires_at,?) WHERE id=?').bind(time,time+project.retention_hours*3600,pid).run();
   await logDaily(env,{downloads:1});
-  return new Response(obj.body,{status:200,headers:{'Content-Type':ASSET_TYPES[kind],'Content-Disposition':`attachment; filename="${fileNames[kind]}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Length':String(asset.bytes)}});
+  return new Response(obj.body,{status:200,headers:{'Content-Type':ASSET_TYPES[kind],'Content-Disposition':`attachment; filename="${WINDOWS_FILE_NAMES[kind]||fileNames[kind]}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Length':String(asset.bytes)}});
 }
 async function removeProject(env,pid){
   const project=await getProject(env,pid);
@@ -278,7 +342,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,
+    policy:{newMovies:'long_form_only',shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:true,windowsAssetCount:8,
       validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   if(method==='GET'&&parts[1]==='dl'&&parts.length===4)return download(request,env,parts,url);
   if(parts[1]==='w'&&parts.length>=4){
@@ -448,12 +512,13 @@ async function route(request,env){
     }catch(error){await env.FILES.delete(key);throw error;}
     await logDaily(env,{projects_created:1,uploaded_bytes:bytes.byteLength});
     // Durable project-level policy stored in the first digest job prompt: no schema migration.
-    const policyPrompt=`${LONGFORM_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false\n${promptFor('digest')}`;
+    const policyPrompt=`${LONGFORM_MARKER_V3} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false serverCuts=true windowsFiles=8\n${promptFor('digest')}`;
     const taskId=await queueTask(env,{id:pid,worker_id:workerId},'digest',policyPrompt);
     return json({projectId:pid,workerId,title,firstTaskId:taskId,stage:'digest',status:'processing',retentionHours:hours,
       targetMinutes:requested.targetMinutes,outputMode:requested.outputMode,
       modules:{digest:true,englishNarration:true,urduNarration:true,metadata:true,englishMp3:true,urduMp3:true,
-        englishMeasuredSrt:true,urduMeasuredSrt:true,sceneMatching:true,finalCuts:true,shorts:false,virals:false}},201);
+        englishMeasuredSrt:true,urduMeasuredSrt:true,sceneMatching:true,finalCuts:true,
+        finalCutOwner:'cloudflare',windowsAssets:8,shorts:false,virals:false}},201);
   }
   if(method==='GET'&&url.pathname==='/v1/projects'){
     const rows=await env.DB.prepare('SELECT * FROM projects ORDER BY created_at DESC LIMIT 200').all();

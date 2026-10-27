@@ -168,10 +168,12 @@ async function uploadAudio(request,env,projectId,kind) {
   return {kind,bytes:size,sha256:claimedHash};
 }
 
-async function finalizeProject(env,project,manifest,{generatedByCloudflare=false}={}) {
+async function finalizeProject(env,project,manifest,{generatedByCloudflare=false,verifiedMuseJob=false}={}) {
   const policy=await projectPolicy(env,project.id);
   if(policy.serverCuts&&!generatedByCloudflare)
-    fail(409,'Server-owned final cuts cannot be injected via manual finalize. Muse scene matching and Cloudflare timeline QA are required.');
+    fail(409,'Legacy V3 server-generated cut plan requires its normal task pipeline.');
+  if(policy.museOwnsCuts&&!verifiedMuseJob)
+    fail(409,'Muse V4 edit decisions and Windows project must come from the verified Muse task pipeline; manual overrides are prohibited.');
   if(policy.longForm){
     // Never allow a manual finalize request to reactivate viral output for new movies.
     let metadata;try{metadata=normalizePublishingMetadata({metadata:manifest.metadata});}
@@ -212,10 +214,15 @@ async function finalizeProject(env,project,manifest,{generatedByCloudflare=false
   const encoded=new TextEncoder().encode(JSON.stringify(document));
   if(encoded.byteLength>10*1024*1024)fail(413,'Export JSON exceeds 10 MiB');
   await putR2(env,project.id,'export_json',encoded);
-  if(policy.serverCuts){
-    // The Worker, not the Android APK, constructs the finalized Windows project
-    // and all separate narration media. Publish ready only after every R2 write.
-    const projectJson=buildWindowsProject({
+  if(policy.serverCuts||policy.museOwnsCuts){
+    // V4 stores the FULL Muse-authored Windows project without modifying any
+    // scene, source position or media reference. V3 remains backwards compatible.
+    const projectJson=policy.museOwnsCuts?verifyMuseWindowsProject(manifest.windowsProject,{
+      projectId:project.id,title:project.title,sourceSrt,
+      narrations:manifest.narrations,narrationSrts:manifest.narrationSrts,
+      digest:manifest.digest,cutPlan:manifest.cutPlan,metadata:manifest.metadata,
+      mp3Manifest:document.audio
+    }):buildWindowsProject({
       project,sourceSrt,digest:manifest.digest,narrations:manifest.narrations,
       narrationSrts:manifest.narrationSrts,cuts:manifest.cutPlan,
       metadata:manifest.metadata,mp3s:document.audio,metrics:cutMetrics
@@ -246,8 +253,8 @@ async function autoFinalize(env,project){
     const matches=parse('scene_matching');
     let cuts;
     if(policy.serverCuts){
-      // Muse provides scene intelligence. Cloudflare owns ALL deterministic
-      // final-cut allocation, global collision recovery, and interval QA.
+      // Only projects explicitly created under the old V3 policy use the
+      // legacy Cloudflare allocator. ALL new V4 projects use Muse's own cuts.
       const source=await env.FILES.get(project.source_srt_key);
       if(!source)fail(409,'Original source subtitles unavailable');
       const cutResult=allocateFinalLongFormCuts({
@@ -262,8 +269,11 @@ async function autoFinalize(env,project){
     const m={digest:outputs.digest,narrations:{english:outputs.narration_english,urdu:outputs.narration_urdu},
       narrationSrts:{english:outputs.srt_english,urdu:outputs.srt_urdu},
       viralScenes:policy.longForm?[]:meta.viralScenes,metadata:policy.longForm?meta:meta.metadata,
-      sceneMatches:Array.isArray(matches)?matches:matches.matches||[],cutPlan:cuts};
-    const finished=await finalizeProject(env,project,m,{generatedByCloudflare:policy.serverCuts});
+      sceneMatches:Array.isArray(matches)?matches:matches.matches||[],cutPlan:cuts,
+      ...(policy.museOwnsCuts?{windowsProject:parse('windows_project')}:{})};
+    const finished=await finalizeProject(env,project,m,{
+      generatedByCloudflare:policy.serverCuts,verifiedMuseJob:policy.museOwnsCuts
+    });
     if(policy.serverCuts&&finished.status==='ready'){
       // Audit record, not a Muse task: an already-finished server cut_plan job.
       const exists=await env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND step_id='cut_plan' LIMIT 1").bind(project.id).first();
@@ -449,7 +459,7 @@ async function route(request,env){
         }
         if(job.step_id==='scene_matching'){
           const policy=await projectPolicy(env,job.project_id);
-          if(policy.serverCuts){
+          if(policy.serverCuts||policy.museOwnsCuts){
             let scene;try{scene=JSON.parse(output);}catch{fail(422,'Muse scene matching must return valid JSON');}
             const matches=Array.isArray(scene)?scene:scene?.matches;
             if(!Array.isArray(matches)||matches.length===0||matches.length>2000)
@@ -478,6 +488,31 @@ async function route(request,env){
             });}catch(error){fail(422,'Final timestamp checks failed: '+error.message);}
           }else if(!Array.isArray(cuts)||!cuts.length||cuts.some(c=>!Number.isFinite(c.sourceStartSeconds)||!Number.isFinite(c.sourceEndSeconds)||c.sourceEndSeconds<=c.sourceStartSeconds))
             fail(422,'Legacy cut plan source timestamps invalid');
+        }
+        if(job.step_id==='windows_project'){
+          const policy=await projectPolicy(env,job.project_id);
+          if(policy.museOwnsCuts){
+            let produced;
+            try{produced=JSON.parse(output);}catch{fail(422,'Muse Windows project must be valid JSON');}
+            const old=await priorOutputs(env,job.project_id);
+            const movie=await getProject(env,job.project_id);
+            const source=await env.FILES.get(movie.source_srt_key);
+            const [en,ur]=await Promise.all(['english_mp3','urdu_mp3'].map(k=>assetByKind(env,job.project_id,k)));
+            if(!source||!en||!ur)fail(409,'Source SRT or verified English/Urdu MP3 unavailable');
+            try{
+              const metadata=normalizePublishingMetadata(JSON.parse(old.publishing_metadata));
+              verifyMuseWindowsProject(produced,{
+                projectId:movie.id,title:movie.title,sourceSrt:await source.text(),
+                narrations:{english:old.narration_english,urdu:old.narration_urdu},
+                narrationSrts:{english:old.srt_english,urdu:old.srt_urdu},
+                digest:old.digest,cutPlan:JSON.parse(old.cut_plan),metadata,
+                mp3Manifest:{
+                  english:{filename:fileNames.english_mp3,bytes:en.bytes,sha256:en.sha256},
+                  urdu:{filename:fileNames.urdu_mp3,bytes:ur.bytes,sha256:ur.sha256}
+                }
+              });
+            }catch(error){fail(422,'Muse Windows project rejected; correct and resubmit within task lease: '+error.message);}
+          }
         }
         const time=nowSeconds();
         const updated=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id").bind(output,time,jid,job.lease).first();

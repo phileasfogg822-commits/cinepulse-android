@@ -74,7 +74,7 @@ test('Muse-authored complete Windows ProjectState passes strict read-only valida
 });
 test('rejects Muse project that reuses or silently shifts one movie interval',()=>{
   const f=fixture();
-  f.mockMuseResponse.tracks.hindiUrdu.cuts[11].movieStart=stamp(213);
+  f.mockMuseResponse.tracks.hindiUrdu.cuts[11].movieStart=stamp(999);
   assert.throws(()=>verifyMuseWindowsProject(f.mockMuseResponse,approved(f)),/shot .* differs/);
 });
 test('rejects Muse JSON for wrong movie or incomplete source subtitles',()=>{

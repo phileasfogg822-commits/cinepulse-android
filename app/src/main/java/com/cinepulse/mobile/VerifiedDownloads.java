@@ -284,8 +284,8 @@ final class VerifiedDownloads {
             originals=downloadOriginals(projectId,detail,links,progress);
             try {
                 bundle=prepareBundle(projectId,originals);
-            } catch(Exception conversionFailure) {
-                progress.update("Final cuts not ready. Keeping verified media in a labeled recovery folder.");
+            } catch(IOException conversionFailure) {
+                progress.update("Final cuts not ready. Saving verified media in a REVIEW folder.");
                 bundle=prepareRecoveryBundle(projectId,originals,conversionFailure);
             }
             if(!bundle.renderReady)folder=folder+"-REVIEW-NOT-RENDER-READY";
@@ -313,7 +313,7 @@ final class VerifiedDownloads {
                     ContentValues values=new ContentValues();
                     values.put(MediaStore.MediaColumns.IS_PENDING,0);
                     if(resolver.update(uri,values,null,null)!=1)
-                        throw new IOException("Could not publish all eight files");
+                        throw new IOException("Could not publish all "+bundle.names.length+" files");
                 }
             }else{
                 File parent=new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),"CinePulse");
@@ -325,7 +325,7 @@ final class VerifiedDownloads {
                     if(!dest.createNewFile())throw new IOException("Cannot create "+bundle.names[i]);
                     createdFiles.add(dest);
                     try(OutputStream out=new FileOutputStream(dest)){copy(bundle.files[i],out);}
-                    progress.update("Saving Windows-ready file "+(i+1)+"/8");
+                    progress.update("Saving "+(bundle.renderReady?"Windows-ready":"recovery")+" file "+(i+1)+"/"+bundle.names.length);
                 }
             }
             if(!bundle.renderReady){
@@ -394,7 +394,12 @@ final class VerifiedDownloads {
         File[] originals=null;RenderBundle bundle=null;File zip=null;
         try{
             originals=downloadOriginals(projectId,detail,links,progress);
-            bundle=prepareBundle(projectId,originals);
+            try {
+                bundle=prepareBundle(projectId,originals);
+            } catch(IOException conversionFailure) {
+                progress.update("Final cuts not ready. Preparing a clearly labeled recovery ZIP.");
+                bundle=prepareRecoveryBundle(projectId,originals,conversionFailure);
+            }
             String name="CinePulse-"+SecurityRules.safeFolderName(project.optString("title"))+"-"+
                 SecurityRules.shortId(projectId)+(bundle.renderReady?"-Windows-ready.zip":"-REVIEW-NOT-RENDER-READY.zip");
             zip=File.createTempFile("cinepulse-windows-", ".zip",cache);

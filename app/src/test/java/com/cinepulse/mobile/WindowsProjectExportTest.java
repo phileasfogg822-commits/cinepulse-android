@@ -201,6 +201,43 @@ public class WindowsProjectExportTest {
         assertFalse(files[0].equals(VerifiedDownloads.windowsBundleNames()[0]));
     }
 
+
+    @Test public void zipContainsExactlyEightWindowsFilesAndNoCloudRawJson() throws Exception{
+        String[] names=VerifiedDownloads.windowsBundleNames();
+        java.io.File[] files=new java.io.File[names.length];
+        try {
+            for(int i=0;i<files.length;i++){
+                files[i]=java.io.File.createTempFile("cinepulse-test-", ".bin");
+                try(java.io.FileOutputStream output=new java.io.FileOutputStream(files[i])){
+                    output.write(("media="+i).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+            }
+            java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();
+            try(java.util.zip.ZipOutputStream zip=new java.util.zip.ZipOutputStream(bytes)){
+                VerifiedDownloads.writePackageZip(zip,names,files);
+            }
+            java.util.ArrayList<String> included=new java.util.ArrayList<>();
+            try(java.util.zip.ZipInputStream input=new java.util.zip.ZipInputStream(
+                    new java.io.ByteArrayInputStream(bytes.toByteArray()))){
+                java.util.zip.ZipEntry item;
+                while((item=input.getNextEntry())!=null){
+                    included.add(item.getName());
+                    assertTrue("ZIP entry should be a real file",item.getName().length()>4);
+                    input.closeEntry();
+                }
+            }
+            assertArrayEquals(names,included.toArray(new String[0]));
+            assertFalse(included.contains("CinePulse_Original_Cloud_Project.json"));
+            files[7].delete();
+            try(java.util.zip.ZipOutputStream zip=new java.util.zip.ZipOutputStream(
+                    new java.io.ByteArrayOutputStream())){
+                VerifiedDownloads.writePackageZip(zip,names,files);
+                fail("Missing narration script was silently omitted");
+            }catch(IOException expected){}
+        } finally {
+            for(java.io.File file:files)if(file!=null)file.delete();
+        }
+    }
     @Test public void hasExactlyEightFilesWithOneNativeJson(){
         String[] names=VerifiedDownloads.windowsBundleNames();
         assertEquals(8,names.length);

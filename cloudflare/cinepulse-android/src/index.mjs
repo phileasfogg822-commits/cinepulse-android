@@ -448,6 +448,10 @@ async function route(request,env){
         if(job.step_id==='mp3_english'&&!await assetByKind(env,job.project_id,'english_mp3'))fail(409,'Real English MP3 upload required');
         if(job.step_id==='mp3_urdu'&&!await assetByKind(env,job.project_id,'urdu_mp3'))fail(409,'Real Urdu MP3 upload required');
         if(['srt_english','srt_urdu'].includes(job.step_id))normalizeSrt(output);
+        // Keep Muse's lease and previous work intact when Muse submits an
+        // incorrect calculation. Feed exact validation errors back into its
+        // next task poll, so only Muse repairs the proposed edit decisions.
+        try {
         // Stage-specific structural checks BEFORE accepting the job result.
         if(job.step_id==='viral_metadata'){
           let m;try{m=JSON.parse(output);}catch{fail(422,'Legacy metadata must be valid JSON');}
@@ -513,6 +517,17 @@ async function route(request,env){
               });
             }catch(error){fail(422,'Muse Windows project rejected; correct and resubmit within task lease: '+error.message);}
           }
+        }
+        }catch(error){
+          const policy=await projectPolicy(env,job.project_id);
+          if(policy.museOwnsCuts && [422].includes(error?.status) &&
+             ['scene_matching','cut_plan','windows_project'].includes(job.step_id)){
+            const feedback='RETRY REQUIRED: '+String(error.message||'Invalid Muse output').slice(0,1200)+
+              '\nRecalculate and resubmit the full corrected result. Do not ask Cloudflare or Android to invent edits.';
+            await env.DB.prepare("UPDATE jobs SET prompt=? WHERE id=? AND lease=? AND status='working'")
+              .bind(feedback,jid,job.lease).run();
+          }
+          throw error;
         }
         const time=nowSeconds();
         const updated=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id").bind(output,time,jid,job.lease).first();

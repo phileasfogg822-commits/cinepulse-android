@@ -5,6 +5,7 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
@@ -134,6 +135,34 @@ final class FinalCutPlanner {
         }
         return -1;
     }
+
+    /** Last-resort timestamp-only recovery for exhausted localized source windows.
+     * Every returned interval remains close to an ACTUAL movie subtitle cue, is unused
+     * in this language, and stays inside the movie SRT timebase. No frame analysis.
+     * Confidence is intentionally lower than a language-matched scene anchor.
+     */
+    private static double chooseUnusedCueAnywhere(double desired,double clip,double movieEnd,
+        List<Double> cues,List<double[]> used){
+        if(cues.isEmpty()||movieEnd<clip)return -1;
+        double pivot=Math.max(0,Math.min(movieEnd-clip,desired));
+        int at=Collections.binarySearch(cues,pivot);
+        if(at<0)at=-at-1;
+        for(int distance=0;distance<=cues.size();distance++){
+            int before=at-1-distance,after=at+distance;
+            for(int side=0;side<2;side++){
+                int index=side==0?before:after;
+                if(index<0||index>=cues.size())continue;
+                double cue=cues.get(index);
+                for(double fraction:new double[]{0,.5,1}){
+                    double start=Math.round((cue-clip*fraction)*1000)/1000d;
+                    if(start<0||start+clip>movieEnd+EPS)continue;
+                    if(!occupied(used,start,start+clip))return start;
+                }
+            }
+        }
+        return -1;
+    }
+
     static Result finalizePlan(JSONObject original,String language,double audioSeconds) throws Exception {
         if(!"english".equals(language)&&!"urdu".equals(language))
             throw new IllegalArgumentException("Unsupported render language");
@@ -160,32 +189,57 @@ final class FinalCutPlanner {
         double nominal=audioSeconds/pieces;
         List<double[]> used=new ArrayList<>();
         JSONArray finished=new JSONArray();
-        double footage=0;int weak=0;
+        double footage=0;int weak=0,subtitleFallbacks=0;
         for(int index=0;index<pieces;index++){
             double a=Math.round((index*nominal)*1000)/1000d;
             double b=index==pieces-1?Math.round(audioSeconds*1000)/1000d:
                 Math.round(((index+1)*nominal)*1000)/1000d;
             double clip=b-a,mid=(a+b)/2;
             if(clip<CLIP_MIN-EPS||clip>CLIP_MAX+EPS)throw new IOException(language+": final cut must be 3–6 seconds");
-            // Prefer anchors that truly cover the narration time, then scene quality.
-            Range choice=null;double score=Double.POSITIVE_INFINITY;
-            for(Range r:ranges){
-                double distance=r.distance(mid);
-                double x=distance*10 + (1-r.quality)*20;
-                if(x<score){score=x;choice=r;}
+            // IMPORTANT: source ranges are scene search candidates, not 13 Shorts or
+            // 13 mandatory clips. Never fail just because the first source window is full.
+            final double targetMid=mid;
+            List<Range> candidates=new ArrayList<>(ranges);
+            candidates.sort(Comparator.comparingDouble(r->
+                r.distance(targetMid)*10+(1-r.quality)*20));
+            Range primary=candidates.get(0);
+            Range selected=null;
+            double primaryPosition=Math.max(0,Math.min(1,
+                (mid-primary.audioStart)/(primary.audioEnd-primary.audioStart)));
+            double globalDesired=primary.sourceStart+
+                primaryPosition*Math.max(0,primary.sourceEnd-primary.sourceStart-clip);
+            double start=-1;
+            // Prefer the nearest locally matched windows. Other matched windows can
+            // supply safe adjacent clips when one narrated scene exhausts its capacity.
+            int attempts=Math.min(6,candidates.size());
+            for(int rIndex=0;rIndex<attempts;rIndex++){
+                Range candidate=candidates.get(rIndex);
+                if(candidate.distance(mid)>Math.max(30,audioSeconds*.1d))continue;
+                double pos=Math.max(0,Math.min(1,
+                    (mid-candidate.audioStart)/(candidate.audioEnd-candidate.audioStart)));
+                double desired=candidate.sourceStart+
+                    pos*Math.max(0,candidate.sourceEnd-candidate.sourceStart-clip);
+                start=chooseSource(desired,clip,candidate,maxMovie,cues,used);
+                if(start>=0){selected=candidate;break;}
             }
-            if(choice==null||choice.distance(mid)>Math.max(15,audioSeconds*.055))
-                throw new IOException(language+": no scene evidence around narration "+stamp(mid));
-            double pos=(mid-choice.audioStart)/(choice.audioEnd-choice.audioStart);
-            pos=Math.max(0,Math.min(1,pos));
-            double desired=choice.sourceStart+pos*Math.max(0,choice.sourceEnd-choice.sourceStart-clip);
-            double start=chooseSource(desired,clip,choice,maxMovie,cues,used);
+            boolean fallback=false;
+            if(start<0){
+                // The full movie SRT is a large pool of timestamped source material.
+                // Find unused footage close to a real subtitle cue instead of repeating
+                // an earlier shot or abandoning the eight-file Windows export.
+                start=chooseUnusedCueAnywhere(globalDesired,clip,maxMovie,cues,used);
+                fallback=true;
+            }
             if(start<0)throw new IOException(language+
-                ": source footage cannot be allocated without overlap near narration "+stamp(mid));
+                ": insufficient unused source-SRT footage for the remaining "+
+                stamp(clip)+"-second cut near narration "+stamp(mid)+
+                ". This requires better source subtitles, not regenerated narration.");
             double end=start+clip;
             used.add(new double[]{start,end});
             footage+=clip;
-            if(choice.quality<.7)weak++;
+            if(fallback)subtitleFallbacks++;
+            double verifiedConfidence=fallback?.20d:selected.quality;
+            if(verifiedConfidence<.7)weak++;
             String excerpt="";
             for(int j=0;j<segments.length();j++){
                 JSONObject seg=segments.getJSONObject(j);
@@ -203,12 +257,14 @@ final class FinalCutPlanner {
                 .put("movieStart",stamp(start)).put("movieEnd",stamp(end))
                 .put("movieFile","CinePulse_Source.srt")
                 .put("narrationExcerpt",excerpt)
-                .put("confidence",choice.quality));
+                .put("confidence",verifiedConfidence)
+                .put("sourceEvidence",fallback?"source_srt_timeline_fallback":"cloud_scene_anchor"));
         }
         validate(finished,audioSeconds,maxMovie);
         String message=language+": "+finished.length()+" final timing cuts; MP3 "+
             stamp(audioSeconds)+"; source intervals non-overlapping; "+
-            ranges.size()+" scene anchors; duration and source-overlap checked by timestamps only.";
+            ranges.size()+" scene anchors; "+subtitleFallbacks+
+            " recovered using unused source-SRT cue timestamps; duration and source-overlap checked by timestamps only.";
         return new Result(finished,audioSeconds,footage,ranges.size(),message);
     }
     static void validate(JSONArray cuts,double duration,double sourceEnd) throws Exception{

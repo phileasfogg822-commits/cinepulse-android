@@ -144,12 +144,24 @@ final class VerifiedDownloads {
         "CinePulse_English_Narration.txt", "CinePulse_Urdu_Narration.txt"
     };
     static String[] windowsBundleNames(){return BUNDLE_NAMES.clone();}
+    /** Recovery is separate from the Windows-native bundle and NEVER claims render readiness. */
+    private static final String[] RECOVERY_NAMES={
+        "CinePulse_Original_Cloud_Project.json","CinePulse_Source.srt",
+        "CinePulse_English.mp3","CinePulse_Urdu.mp3",
+        "CinePulse_English.srt","CinePulse_Urdu.srt",
+        "CinePulse_English_Narration.txt","CinePulse_Urdu_Narration.txt",
+        "EXPORT_REVIEW_REQUIRED.txt"
+    };
+    static String[] recoveryBundleNames(){return RECOVERY_NAMES.clone();}
     private static final class RenderBundle {
         final File[] files;
         final List<File> derived;
         final String report;
-        RenderBundle(File[] files,List<File> derived,String report){
+        final String[] names;
+        final boolean renderReady;
+        RenderBundle(File[] files,List<File> derived,String report,String[] names,boolean renderReady){
             this.files=files;this.derived=derived;this.report=report;
+            this.names=names;this.renderReady=renderReady;
         }
         void cleanup(){for(File file:derived)if(file!=null)file.delete();}
     }
@@ -186,9 +198,56 @@ final class VerifiedDownloads {
             output[5]=stagedText(urSrt);derived.add(output[5]);
             output[6]=stagedText(enText);derived.add(output[6]);
             output[7]=stagedText(urText);derived.add(output[7]);
-            return new RenderBundle(output,derived,nativeProject.report);
+            return new RenderBundle(output,derived,nativeProject.report,BUNDLE_NAMES,true);
         }catch(Exception ex){for(File tmp:derived)tmp.delete();throw ex;}
     }
+
+    /**
+     * An allocation/metadata/SRT export error must not discard the four valid, signed
+     * Cloudflare assets already downloaded to private cache. Preserve a plainly labeled
+     * REVIEW folder (nine files, including the diagnostic); never substitute the raw
+     * Cloudflare JSON for a render-ready Windows-native JSON.
+     */
+    private RenderBundle prepareRecoveryBundle(String projectId,File[] verified,Exception cause) throws Exception{
+        if(verified.length!=4)throw new IOException("Recovery needs all four verified cloud assets");
+        JSONObject raw=new JSONObject(new String(
+            java.nio.file.Files.readAllBytes(verified[0].toPath()),StandardCharsets.UTF_8));
+        JSONObject project=raw.optJSONObject("project");
+        if(project==null||!projectId.equals(project.optString("id")))
+            throw new SecurityException("Recovery stopped: cloud project identity mismatch");
+        JSONObject narration=raw.optJSONObject("narrations");
+        JSONObject srts=raw.optJSONObject("narrationSrts");
+        String[] extra={
+            srts==null?"":inner(srts.opt("english"),"srt"),
+            srts==null?"":inner(srts.opt("urdu"),"srt"),
+            narration==null?"":inner(narration.opt("english"),"text"),
+            narration==null?"":inner(narration.opt("urdu"),"text")
+        };
+        String reason=cause.getMessage()==null?cause.getClass().getSimpleName():cause.getMessage();
+        String diagnostic="CINEPULSE EXPORT RECOVERY — NOT READY FOR WINDOWS RENDER\\n"+
+            "Movie: "+project.optString("title","Movie")+"\\n"+
+            "Cloudflare project ID: "+projectId+"\\n"+
+            "Reason: "+reason+"\\n\\n"+
+            "Your two verified MP3s, original Cloudflare JSON, movie source SRT, "+
+            "narration SRTs and narration texts are preserved.\\n"+
+            "The original Cloudflare JSON is NOT a Windows-native final-cut project. "+
+            "Do not rename it to CinePulse_Project.json and render it.\\n"+
+            "Correct the reported issue and retry the eight-file Windows export.\\n";
+        List<File> derived=new ArrayList<>();
+        try{
+            File[] files=new File[RECOVERY_NAMES.length];
+            files[0]=verified[0];files[1]=verified[3];
+            files[2]=verified[1];files[3]=verified[2];
+            for(int i=0;i<4;i++){
+                files[4+i]=stagedText(extra[i]);
+                derived.add(files[4+i]);
+            }
+            files[8]=stagedText(diagnostic);derived.add(files[8]);
+            return new RenderBundle(files,derived,
+                "REVIEW REQUIRED: "+reason+"\\n"+diagnostic,RECOVERY_NAMES,false);
+        }catch(Exception ex){for(File temp:derived)temp.delete();throw ex;}
+    }
+
     private File[] downloadOriginals(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
         String[] kinds={"export_json","english_mp3","urdu_mp3","source_srt"};
         File[] staged=new File[4];
@@ -223,10 +282,17 @@ final class VerifiedDownloads {
         String relative=Environment.DIRECTORY_DOWNLOADS+"/CinePulse/"+folder+"/";
         try{
             originals=downloadOriginals(projectId,detail,links,progress);
-            bundle=prepareBundle(projectId,originals);
+            try {
+                bundle=prepareBundle(projectId,originals);
+            } catch(Exception conversionFailure) {
+                progress.update("Final cuts not ready. Keeping verified media in a labeled recovery folder.");
+                bundle=prepareRecoveryBundle(projectId,originals,conversionFailure);
+            }
+            if(!bundle.renderReady)folder=folder+"-REVIEW-NOT-RENDER-READY";
+            relative=Environment.DIRECTORY_DOWNLOADS+"/CinePulse/"+folder+"/";
             if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q){
-                for(int i=0;i<BUNDLE_NAMES.length;i++){
-                    String name=BUNDLE_NAMES[i];
+                for(int i=0;i<bundle.names.length;i++){
+                    String name=bundle.names[i];
                     ContentValues values=new ContentValues();
                     values.put(MediaStore.MediaColumns.DISPLAY_NAME,name);
                     values.put(MediaStore.MediaColumns.MIME_TYPE,name.endsWith(".json")?"application/json":
@@ -241,7 +307,7 @@ final class VerifiedDownloads {
                         if(out==null)throw new IOException("Cannot create "+name);
                         copy(bundle.files[i],out);
                     }
-                    progress.update("Saving Windows-ready file "+(i+1)+"/8");
+                    progress.update("Saving "+(bundle.renderReady?"Windows-ready":"recovery")+" file "+(i+1)+"/"+bundle.names.length);
                 }
                 for(Uri uri:createdUris){
                     ContentValues values=new ContentValues();
@@ -254,17 +320,25 @@ final class VerifiedDownloads {
                 if(!parent.isDirectory()&&!parent.mkdirs())throw new IOException("Cannot create Downloads/CinePulse");
                 legacyFolder=new File(parent,folder);
                 if(!legacyFolder.mkdirs())throw new IOException("Cannot create movie download folder");
-                for(int i=0;i<BUNDLE_NAMES.length;i++){
-                    File dest=new File(legacyFolder,BUNDLE_NAMES[i]);
-                    if(!dest.createNewFile())throw new IOException("Cannot create "+BUNDLE_NAMES[i]);
+                for(int i=0;i<bundle.names.length;i++){
+                    File dest=new File(legacyFolder,bundle.names[i]);
+                    if(!dest.createNewFile())throw new IOException("Cannot create "+bundle.names[i]);
                     createdFiles.add(dest);
                     try(OutputStream out=new FileOutputStream(dest)){copy(bundle.files[i],out);}
                     progress.update("Saving Windows-ready file "+(i+1)+"/8");
                 }
             }
-            return "Saved 8 files to Downloads/CinePulse/"+folder+
-                ". The single JSON is a Windows-native project with subtitle-grounded short final cuts."+
-                " Transfer the whole folder. Windows must resolve MP3 and source-video paths. Frame analysis is not required for timeline-only validation.";
+            if(!bundle.renderReady){
+                String message=bundle.report;
+                if(message.length()>1500)message=message.substring(0,1500)+"…";
+                return "REVIEW REQUIRED — verified media saved to Downloads/CinePulse/"+folder+
+                    "/ ("+bundle.names.length+" recovery files, including the diagnostic).\\n\\n"+
+                    message+"\\n\\nNothing was deleted. Retry Windows-ready export after correcting the issue.";
+            }
+            return "Saved exactly 8 Windows files to Downloads/CinePulse/"+folder+
+                "/. Cloudflare provides four verified assets; Android additionally creates"+
+                " a native Windows JSON, two narration SRTs, and two narration text files."+
+                " Final clips are 3–6 seconds with no overlaps and a total length matching each measured MP3.";
         }catch(Exception e){
             for(Uri uri:createdUris)try{resolver.delete(uri,null,null);}catch(Exception ignored){}
             for(File file:createdFiles)file.delete();
@@ -322,11 +396,12 @@ final class VerifiedDownloads {
             originals=downloadOriginals(projectId,detail,links,progress);
             bundle=prepareBundle(projectId,originals);
             String name="CinePulse-"+SecurityRules.safeFolderName(project.optString("title"))+"-"+
-                SecurityRules.shortId(projectId)+"-Windows-ready.zip";
+                SecurityRules.shortId(projectId)+(bundle.renderReady?"-Windows-ready.zip":"-REVIEW-NOT-RENDER-READY.zip");
             zip=File.createTempFile("cinepulse-windows-", ".zip",cache);
-            progress.update("Packaging eight Windows-compatible files");
+            progress.update(bundle.renderReady?"Packaging eight Windows-compatible files":
+                "Packaging verified recovery files; final-cut validation requires review");
             try(ZipOutputStream out=new ZipOutputStream(new FileOutputStream(zip))){
-                for(int i=0;i<BUNDLE_NAMES.length;i++)zipFile(out,BUNDLE_NAMES[i],bundle.files[i]);
+                for(int i=0;i<bundle.names.length;i++)zipFile(out,bundle.names[i],bundle.files[i]);
             }
             if(zip.length()<=0)throw new IOException("Empty Windows export ZIP");
             return new ZipResult(zip,name,bundle.report);

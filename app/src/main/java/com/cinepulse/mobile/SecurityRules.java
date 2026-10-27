@@ -24,7 +24,7 @@ public final class SecurityRules {
         return s.length() > 45 ? s.substring(0,45).trim() : s;
     }
     public static boolean validDownloadUrl(String url, String projectId, String kind) {
-        if (!validUuid(projectId) || !kind.matches("export_json|english_mp3|urdu_mp3|source_srt") || url == null) return false;
+        if (!validUuid(projectId) || !kind.matches("export_json|windows_project_json|english_mp3|urdu_mp3|source_srt|english_srt|urdu_srt|english_narration|urdu_narration") || url == null) return false;
         try {
             URI uri = URI.create(url);
             URI base = URI.create(BASE);
@@ -39,6 +39,11 @@ public final class SecurityRules {
         switch(kind) {
             case "export_json": return "CinePulse_Project.json";
             case "source_srt": return "CinePulse_Source.srt";
+            case "windows_project_json": return "CinePulse_Project.json";
+            case "english_srt": return "CinePulse_English.srt";
+            case "urdu_srt": return "CinePulse_Urdu.srt";
+            case "english_narration": return "CinePulse_English_Narration.txt";
+            case "urdu_narration": return "CinePulse_Urdu_Narration.txt";
             case "english_mp3": return "CinePulse_English.mp3";
             case "urdu_mp3": return "CinePulse_Urdu.mp3";
             default: throw new IllegalArgumentException("Unexpected asset type");

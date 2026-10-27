@@ -156,10 +156,11 @@ final class VerifiedDownloads {
             JSONObject windows=new JSONObject(new String(
                 java.nio.file.Files.readAllBytes(files[0].toPath()),StandardCharsets.UTF_8));
             JSONObject provenance=windows.optJSONObject("cloudImport");
+            String schema=provenance==null?"":provenance.optString("schema","");
             if(provenance==null||
-                !"cinepulse.windows-server.v3".equals(provenance.optString("schema"))||
+                !("cinepulse.windows-muse.v4".equals(schema)||"cinepulse.windows-server.v3".equals(schema))||
                 !projectId.equals(provenance.optString("cloudProjectId")))
-                throw new SecurityException("Cloudflare Windows-native JSON identity/schema mismatch");
+                throw new SecurityException("Muse/Cloudflare Windows-native JSON identity/schema mismatch");
             JSONObject tracks=windows.optJSONObject("tracks");
             if(tracks==null||
                 tracks.optJSONObject("english")==null||
@@ -170,9 +171,10 @@ final class VerifiedDownloads {
                 tracks.getJSONObject("hindiUrdu").getJSONArray("cuts").length()==0)
                 throw new SecurityException("Cloudflare sent incomplete English or Urdu final cuts");
             return new RenderBundle(files,cleanup,
-                "SERVER VERIFIED: All 8 final assets already created by Cloudflare/Muse. "+
-                "Downloaded byte-for-byte, with original SHA-256 and one Windows-native JSON. "+
-                "The APK performs no cutting, timing allocation, transcription, or rewriting.",
+                "MUSE EDITS VERIFIED: Muse completed both full-length narration tracks, every source cut "+
+                "and the Windows ProjectState. Cloudflare validated and stored all eight assets. "+
+                "APK only checked signed links, file length, SHA-256, and project identity; "+
+                "no cutting, transcription, or project editing was performed on Android.",
                 BUNDLE_NAMES,true);
         }catch(Exception error){
             for(File file:cleanup)file.delete();

@@ -98,7 +98,7 @@ final class VerifiedDownloads {
     /**
      * On Android 10+ use MediaStore.Downloads with pending files, no storage permission.
      * Android 8/9 requires WRITE_EXTERNAL_STORAGE permission granted by the activity.
-     * All four primary files are verified BEFORE any user-visible output is created.
+     * All eight finalized Cloudflare assets are verified before publishing anything.
      */
     private static final String[] BUNDLE_NAMES={
         "CinePulse_Project.json", "CinePulse_Source.srt",
@@ -231,7 +231,7 @@ final class VerifiedDownloads {
                     if(!dest.createNewFile())throw new IOException("Cannot create "+bundle.names[i]);
                     createdFiles.add(dest);
                     try(OutputStream out=new FileOutputStream(dest)){copy(bundle.files[i],out);}
-                    progress.update("Saving "+(bundle.renderReady?"Windows-ready":"recovery")+" file "+(i+1)+"/"+bundle.names.length);
+                    progress.update("Saving signed Cloudflare media "+(i+1)+"/"+bundle.names.length);
                 }
             }
             return "Saved the 8 original Cloudflare-created Windows files to Downloads/CinePulse/"+
@@ -252,16 +252,6 @@ final class VerifiedDownloads {
         final String name;
         final String report;
         ZipResult(File file,String name,String report){this.file=file;this.name=name;this.report=report;}
-    }
-    private static double measuredMp3Seconds(File f){
-        MediaMetadataRetriever mmr=new MediaMetadataRetriever();
-        try{
-            mmr.setDataSource(f.getAbsolutePath());
-            String s=mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-            if(s==null)return -1;
-            return Math.max(-1,Double.parseDouble(s)/1000d);
-        }catch(Exception ignored){return -1;}
-        finally{try{mmr.release();}catch(Exception ignored){}}
     }
     private static void zipFile(ZipOutputStream out,String name,File f) throws IOException{
         out.putNextEntry(new ZipEntry(name));
@@ -306,7 +296,7 @@ final class VerifiedDownloads {
         }catch(Exception e){if(zip!=null)zip.delete();throw e;}
         finally{
             if(bundle!=null)bundle.cleanup();
-            if(originals!=null)for(File file:originals)if(file!=null)file.delete();
+
         }
     }
 

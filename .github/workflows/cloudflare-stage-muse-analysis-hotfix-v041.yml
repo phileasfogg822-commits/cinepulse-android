@@ -1,0 +1,82 @@
+name: Stage CinePulse Muse canonical analysis V0.4.1 (no live traffic)
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cloudflare-stage-muse-analysis-hotfix-v041.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-cloudflare-muse-v041
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      CURRENT_LIVE: 29775922-cb18-4ef0-aae7-5c6db1758056
+      WORKER: cinepulse-android-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Run complete existing tests and Peter Rabbit canonical analysis regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-fA-F0-9]{32}$ ]]
+          node --check src/index.mjs
+          node --check src/muse-production-contract.mjs
+          node --test tests/*.test.mjs
+          npm install --no-audit --no-fund
+          npx wrangler deploy --dry-run --outdir build
+      - name: Verify live production has not changed and D1/R2 are intact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage-proof
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 40 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/deployments" -o stage-proof/deployments.json
+          live=$(jq -r '.result.deployments[0].versions[]|select(.percentage==100)|.version_id' stage-proof/deployments.json)
+          [[ "$live" == "$CURRENT_LIVE" ]] || { echo "::error::Production version unexpectedly changed";exit 1; }
+          curl -fsS --max-time 40 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/settings" -o stage-proof/bindings.json
+          jq -e '.result.bindings|any(.name=="DB" and .type=="d1" and .id=="bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd")' stage-proof/bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="FILES" and .type=="r2_bucket" and .bucket_name=="cinepulse-android-assets")' stage-proof/bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="ADMIN_TOKEN" and .type=="secret_text")' stage-proof/bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="DOWNLOAD_SIGNING_KEY" and .type=="secret_text")' stage-proof/bindings.json >/dev/null
+          echo 'LIVE_D1_R2_AND_SECRETS_VERIFIED_UNMODIFIED'
+      - name: Upload inactive Worker and verify canonical Muse task API policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions upload --tag cinepulse-peter-rabbit-analysis-v041 --message "Expose exact previous Muse narrations/digest and field-specific Windows ProjectState rejection detail; keep existing task leases"
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 40 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/versions" -o stage-proof/versions.json
+          id=$(jq -r '.result.items[0].id // empty' stage-proof/versions.json)
+          test -n "$id" && [[ "$id" != "$CURRENT_LIVE" ]]
+          printf '%s\n' "$id" > stage-proof/version.txt
+          echo "PETER_RABBIT_HOTFIX_STAGED_VERSION=$id"
+          url="https://${id:0:8}-$WORKER.maryumblog.workers.dev/health"
+          observed=0
+          for attempt in $(seq 1 12);do
+            curl -fsS --max-time 30 "$url" -o stage-proof/preview.json || true
+            if jq -e '.status=="online" and .build=="android-cloud-backend-0.4.1-muse-project-canonical-analysis" and
+              .policy.museOwnsCuts==true and .policy.museAuthorsWindowsProject==true and
+              .policy.analysisReferenceOnWindowsTask==true and
+              .policy.museFailureDiagnostics=="exact_field_and_first_difference" and
+              .policy.serverCutAllocator==false and .policy.shorts==false and
+              .policy.virals==false and .policy.windowsAssetCount==8' stage-proof/preview.json >/dev/null 2>&1; then observed=1;break;fi
+            sleep 5
+          done
+          [[ "$observed" == 1 ]] || { echo '::error::Preview not ready';exit 1; }
+          echo 'HOTFIX_PREVIEW_PASSED_WITHOUT_PRODUCTION_DEPLOYMENT'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cinepulse-muse-v041-inactive-version
+          path: cloudflare/cinepulse-android/stage-proof/version.txt
+          retention-days: 5

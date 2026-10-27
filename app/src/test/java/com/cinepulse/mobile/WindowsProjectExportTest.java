@@ -189,6 +189,18 @@ public class WindowsProjectExportTest {
             assertTrue("Expected at least 80 unique cuts",cuts.length()>=80);
         }
     }
+    @Test public void recoveryPackageIsClearlyNotWindowsNativeAndKeepsAllOriginalMedia(){
+        String[] files=VerifiedDownloads.recoveryBundleNames();
+        assertEquals(9,files.length);
+        assertEquals("CinePulse_Original_Cloud_Project.json",files[0]);
+        assertEquals("CinePulse_English.mp3",files[2]);
+        assertEquals("CinePulse_Urdu.mp3",files[3]);
+        assertEquals("CinePulse_English.srt",files[4]);
+        assertEquals("CinePulse_Urdu.srt",files[5]);
+        assertEquals("EXPORT_REVIEW_REQUIRED.txt",files[8]);
+        assertFalse(files[0].equals(VerifiedDownloads.windowsBundleNames()[0]));
+    }
+
     @Test public void hasExactlyEightFilesWithOneNativeJson(){
         String[] names=VerifiedDownloads.windowsBundleNames();
         assertEquals(8,names.length);

@@ -106,8 +106,7 @@ async function taskDetail(env,job) {
   const kind=job.step_id==='srt_english'?'english_mp3':job.step_id==='srt_urdu'?'urdu_mp3':'source_srt';
   const assetPath=`/tasks/${job.id}/asset`;
   return {...publicJob(job),lease:job.lease,
-    prompt:policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):
-      policy.serverCuts&&job.step_id==='scene_matching'?promptFor('scene_matching'):job.prompt,
+    prompt:policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
     outputMode:policy.longForm?LONGFORM_MODE:'legacy',
     previousOutputs:context,inputAsset:{path:assetPath,name:kind==='source_srt'?'movie.srt':`${kind}.mp3`,mime:ASSET_TYPES[kind]},
     notice:policy.serverCuts?'Muse supplies movie scene matching. Cloudflare itself generates and validates all final English and Urdu footage cuts, creates all 8 signed Windows media assets, and stops before rendering. After returning a valid result, poll /agent/next.':'An authorized Muse worker must remain active and return valid task results.'};
@@ -158,8 +157,10 @@ async function uploadAudio(request,env,projectId,kind) {
   return {kind,bytes:size,sha256:claimedHash};
 }
 
-async function finalizeProject(env,project,manifest) {
+async function finalizeProject(env,project,manifest,{generatedByCloudflare=false}={}) {
   const policy=await projectPolicy(env,project.id);
+  if(policy.serverCuts&&!generatedByCloudflare)
+    fail(409,'Server-owned final cuts cannot be injected via manual finalize. Muse scene matching and Cloudflare timeline QA are required.');
   if(policy.longForm){
     // Never allow a manual finalize request to reactivate viral output for new movies.
     let metadata;try{metadata=normalizePublishingMetadata({metadata:manifest.metadata});}
@@ -251,7 +252,7 @@ async function autoFinalize(env,project){
       narrationSrts:{english:outputs.srt_english,urdu:outputs.srt_urdu},
       viralScenes:policy.longForm?[]:meta.viralScenes,metadata:policy.longForm?meta:meta.metadata,
       sceneMatches:Array.isArray(matches)?matches:matches.matches||[],cutPlan:cuts};
-    const finished=await finalizeProject(env,project,m);
+    const finished=await finalizeProject(env,project,m,{generatedByCloudflare:policy.serverCuts});
     if(policy.serverCuts&&finished.status==='ready'){
       // Audit record, not a Muse task: an already-finished server cut_plan job.
       const exists=await env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND step_id='cut_plan' LIMIT 1").bind(project.id).first();
@@ -263,7 +264,22 @@ async function autoFinalize(env,project){
     }
     return finished;
   }catch(error){
-    // Preserve the completed task. APK can show and repair malformed stage output.
+    // Automatically request better scene references from Muse when the
+    // timestamp allocator runs out of supported source footage. Never ask
+    // Android to patch missing scene decisions.
+    const policy=await projectPolicy(env,project.id);
+    if(policy.serverCuts){
+      const attempts=await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE project_id=? AND step_id='scene_matching'").bind(project.id).first();
+      if(Number(attempts?.n||0)<3){
+        const prompt=promptFor('scene_matching')+
+          '\nRETRY REQUIRED: Cloudflare rejected your previous matches: '+
+          String(error.message).slice(0,650)+
+          '\nProvide better non-overlapping movie source time windows for BOTH languages; do not repeat the same 13 narrow intervals. Do not generate a cut plan, Shorts or virals.';
+        await queueTask(env,project,'scene_matching',prompt);
+        return {status:'processing',nextStep:'scene_matching',retry:true,
+          message:'Cloudflare requested corrected Muse scene matching automatically: '+error.message};
+      }
+    }
     await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?").bind(nowSeconds(),project.id).run();
     return {status:'needs_review',message:error.message};
   }
@@ -419,6 +435,25 @@ async function route(request,env){
         if(job.step_id==='publishing_metadata'){
           let m;try{m=JSON.parse(output);}catch{fail(422,'Publishing metadata must be valid JSON');}
           try{normalizePublishingMetadata(m);}catch(error){fail(422,error.message);}
+        }
+        if(job.step_id==='scene_matching'){
+          const policy=await projectPolicy(env,job.project_id);
+          if(policy.serverCuts){
+            let scene;try{scene=JSON.parse(output);}catch{fail(422,'Muse scene matching must return valid JSON');}
+            const matches=Array.isArray(scene)?scene:scene?.matches;
+            if(!Array.isArray(matches)||matches.length===0||matches.length>2000)
+              fail(422,'Muse must provide a nonempty array of movie scene references');
+            // Stronger quality gate: both languages need at least one source/narration
+            // reference. Cloudflare may expand beyond these hints without overlaps.
+            for(const language of ['english','urdu']){
+              const found=matches.some(c=>c?.language===language &&
+                Number.isFinite(c.sourceStartSeconds)&&Number.isFinite(c.sourceEndSeconds)&&
+                c.sourceStartSeconds>=0&&c.sourceEndSeconds>c.sourceStartSeconds &&
+                Number.isFinite(c.narrationStartSeconds)&&Number.isFinite(c.narrationEndSeconds)&&
+                c.narrationStartSeconds>=0&&c.narrationEndSeconds>c.narrationStartSeconds);
+              if(!found)fail(422,'Muse must submit timed source/narration scene references for '+language+' before Cloudflare can finalize cuts');
+            }
+          }
         }
         if(job.step_id==='cut_plan'){
           let cuts;try{cuts=JSON.parse(output);}catch{fail(422,'Cut plan must be valid JSON');}

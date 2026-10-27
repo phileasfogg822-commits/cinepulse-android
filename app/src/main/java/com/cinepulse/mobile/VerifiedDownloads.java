@@ -390,12 +390,15 @@ final class VerifiedDownloads {
     static void writePackageZip(ZipOutputStream out,String[] names,File[] files) throws IOException {
         if(names==null||files==null||names.length!=files.length||names.length==0)
             throw new IOException("Bundle name/file count mismatch");
+        boolean review=java.util.Arrays.equals(names,RECOVERY_NAMES);
+        if(!review&&!java.util.Arrays.equals(names,BUNDLE_NAMES))
+            throw new IOException("Unrecognized Windows/recovery export manifest");
         java.util.HashSet<String> seen=new java.util.HashSet<>();
         for(int i=0;i<names.length;i++){
             String name=names[i];
             File file=files[i];
             if(name==null||name.isEmpty()||name.contains("/")||name.contains("\\")||
-                !seen.add(name)||file==null||!file.isFile()||file.length()<=0)
+                !seen.add(name)||file==null||!file.isFile()||(!review&&file.length()<=0))
                 throw new IOException("Incomplete or unsafe export entry: "+name);
             zipFile(out,name,file);
         }

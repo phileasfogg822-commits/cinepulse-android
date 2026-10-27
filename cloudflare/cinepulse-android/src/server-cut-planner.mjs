@@ -64,19 +64,21 @@ function sceneAnchors(matches,proposals,language,movieEnd){
 }
 const overlaps=(used,start,end)=>used.some(([lo,hi])=>start<hi-EPS&&end>lo+EPS);
 function allocateFromCues(cues,used,target,clip,limit,region){
-  // Search all source-subtitle timestamps starting close to the desired position.
-  // Different candidate offsets fit subtitles whose cues are farther apart than 5s.
-  const positions=[];
-  for(const cue of cues){
-    const around=[cue.start,round(cue.start-clip*.5),round(cue.start-clip)];
-    for(const pos of around){
+  // Ordered binary walk: nearest actual source-SRT cue first. This stays fast
+  // for thousands of original cues and hundreds of final clips on Workers.
+  let lo=0,hi=cues.length;
+  while(lo<hi){const mid=(lo+hi)>>1;if(cues[mid].start<target)lo=mid+1;else hi=mid;}
+  let left=lo-1,right=lo;
+  while(left>=0||right<cues.length){
+    const chooseLeft=left>=0&&(right>=cues.length ||
+      Math.abs(cues[left].start-target)<=Math.abs(cues[right].start-target));
+    const cue=cues[chooseLeft?left--:right++];
+    for(const pos of [round(cue.start),round(cue.start-clip*.5),round(cue.start-clip)]){
       if(pos<0||pos+clip>limit+EPS)continue;
       if(region&&(pos<region[0]-12||pos+clip>region[1]+12))continue;
-      positions.push({start:pos,distance:Math.abs(pos-target)});
+      if(!overlaps(used,pos,pos+clip))return pos;
     }
   }
-  positions.sort((a,b)=>a.distance-b.distance);
-  for(const {start} of positions)if(!overlaps(used,start,start+clip))return start;
   return -1;
 }
 function trackCuts({sourceSrt,cues,movieEnd,narrationSrt,sceneMatches,proposedCuts,language}){

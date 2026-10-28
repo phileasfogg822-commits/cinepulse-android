@@ -25,9 +25,31 @@ final class CloudApi {
             return out.toString(StandardCharsets.UTF_8.name());
         }
     }
+    /**
+     * Restrict API calls to our own v1 routes. The Windows download endpoint
+     * deliberately uses ?format=windows to request all eight server-generated
+     * assets. That query string must NOT be mistaken for an untrusted route.
+     * Allow exactly that format, not arbitrary parameters or redirect targets.
+     */
+    static boolean validApiRoute(String route) {
+        if(route==null || !route.startsWith("/v1/") || route.contains("..")
+                || route.indexOf('#')>=0 || route.indexOf('\\\\')>=0
+                || route.contains("//") || route.indexOf('%')>=0
+                || route.indexOf('\r')>=0 || route.indexOf('\n')>=0)
+            return false;
+        int question=route.indexOf('?');
+        if(question<0)return true;
+        if(route.startsWith("/v1/jobs?"))
+            return route.matches("^/v1/jobs\\?workerId=[0-9a-fA-F-]{36}$") &&
+                SecurityRules.validUuid(route.substring("/v1/jobs?workerId=".length()));
+        String prefix="/v1/projects/";
+        String suffix="/downloads?format=windows";
+        if(!route.startsWith(prefix)||!route.endsWith(suffix))return false;
+        String projectId=route.substring(prefix.length(),route.length()-suffix.length());
+        return SecurityRules.validUuid(projectId);
+    }
     JSONObject call(String method,String route,JSONObject body) throws Exception {
-        if(!route.startsWith("/v1/") || route.contains("..") || route.contains("?") && !route.startsWith("/v1/jobs?"))
-            throw new SecurityException("Unexpected API route");
+        if(!validApiRoute(route))throw new SecurityException("Unexpected API route");
         URL url=new URL(SecurityRules.BASE + route);
         HttpURLConnection conn=(HttpURLConnection)url.openConnection();
         conn.setInstanceFollowRedirects(false);

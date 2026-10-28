@@ -3,7 +3,7 @@ import { LONGFORM_MODE, LONGFORM_MARKER, isLongFormCreateRequest, normalizePubli
 import { allocateFinalLongFormCuts } from './server-cut-planner.mjs';
 import { buildWindowsProject, WINDOWS_FILE_KINDS, WINDOWS_FILE_NAMES } from './windows-export.mjs';
 import { MUSE_V4_MARKER, MUSE_V4_STAGES, museStageInstructions, verifyMuseWindowsProject, canonicalMuseAnalysis } from './muse-production-contract.mjs';
-import { assetRow,registerAsset,allAssetKeys,allAssetMetadata,storageTotals,ensureWindowsAssets } from './asset-registry.mjs';
+import { assetRow,registerAsset,assetTableFor,allAssetKeys,allAssetMetadata,storageTotals,ensureWindowsAssets } from './asset-registry.mjs';
 
 // Legacy projects continue through their original stages. New projects use metadata only.
 const STAGES = ['digest','narration_english','narration_urdu','viral_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
@@ -141,8 +141,9 @@ async function taskDetail(env,job) {
 }
 async function putR2(env,projectId,kind,bytes) {
   const key=objectKey(projectId,kind);const digest=await sha256(bytes);const time=nowSeconds();
-  // Fail before writing R2 if supplemental D1 storage cannot be initialized.
-  await ensureWindowsAssets(env);
+  // Only the five new Windows kinds need the supplemental schema.
+  // Legacy four-kind writes never depend on D1 migration availability.
+  if(assetTableFor(kind)==='windows_assets')await ensureWindowsAssets(env);
   await env.FILES.put(key,bytes,{httpMetadata:{contentType:ASSET_TYPES[kind]},customMetadata:{projectId,kind,sha256:digest}});
   await registerAsset(env,{projectId,kind,key,bytes:bytes.byteLength,hash:digest,time});
   await logDaily(env,{uploaded_bytes:bytes.byteLength});

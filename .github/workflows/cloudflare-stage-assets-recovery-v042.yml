@@ -1,0 +1,86 @@
+name: Stage CinePulse v0.4.2 safe D1 eight-file storage and accepted-output repair
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cloudflare-stage-assets-recovery-v042.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-cloudflare-assets-v042
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      OLD_VERSION: 348d9d19-5fb3-4a73-8934-587a7c9ad272
+      WORKER: cinepulse-android-bridge
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Validate existing MP3 assets and supplemental SQLite table compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]]
+          node --check src/index.mjs
+          node --check src/asset-registry.mjs
+          node --test tests/*.test.mjs
+          python3 tests/d1-sqlite-schema.test.py
+          npm install --no-audit --no-fund
+          npx wrangler deploy --dry-run --outdir build-safely
+          node -e 'const c=require("./wrangler.json");if(c.name!=="cinepulse-android-bridge"||!c.keep_vars||c.d1_databases[0].database_name!=="cinepulse-android-db"||c.r2_buckets[0].bucket_name!=="cinepulse-android-assets")process.exit(1)'
+          echo 'SQLITE_AND_MUSE_EXPORT_TESTS_PASSED'
+      - name: Ensure live version and D1/R2/secret bindings are unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p proof
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/deployments" -o proof/deployments.json
+          current=$(jq -r '.result.deployments[0].versions[]|select(.percentage==100)|.version_id' proof/deployments.json)
+          [[ "$current" == "$OLD_VERSION" ]] || { echo "::error::Production changed, refusing to stage";exit 1; }
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/settings" -o proof/settings.json
+          jq -e '.result.bindings|any(.name=="DB" and .type=="d1" and .id=="bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd")' proof/settings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="FILES" and .type=="r2_bucket" and .bucket_name=="cinepulse-android-assets")' proof/settings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="ADMIN_TOKEN" and .type=="secret_text")' proof/settings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="DOWNLOAD_SIGNING_KEY" and .type=="secret_text")' proof/settings.json >/dev/null
+          echo 'LIVE_BINDINGS_AND_PREVIOUS_DEPLOYMENT_VERIFIED'
+      - name: Upload inactive safe D1 Windows assets version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions upload --tag cinepulse-d1-windows-assets-v042 --message "Fix 4-kind D1 CHECK by separate 5-kind Windows asset registry; re-finalize accepted Muse tasks only"
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/versions" -o proof/versions.json
+          new=$(jq -r '.result.items[0].id // empty' proof/versions.json)
+          test -n "$new" && [[ "$new" != "$OLD_VERSION" ]]
+          printf '%s\n' "$new" > proof/new-version.txt
+          echo "D1_WINDOWS_ASSETS_INACTIVE_VERSION=$new"
+          url="https://${new:0:8}-$WORKER.maryumblog.workers.dev/health"
+          healthy=0
+          for n in $(seq 1 15);do
+            curl -fsS --max-time 40 "$url" -o proof/preview-health.json || true
+            if jq -e '.status=="online" and .build=="android-cloud-backend-0.4.2-d1-windows-assets-recovery" and
+              .policy.museOwnsCuts==true and .policy.museAuthorsWindowsProject==true and
+              .policy.serverCutAllocator==false and .policy.shorts==false and .policy.virals==false and
+              .policy.d1WindowsAssetTable=="windows_assets" and .policy.legacyAssetSchemaPreserved==true and
+              .policy.completedJobRepair==true and .policy.windowsAssetCount==8' proof/preview-health.json >/dev/null 2>&1;then
+              healthy=1;break
+            fi
+            sleep 5
+          done
+          [[ "$healthy" == 1 ]] || { echo '::error::v0.4.2 preview health mismatch';exit 1; }
+          echo 'SAFE_D1_WINDOWS_PREVIEW_VERIFIED_NO_PRODUCTION_CHANGE'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cinepulse-v042-inactive-version
+          path: cloudflare/cinepulse-android/proof/new-version.txt
+          retention-days: 7

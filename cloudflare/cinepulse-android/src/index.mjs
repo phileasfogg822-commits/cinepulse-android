@@ -256,11 +256,23 @@ async function finalizeProject(env,project,manifest,{generatedByCloudflare=false
       if(!bytes.byteLength||bytes.byteLength>10*1024*1024)fail(413,'Invalid generated '+kind+' size');
       await putR2(env,project.id,kind,bytes);
     }
+    // Readiness means all EIGHT requested files exist physically in R2 and
+    // each D1 registry points to a file of the advertised byte count.
+    // Do not mark a movie ready on metadata alone.
     for(const kind of WINDOWS_FILE_KINDS){
-      if(!await assetByKind(env,project.id,kind))fail(500,'Missing generated Windows asset: '+kind);
+      const row=await assetByKind(env,project.id,kind);
+      if(!row||!row.r2_key||!Number.isSafeInteger(Number(row.bytes))||Number(row.bytes)<1)
+        fail(500,'Missing generated Windows asset: '+kind);
+      const object=await env.FILES.head(row.r2_key);
+      if(!object||object.size!==Number(row.bytes))
+        fail(500,'Windows asset was not stored completely in R2: '+kind);
     }
   }
   await env.DB.prepare("UPDATE projects SET status='ready',ready_at=COALESCE(ready_at,?),export_key=?,updated_at=? WHERE id=?").bind(nowSeconds(),objectKey(project.id,'export_json'),nowSeconds(),project.id).run();
+  // A successful idempotent replay clears stale finalization errors without
+  // modifying the Muse-produced result or reopening the completed task.
+  await env.DB.prepare("UPDATE jobs SET error=NULL WHERE project_id=? AND status='done' AND step_id=?")
+    .bind(project.id,policy.stages[policy.stages.length-1]).run();
   return {status:'ready',files:[fileNames.export_json,fileNames.english_mp3,fileNames.urdu_mp3]};
 }
 async function autoFinalize(env,project){
@@ -320,9 +332,59 @@ async function autoFinalize(env,project){
           message:'Cloudflare requested corrected Muse scene matching automatically: '+error.message};
       }
     }
-    await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?").bind(nowSeconds(),project.id).run();
+    // Preserve full Muse outputs for retry; the accepted job stays DONE.
+    // Store a concise diagnostic, throttling repeated retries on app polls.
+    await env.DB.batch([
+      env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?").bind(nowSeconds(),project.id),
+      env.DB.prepare("UPDATE jobs SET error=? WHERE project_id=? AND status='done' AND step_id=?")
+        .bind(String(error?.message||'Finalization failed').slice(0,850),project.id,policy.stages[policy.stages.length-1])
+    ]);
     return {status:'needs_review',message:error.message};
   }
+}
+/**
+ * Recovery operates ONLY on previously accepted Muse work:
+ * - project must be needs_review
+ * - its final windows_project job must already be DONE
+ * - no queued/working/error tasks remain
+ * - no new Muse tasks, audio generation or cut calculation is requested.
+ * Caller is an authenticated administrator; retry is idempotent.
+ */
+async function recoverAcceptedFinalization(env,project){
+  if(project.status!=='needs_review')return {attempted:false,reason:'not_needs_review'};
+  if(project.expires_at&&project.expires_at<=nowSeconds())
+    return {attempted:false,reason:'expired'};
+  const policy=await projectPolicy(env,project.id);
+  if(!policy.museOwnsCuts&&!policy.serverCuts)
+    return {attempted:false,reason:'not_server_windows_package'};
+  const finalStep=policy.stages[policy.stages.length-1];
+  const [finalJob,incomplete]=await Promise.all([
+    env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND step_id=? AND status='done' LIMIT 1")
+      .bind(project.id,finalStep).first(),
+    env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND status IN ('queued','working','error') LIMIT 1")
+      .bind(project.id).first()
+  ]);
+  if(!finalJob||incomplete)
+    return {attempted:false,reason:'Muse_final_task_not_fully_accepted'};
+  const result=await autoFinalize(env,project);
+  return {attempted:true,status:result.status,message:result.message||null};
+}
+async function recoverOneCompletedProject(env,workerId=null){
+  // Bounded: never regenerate unrelated movies or scan task payloads.
+  const rows=workerId?
+    await env.DB.prepare("SELECT * FROM projects WHERE worker_id=? AND status='needs_review' AND updated_at<? ORDER BY updated_at ASC LIMIT 3")
+      .bind(workerId,nowSeconds()-30).all():
+    await env.DB.prepare("SELECT * FROM projects WHERE status='needs_review' AND updated_at<? ORDER BY updated_at ASC LIMIT 3")
+      .bind(nowSeconds()-30).all();
+  for(const candidate of rows.results||[]){
+    try{
+      const recovered=await recoverAcceptedFinalization(env,candidate);
+      if(recovered.attempted)return {projectId:candidate.id,...recovered};
+    }catch(e){
+      console.error('CinePulse accepted-output recovery failed',candidate.id,String(e?.message||e));
+    }
+  }
+  return {attempted:false};
 }
 async function advancePipeline(env,job){
   const policy=await projectPolicy(env,job.project_id);
@@ -640,16 +702,28 @@ async function route(request,env){
         finalCutOwner:'muse',windowsProjectOwner:'muse',windowsAssets:8,shorts:false,virals:false}},201);
   }
   if(method==='GET'&&url.pathname==='/v1/projects'){
+    // Admin authenticated listing is also the safe self-heal opportunity for
+    // accepted final jobs stuck at storage registration. At most one per poll.
+    const recovery=await recoverOneCompletedProject(env);
     const rows=await env.DB.prepare('SELECT * FROM projects ORDER BY created_at DESC LIMIT 200').all();
-    return json({projects:(rows.results||[]).map(publicProject)});
+    return json({projects:(rows.results||[]).map(publicProject),
+      ...(recovery.attempted?{finalizationRecovery:recovery}:{})});
   }
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
     if(method==='GET'&&!action){
+      const recovery=project.status==='needs_review'&&project.updated_at<nowSeconds()-30?
+        await recoverAcceptedFinalization(env,project):{attempted:false};
+      const updated=recovery.attempted?await getProject(env,pid):project;
       const rows=await env.DB.prepare('SELECT * FROM jobs WHERE project_id=? ORDER BY created_at').bind(pid).all();
       const assetRows=await allAssetMetadata(env,pid);
-      return json({project:publicProject(project),jobs:(rows.results||[]).map(publicJob),assets:assetRows});
+      return json({project:publicProject(updated),jobs:(rows.results||[]).map(publicJob),
+        assets:assetRows,...(recovery.attempted?{finalizationRecovery:recovery}:{})});
+    }
+    if(method==='POST'&&action==='repair-finalization'){
+      const result=await recoverAcceptedFinalization(env,project);
+      return json({project:publicProject(await getProject(env,pid)),recovery:result});
     }
     if(method==='DELETE'&&!action){await removeProject(env,pid);return json({deleted:true,id:pid,notice:'All project files and tasks removed; this cannot be undone'});}
     if(method==='POST'&&action==='finalize'){

@@ -1,0 +1,44 @@
+name: CinePulse D1 read-only assets schema and Peter Rabbit status inspection
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cinepulse-d1-schema-inspect.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Read-only inspect D1 metadata, do NOT expose MP3s, narrations or private task outputs
+        working-directory: cloudflare/cinepulse-android
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          npm install --no-audit --no-fund
+          query() {
+            local sql="$1" name="$2"
+            if ! npx wrangler d1 execute cinepulse-android-db --remote --json --command "$sql" > "$name.json" 2> "$name.err";then
+              echo "::warning::D1 read-only query $name unavailable: $(tail -c 800 "$name.err")"
+              exit 2
+            fi
+          }
+          query "SELECT name, sql FROM sqlite_master WHERE type IN ('table','index','trigger') AND name LIKE 'assets%'" assets_schema
+          query "PRAGMA table_info(assets)" assets_columns
+          query "PRAGMA foreign_key_list(assets)" assets_fkeys
+          query "PRAGMA index_list(assets)" assets_indexes
+          query "SELECT status, count(*) AS n FROM projects GROUP BY status" project_status_counts
+          query "SELECT id,title,status,ready_at,export_key FROM projects WHERE id='df5e65e3-bb54-4908-b973-04c4dd89234e'" peter_project
+          query "SELECT step_id,status,COUNT(*) AS n FROM jobs WHERE project_id='df5e65e3-bb54-4908-b973-04c4dd89234e' GROUP BY step_id,status" peter_jobs
+          query "SELECT kind,bytes FROM assets WHERE project_id='df5e65e3-bb54-4908-b973-04c4dd89234e'" peter_assets
+          for name in assets_schema assets_columns assets_fkeys assets_indexes project_status_counts peter_project peter_jobs peter_assets; do
+            echo "== $name =="; cat "$name.json" | head -c 8000; echo
+          done
+          echo 'D1_READ_ONLY_INSPECTION_COMPLETE'

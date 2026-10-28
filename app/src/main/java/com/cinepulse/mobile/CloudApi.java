@@ -33,7 +33,7 @@ final class CloudApi {
      */
     static boolean validApiRoute(String route) {
         if(route==null || !route.startsWith("/v1/") || route.contains("..")
-                || route.indexOf('#')>=0 || route.indexOf('\\\\')>=0
+                || route.indexOf('#')>=0 || route.indexOf('\\')>=0
                 || route.contains("//") || route.indexOf('%')>=0
                 || route.indexOf('\r')>=0 || route.indexOf('\n')>=0)
             return false;

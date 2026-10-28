@@ -1,0 +1,105 @@
+name: Deploy CinePulse v0.4.2 D1 8-file storage fix and accepted Muse recovery
+on:
+  push:
+    branches: ['ops/cloudflare-deploy-bridge']
+    paths: ['.github/workflows/cloudflare-promote-assets-recovery-v042.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-cloudflare-assets-v042
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      PREVIOUS_VERSION: 348d9d19-5fb3-4a73-8934-587a7c9ad272
+      STAGED_VERSION: 2c824535-f97e-4906-8b77-b1a6c55f845d
+      WORKER: cinepulse-android-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Recheck all Muse, D1, R2 and Windows package tests before promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]]
+          node --check src/index.mjs
+          node --test tests/*.test.mjs
+          python3 tests/d1-sqlite-schema.test.py
+          npm install --no-audit --no-fund
+      - name: Guard current production version and preserve old bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 50 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/deployments" -o prior.json
+          current=$(jq -r '.result.deployments[0].versions[]|select(.percentage==100)|.version_id' prior.json)
+          [[ "$current" == "$PREVIOUS_VERSION" ]] || { echo "::error::Unexpected production Worker version $current. Stop.";exit 1; }
+          curl -fsS --max-time 50 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/versions" -o available.json
+          jq -e --arg id "$STAGED_VERSION" '.result.items|any(.id==$id)' available.json >/dev/null
+          curl -fsS --max-time 40 "https://2c824535-$WORKER.maryumblog.workers.dev/health" -o inactive-health.json
+          jq -e '.status=="online" and .build=="android-cloud-backend-0.4.2-d1-windows-assets-recovery" and
+            .policy.museOwnsCuts==true and .policy.museAuthorsWindowsProject==true and
+            .policy.serverCutAllocator==false and .policy.shorts==false and .policy.virals==false and
+            .policy.d1WindowsAssetTable=="windows_assets" and
+            .policy.legacyAssetSchemaPreserved==true and .policy.completedJobRepair==true and
+            .policy.windowsAssetCount==8' inactive-health.json >/dev/null
+          echo 'CINEPULSE_D1_4_KIND_CONSTRAINT_SAFETY_VERIFIED'
+      - name: Promote tested version to production
+        id: promote
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "$STAGED_VERSION@100%" --name "$WORKER" --yes \
+            --message "Fix D1 4-kind CHECK via independent windows_assets table; retain Muse outputs; replay accepted Peter Rabbit finalization."
+          echo 'CINEPULSE_D1_STORAGE_HOTFIX_PROMOTED'
+      - name: Verify production endpoint, secret bindings and new-version identity
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          observed=0
+          for attempt in $(seq 1 20);do
+            curl -fsS --max-time 35 "https://$WORKER.maryumblog.workers.dev/health" -o live-health.json || true
+            if jq -e '.status=="online" and
+              .build=="android-cloud-backend-0.4.2-d1-windows-assets-recovery" and
+              .policy.museOwnsCuts==true and .policy.museAuthorsWindowsProject==true and
+              .policy.serverCutAllocator==false and .policy.shorts==false and .policy.virals==false and
+              .policy.d1WindowsAssetTable=="windows_assets" and .policy.legacyAssetSchemaPreserved==true and
+              .policy.completedJobRepair==true and .policy.windowsAssetCount==8 and
+              .policy.legacyJobsPreserved==true' live-health.json >/dev/null 2>&1;then
+              observed=1;break
+            fi
+            echo "Awaiting Cloudflare edge update $attempt/20"
+            sleep 5
+          done
+          [[ "$observed" == 1 ]] || { echo '::error::New Worker health never propagated';exit 1; }
+          root="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER"
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/deployments" -o live-deploy.json
+          current=$(jq -r '.result.deployments[0].versions[]|select(.percentage==100)|.version_id' live-deploy.json)
+          [[ "$current" == "$STAGED_VERSION" ]] || { echo "::error::Wrong production version";exit 1; }
+          curl -fsS --max-time 45 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$root/settings" -o bindings.json
+          jq -e '.result.bindings|any(.name=="DB" and .type=="d1" and .id=="bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd")' bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="FILES" and .type=="r2_bucket" and .bucket_name=="cinepulse-android-assets")' bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="ADMIN_TOKEN" and .type=="secret_text")' bindings.json >/dev/null
+          jq -e '.result.bindings|any(.name=="DOWNLOAD_SIGNING_KEY" and .type=="secret_text")' bindings.json >/dev/null
+          echo "CINEPULSE_D1_WINDOWS_EIGHT_FILE_FIX_LIVE_VERSION=$STAGED_VERSION"
+          echo 'MUSE_AUTHORED_CUTS_AND_JSON_UNCHANGED'
+          echo 'D1_R2_AND_ADMIN_SECRETS_PRESERVED'
+          echo 'ADMIN_AUTHENTICATED_PROJECT_POLL_WILL_RETRY_ACCEPTED_WINDOWS_PROJECTS'
+      - name: Restore previous Worker automatically if validation fails
+        if: failure() && steps.promote.outcome == 'success' && steps.verify.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "$PREVIOUS_VERSION@100%" --name "$WORKER" --yes \
+            --message "Rollback CinePulse D1 Windows storage fix after failed live health validation"
+          echo 'PREVIOUS_CINEPULSE_WORKER_RESTORED'

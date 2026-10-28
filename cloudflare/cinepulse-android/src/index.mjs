@@ -3,13 +3,14 @@ import { LONGFORM_MODE, LONGFORM_MARKER, isLongFormCreateRequest, normalizePubli
 import { allocateFinalLongFormCuts } from './server-cut-planner.mjs';
 import { buildWindowsProject, WINDOWS_FILE_KINDS, WINDOWS_FILE_NAMES } from './windows-export.mjs';
 import { MUSE_V4_MARKER, MUSE_V4_STAGES, museStageInstructions, verifyMuseWindowsProject, canonicalMuseAnalysis } from './muse-production-contract.mjs';
+import { assetRow,registerAsset,allAssetKeys,allAssetMetadata,storageTotals,ensureWindowsAssets } from './asset-registry.mjs';
 
 // Legacy projects continue through their original stages. New projects use metadata only.
 const STAGES = ['digest','narration_english','narration_urdu','viral_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
 const LONGFORM_STAGES = ['digest','narration_english','narration_urdu','publishing_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
 const LONGFORM_STAGES_V3 = LONGFORM_STAGES.filter(step=>step!=='cut_plan');
 const LONGFORM_MARKER_V3='[CINEPULSE-LONGFORM-V3-SERVER-CUTS]';
-const LONGFORM_BUILD = 'android-cloud-backend-0.4.1-muse-project-canonical-analysis';
+const LONGFORM_BUILD = 'android-cloud-backend-0.4.2-d1-windows-assets-recovery';
 async function projectPolicy(env,projectId){
   // No D1 migration: distinguish new and legacy projects by the durable digest job prompt.
   const row=await env.DB.prepare("SELECT prompt FROM jobs WHERE project_id=? AND step_id='digest' ORDER BY created_at ASC LIMIT 1").bind(projectId).first();
@@ -60,7 +61,7 @@ const publicWorker=w=>({id:w.id,label:w.label,movieTitle:w.movie_title,enabled:!
 const publicProject=p=>({id:p.id,workerId:p.worker_id,title:p.title,status:p.status,retentionHours:p.retention_hours,createdAt:p.created_at,readyAt:p.ready_at,firstDownloadedAt:p.first_downloaded_at,expiresAt:p.expires_at});
 const publicJob=j=>({id:j.id,workerId:j.worker_id,projectId:j.project_id,stepId:j.step_id,status:j.status,createdAt:j.created_at,finishedAt:j.finished_at,leaseUntil:j.lease_until,error:j.error||null});
 const objectKey=(projectId,kind)=>`projects/${projectId}/${kind}`;
-async function assetByKind(env,projectId,kind){return env.DB.prepare('SELECT * FROM assets WHERE project_id=? AND kind=?').bind(projectId,kind).first();}
+async function assetByKind(env,projectId,kind){return assetRow(env,projectId,kind);}
 async function logDaily(env,delta) {
   // Writes ONLY for mutation/download events; no D1 writes for empty Muse polls.
   const names=['projects_created','jobs_created','jobs_completed','uploaded_bytes','downloads','deleted_projects'];
@@ -140,8 +141,10 @@ async function taskDetail(env,job) {
 }
 async function putR2(env,projectId,kind,bytes) {
   const key=objectKey(projectId,kind);const digest=await sha256(bytes);const time=nowSeconds();
+  // Fail before writing R2 if supplemental D1 storage cannot be initialized.
+  await ensureWindowsAssets(env);
   await env.FILES.put(key,bytes,{httpMetadata:{contentType:ASSET_TYPES[kind]},customMetadata:{projectId,kind,sha256:digest}});
-  await env.DB.prepare('INSERT INTO assets(project_id,kind,r2_key,bytes,sha256,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,kind) DO UPDATE SET r2_key=excluded.r2_key, bytes=excluded.bytes, sha256=excluded.sha256,created_at=excluded.created_at').bind(projectId,kind,key,bytes.byteLength,digest,time).run();
+  await registerAsset(env,{projectId,kind,key,bytes:bytes.byteLength,hash:digest,time});
   await logDaily(env,{uploaded_bytes:bytes.byteLength});
   await env.DB.prepare('UPDATE projects SET updated_at=? WHERE id=?').bind(nowSeconds(),projectId).run();
   return {kind,bytes:bytes.byteLength,sha256:digest};
@@ -373,10 +376,11 @@ async function removeProject(env,pid){
   const project=await getProject(env,pid);
   const busy=await env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND status='working' LIMIT 1").bind(pid).first();
   if(busy)fail(409,'Project has an active Muse lease; wait until it completes or expires');
-  const rows=await env.DB.prepare('SELECT r2_key FROM assets WHERE project_id=?').bind(pid).all();
+  const rows=await allAssetKeys(env,pid);
   // Deletes are idempotent. If R2 fails, D1 remains intact for safe retry.
-  for(const a of rows.results||[])await env.FILES.delete(a.r2_key);
+  for(const a of rows)await env.FILES.delete(a.r2_key);
   await env.DB.batch([
+    env.DB.prepare('DELETE FROM windows_assets WHERE project_id=?').bind(pid),
     env.DB.prepare('DELETE FROM assets WHERE project_id=?').bind(pid),
     env.DB.prepare('DELETE FROM jobs WHERE project_id=?').bind(pid),
     env.DB.prepare('DELETE FROM projects WHERE id=?').bind(pid)
@@ -396,7 +400,8 @@ async function route(request,env){
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
     policy:{newMovies:'long_form_only',shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
-      analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
+      analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
+      d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   if(method==='GET'&&parts[1]==='dl'&&parts.length===4)return download(request,env,parts,url);
   if(parts[1]==='w'&&parts.length>=4){
     const wid=parts[2],worker=await authWorker(request,env,wid);
@@ -643,8 +648,8 @@ async function route(request,env){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
     if(method==='GET'&&!action){
       const rows=await env.DB.prepare('SELECT * FROM jobs WHERE project_id=? ORDER BY created_at').bind(pid).all();
-      const assetRows=await env.DB.prepare('SELECT kind,bytes,sha256 FROM assets WHERE project_id=?').bind(pid).all();
-      return json({project:publicProject(project),jobs:(rows.results||[]).map(publicJob),assets:assetRows.results||[]});
+      const assetRows=await allAssetMetadata(env,pid);
+      return json({project:publicProject(project),jobs:(rows.results||[]).map(publicJob),assets:assetRows});
     }
     if(method==='DELETE'&&!action){await removeProject(env,pid);return json({deleted:true,id:pid,notice:'All project files and tasks removed; this cannot be undone'});}
     if(method==='POST'&&action==='finalize'){
@@ -686,7 +691,7 @@ async function route(request,env){
     if(!/^\d{4}-\d{2}-\d{2}$/.test(date))fail(400,'date must be YYYY-MM-DD');
     const [daily,storage,projectStats]=await Promise.all([
       env.DB.prepare('SELECT * FROM usage_daily WHERE day=?').bind(date).first(),
-      env.DB.prepare('SELECT COALESCE(SUM(bytes),0) AS total_bytes,COUNT(*) AS objects FROM assets').first(),
+      storageTotals(env),
       env.DB.prepare('SELECT COUNT(*) AS projects FROM projects').first()
     ]);
     return json({day:date,appEvents:daily||{day:date,projects_created:0,jobs_created:0,jobs_completed:0,uploaded_bytes:0,downloads:0,deleted_projects:0},

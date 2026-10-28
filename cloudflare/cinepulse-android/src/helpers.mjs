@@ -1,4 +1,4 @@
-export const API_BUILD = 'android-cloud-backend-0.3.0-server-cuts-eight-files';
+export const API_BUILD = 'android-cloud-backend-0.4.2-d1-windows-assets-recovery';
 export const MAX_NAME = 160;
 export const MAX_JOB_CHARS = 300_000;
 export const kinds = new Set(['source_srt','english_mp3','urdu_mp3','export_json','windows_project_json','english_srt','urdu_srt','english_narration','urdu_narration']);

@@ -4,6 +4,8 @@ import { allocateFinalLongFormCuts } from './server-cut-planner.mjs';
 import { buildWindowsProject, WINDOWS_FILE_KINDS, WINDOWS_FILE_NAMES } from './windows-export.mjs';
 import { MUSE_V4_MARKER, MUSE_V4_STAGES, museStageInstructions, verifyMuseWindowsProject, canonicalMuseAnalysis } from './muse-production-contract.mjs';
 import { assetRow,registerAsset,assetTableFor,allAssetKeys,allAssetMetadata,storageTotals,ensureWindowsAssets } from './asset-registry.mjs';
+import { EXPERIMENT_JOB_MARKER,EXPERIMENT_JOB_STAGES,experimentalQueuePrompt } from './experimental-muse-instructions.mjs';
+import { createExperimentIndex,experimentalSourceInfo,validateSceneIntelligenceOutput,storeExperimentAsset,experimentalAssetRow,isExperimentAssetKind,EXPERIMENT_ASSET_NAMES,ensureExperimentTables,experimentR2Key } from './experimental-bridge-runtime.mjs';
 
 // Legacy projects continue through their original stages. New projects use metadata only.
 const STAGES = ['digest','narration_english','narration_urdu','viral_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
@@ -15,16 +17,18 @@ async function projectPolicy(env,projectId){
   // No D1 migration: distinguish new and legacy projects by the durable digest job prompt.
   const row=await env.DB.prepare("SELECT prompt FROM jobs WHERE project_id=? AND step_id='digest' ORDER BY created_at ASC LIMIT 1").bind(projectId).first();
   const prompt=String(row?.prompt||'');
-  const museOwnsCuts=prompt.startsWith(MUSE_V4_MARKER);
+  const experiment=prompt.startsWith(EXPERIMENT_JOB_MARKER);
+  const museOwnsCuts=experiment||prompt.startsWith(MUSE_V4_MARKER);
   const serverCuts=prompt.startsWith(LONGFORM_MARKER_V3);
   const longForm=museOwnsCuts||serverCuts||prompt.startsWith(LONGFORM_MARKER);
   const targetMinutes=longForm ? Number(/targetMinutes=(\d+)/.exec(prompt)?.[1]||10) : null;
-  return {longForm,serverCuts,museOwnsCuts,targetMinutes,
-    stages:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
+  return {longForm,serverCuts,museOwnsCuts,experiment,targetMinutes,
+    stages:experiment?EXPERIMENT_JOB_STAGES:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
 }
 
 const ASSET_TYPES = {
   source_srt:'application/x-subrip',english_mp3:'audio/mpeg',urdu_mp3:'audio/mpeg',
+  scene_index_sqlite:'application/vnd.sqlite3',english_final_cuts:'application/json',urdu_final_cuts:'application/json',
   export_json:'application/json',windows_project_json:'application/json',
   english_srt:'application/x-subrip',urdu_srt:'application/x-subrip',
   english_narration:'text/plain; charset=utf-8',urdu_narration:'text/plain; charset=utf-8'
@@ -61,7 +65,7 @@ const publicWorker=w=>({id:w.id,label:w.label,movieTitle:w.movie_title,enabled:!
 const publicProject=p=>({id:p.id,workerId:p.worker_id,title:p.title,status:p.status,retentionHours:p.retention_hours,createdAt:p.created_at,readyAt:p.ready_at,firstDownloadedAt:p.first_downloaded_at,expiresAt:p.expires_at});
 const publicJob=j=>({id:j.id,workerId:j.worker_id,projectId:j.project_id,stepId:j.step_id,status:j.status,createdAt:j.created_at,finishedAt:j.finished_at,leaseUntil:j.lease_until,error:j.error||null});
 const objectKey=(projectId,kind)=>`projects/${projectId}/${kind}`;
-async function assetByKind(env,projectId,kind){return assetRow(env,projectId,kind);}
+async function assetByKind(env,projectId,kind){return isExperimentAssetKind(kind)?experimentalAssetRow(env,projectId,kind):assetRow(env,projectId,kind);}
 async function logDaily(env,delta) {
   // Writes ONLY for mutation/download events; no D1 writes for empty Muse polls.
   const names=['projects_created','jobs_created','jobs_completed','uploaded_bytes','downloads','deleted_projects'];
@@ -119,11 +123,15 @@ async function taskDetail(env,job) {
     },digest:outputs.digest}):undefined;
   const kind=job.step_id==='srt_english'?'english_mp3':job.step_id==='srt_urdu'?'urdu_mp3':'source_srt';
   const assetPath=`/tasks/${job.id}/asset`;
+  const experimentSource=policy.experiment?await experimentalSourceInfo(env,job.project_id):null;
+  const experimentPrompt=policy.experiment?experimentalQueuePrompt(job.step_id,{projectId:job.project_id,sourceSrtSha256:experimentSource.sourceSrtSha256}):'';
   return {...publicJob(job),lease:job.lease,
-    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
+    prompt:policy.museOwnsCuts?((experimentPrompt||museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes}))+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
       policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
     movie:policy.museOwnsCuts?{id:movie.id,title:movie.title,targetMinutes:policy.targetMinutes,workerId:movie.worker_id}:undefined,
     sourceSrtAsset:policy.museOwnsCuts?{path:assetPath+'/source_srt',mime:ASSET_TYPES.source_srt,name:'CinePulse_Source.srt'}:undefined,
+    sceneIndexAsset:policy.experiment?{path:assetPath+'/scene_index_json',mime:'application/json',name:'Scene_Evidence.json',sourceSrtSha256:experimentSource.sourceSrtSha256,uploadSqlitePath:assetPath+'/scene_index_sqlite'}:undefined,
+    productionMode:policy.experiment?'scene_intelligence_experiment':undefined,
     audioManifest:audioManifest||undefined,
     analysisReference,
     analysisFieldPaths:analysisReference?{
@@ -407,25 +415,28 @@ async function signedLinks(env,request,project){
   const expiry=Math.min(now+DOWNLOAD_LINK_SECONDS,project.expires_at||now+DOWNLOAD_LINK_SECONDS);
   const files={};
   const format=new URL(request.url).searchParams.get('format');
-  if(format && format!=='windows')fail(400,'Unknown download format');
-  const kinds=format==='windows'?WINDOWS_FILE_KINDS:['export_json','english_mp3','urdu_mp3'];
+  const policy=await projectPolicy(env,project.id);
+  if(format && format!=='windows' && format!=='windows_experiment')fail(400,'Unknown download format');
+  if(format==='windows_experiment'&&!policy.experiment)fail(409,'Experimental package is only available for experimental projects');
+  const kinds=format==='windows_experiment'?[...WINDOWS_FILE_KINDS,...Object.keys(EXPERIMENT_ASSET_NAMES)]:format==='windows'?WINDOWS_FILE_KINDS:['export_json','english_mp3','urdu_mp3'];
   for(const kind of kinds){
     const asset=await assetByKind(env,project.id,kind);
     if(!asset)fail(409,`Server-owned Windows export missing ${kind}. This old project must use legacy download mode; no APK-side cut correction is allowed.`);
     const sig=await signDownload(env.DOWNLOAD_SIGNING_KEY,project.id,kind,expiry);
-    files[kind]={filename:WINDOWS_FILE_NAMES[kind]||fileNames[kind],bytes:asset.bytes,sha256:asset.sha256,
+    files[kind]={filename:EXPERIMENT_ASSET_NAMES[kind]||WINDOWS_FILE_NAMES[kind]||fileNames[kind],bytes:asset.bytes,sha256:asset.sha256,
       url:`${base}/dl/${project.id}/${kind}?exp=${expiry}&sig=${sig}`,linkExpiresAt:expiry};
   }
-  return {project:publicProject(project),files,format:format==='windows'?'windows_eight_verified':'legacy_three',
+  return {project:publicProject(project),files,format:format==='windows_experiment'?'windows_eleven_verified':format==='windows'?'windows_eight_verified':'legacy_three',
     retentionHours:project.retention_hours,info:'Cloudflare prepared all Windows files; Android only verifies SHA-256 and downloads them. Signed links expire after 15 minutes.'};
 }
 async function download(req,env,parts,url){
   const [, ,pid,kind]=parts;
-  if(!isUuid(pid)||!['export_json',...WINDOWS_FILE_KINDS].includes(kind))fail(404,'File not found');
+  if(!isUuid(pid)||!['export_json',...WINDOWS_FILE_KINDS,...Object.keys(EXPERIMENT_ASSET_NAMES)].includes(kind))fail(404,'File not found');
   const exp=url.searchParams.get('exp'),sig=url.searchParams.get('sig');
   if(!await verifyDownload(env.DOWNLOAD_SIGNING_KEY,pid,kind,exp,sig||''))fail(403,'Download link expired or invalid');
   const project=await getProject(env,pid);
   if(project.status!=='ready'||(project.expires_at&&project.expires_at<=nowSeconds()))fail(410,'Project no longer available');
+  if(isExperimentAssetKind(kind)&&!(await projectPolicy(env,pid)).experiment)fail(404,'Not an experimental asset');
   const asset=await assetByKind(env,pid,kind);
   if(!asset)fail(404,'Download file missing');
   const obj=await env.FILES.get(asset.r2_key);if(!obj)fail(404,'Stored file missing');
@@ -433,7 +444,7 @@ async function download(req,env,parts,url){
   // First *successful* download starts the post-download 24/48-hour retention clock.
   await env.DB.prepare('UPDATE projects SET first_downloaded_at=COALESCE(first_downloaded_at,?),expires_at=COALESCE(expires_at,?) WHERE id=?').bind(time,time+project.retention_hours*3600,pid).run();
   await logDaily(env,{downloads:1});
-  return new Response(obj.body,{status:200,headers:{'Content-Type':ASSET_TYPES[kind],'Content-Disposition':`attachment; filename="${WINDOWS_FILE_NAMES[kind]||fileNames[kind]}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Length':String(asset.bytes)}});
+  return new Response(obj.body,{status:200,headers:{'Content-Type':ASSET_TYPES[kind],'Content-Disposition':`attachment; filename="${EXPERIMENT_ASSET_NAMES[kind]||WINDOWS_FILE_NAMES[kind]||fileNames[kind]}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Length':String(asset.bytes)}});
 }
 async function removeProject(env,pid){
   const project=await getProject(env,pid);

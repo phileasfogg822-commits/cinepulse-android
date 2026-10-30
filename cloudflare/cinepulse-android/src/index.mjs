@@ -686,6 +686,8 @@ async function route(request,env){
   }
   if(method==='POST'&&url.pathname==='/v1/projects'){
     const body=await getJson(request);
+    const experiment=body.productionMode==='scene_intelligence_experiment';
+    if(body.productionMode && body.productionMode!=='stable' && !experiment)fail(422,'Unknown CinePulse production mode');
     let requested;try{requested=isLongFormCreateRequest(body);}catch(error){fail(422,error.message);}
     const title=requireString(body.title,'movie title'),workerId=requireUUID(body.workerId),worker=await env.DB.prepare('SELECT * FROM workers WHERE id=? AND enabled=1').bind(workerId).first();
     if(!worker)fail(404,'Select an active Muse worker');
@@ -703,15 +705,20 @@ async function route(request,env){
         env.DB.prepare("INSERT INTO assets(project_id,kind,r2_key,bytes,sha256,created_at) VALUES(?,'source_srt',?,?,?,?)").bind(pid,key,bytes.byteLength,await sha256(bytes),time)
       ]);
     }catch(error){await env.FILES.delete(key);throw error;}
+    if(experiment){
+      try{await createExperimentIndex(env,{projectId:pid,title,sourceSrt:srt});}
+      catch(error){await removeProject(env,pid);fail(422,'Experimental subtitle evidence creation failed: '+String(error.message));}
+    }
     await logDaily(env,{projects_created:1,uploaded_bytes:bytes.byteLength});
     // Durable project-level policy stored in the first digest job prompt: no schema migration.
-    const policyPrompt=`${MUSE_V4_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=8\n${promptFor('digest')}`;
+    const policyPrompt=`${experiment?EXPERIMENT_JOB_MARKER:MUSE_V4_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=${experiment?11:8}\n${promptFor('digest')}`;
     const taskId=await queueTask(env,{id:pid,worker_id:workerId},'digest',policyPrompt);
     return json({projectId:pid,workerId,title,firstTaskId:taskId,stage:'digest',status:'processing',retentionHours:hours,
+      productionMode:experiment?'scene_intelligence_experiment':'stable',
       targetMinutes:requested.targetMinutes,outputMode:requested.outputMode,
       modules:{digest:true,englishNarration:true,urduNarration:true,metadata:true,englishMp3:true,urduMp3:true,
         englishMeasuredSrt:true,urduMeasuredSrt:true,sceneMatching:true,finalCuts:true,
-        finalCutOwner:'muse',windowsProjectOwner:'muse',windowsAssets:8,shorts:false,virals:false}},201);
+        finalCutOwner:'muse',windowsProjectOwner:'muse',windowsAssets:experiment?11:8,shorts:false,virals:false}},201);
   }
   if(method==='GET'&&url.pathname==='/v1/projects'){
     // Admin authenticated listing is also the safe self-heal opportunity for

@@ -67,6 +67,9 @@ final class CloudApi {
         return call("POST","/v1/projects/"+checked(projectId)+"/recovery",
             new JSONObject().put("stepId",stepId).put("confirm",true));
     }
+    JSONObject stopMovie(String projectId) throws Exception {
+        return call("POST","/v1/projects/"+checked(projectId)+"/stop",new JSONObject());
+    }
     JSONObject toggleMovie(String projectId,boolean pause) throws Exception {
         return call("POST","/v1/projects/"+checked(projectId)+(pause?"/pause":"/resume"),new JSONObject());
     }

@@ -1,0 +1,39 @@
+name: CinePulse production Android reachability (READ ONLY)
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - '.github/workflows/cinepulse-production-reachability.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Probe published Android endpoint without credentials or writes
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='cinepulse-android-bridge.maryumblog.workers.dev'
+          provided='cinepass-android-bridge.marineblog.workers.dev'
+          for host in "$expected" "$provided"; do
+            echo "CHECK_HOST=$host"
+            getent ahostsv4 "$host" | head -n 3 || true
+            code=$(curl --silent --show-error --location --max-redirs 0 \
+              --connect-timeout 10 --max-time 25 -o /tmp/check-health.json \
+              -w '%{http_code}' "https://$host/health") || {
+                echo "HEALTH_NETWORK_FAILURE=$host"
+                continue
+              }
+            echo "HEALTH_HTTP_$host=$code"
+            if [[ "$code" == 200 ]]; then
+              jq -r '"HEALTH_STATUS="+(.status//"unknown")+" BUILD="+(.build//"unknown")' /tmp/check-health.json || true
+            fi
+            auth=$(curl --silent --show-error --location --max-redirs 0 \
+              --connect-timeout 10 --max-time 25 -o /dev/null -w '%{http_code}' \
+              "https://$host/v1/projects") || auth=network-failed
+            echo "UNAUTH_PROJECTS_HTTP_$host=$auth"
+          done
+          echo 'NO_AUTH_AND_NO_WRITE_REACHABILITY_CHECK_COMPLETE'

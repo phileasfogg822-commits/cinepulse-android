@@ -1,0 +1,38 @@
+name: CinePulse v3828 separate Worker staging
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths: ['.github/workflows/cinepulse-v3828-deploy-binding-worker.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy-staging-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify isolated target and bundle
+        run: |
+          node -e "const p=require('./wrangler.scene-binding.staging.json');if(p.name!=='cinepulse-v3828-binding-stage'||p.main!=='src/staging-scene-worker.mjs')process.exit(1)"
+          npm install --no-audit --no-fund
+          npx wrangler deploy --dry-run --config wrangler.scene-binding.staging.json
+      - name: Deploy distinct Worker using existing D1/R2 bindings
+        run: npx wrangler deploy --config wrangler.scene-binding.staging.json
+      - name: Verify public health only, keep private endpoints locked
+        run: |
+          set -euo pipefail
+          url=https://cinepulse-v3828-binding-stage.maryumblog.workers.dev
+          curl -fsS --retry 6 --retry-delay 2 "$url/health" | jq -e '.status=="online"'
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "$url/v1/experimental/projects")
+          test "$code" = 401
+          echo "SEPARATE_WORKER_ONLINE_PRIVATE_ENDPOINTS_LOCKED"

@@ -20,10 +20,12 @@ test('independent D1 table does not change existing projects, jobs or auth schem
 });
 test('server rejects stopped leases and excludes paused/ stopped movie IDs from new task claims',()=>{
  const src=readFileSync(new URL('../src/index.mjs',import.meta.url),'utf8');
- assert.match(src,/controlIsStopped\(await getProject\(env,job\.project_id\)\)fail\(410/);
- assert.match(src,/ELIGIBLE_MOVIE_CONTROL\+["'] ORDER BY j\.created_at/);
- assert.match(src,/UPDATE jobs SET status='cancelled',lease=NULL,lease_until=NULL/);
- assert.match(src,/WHERE project_id=\? AND status IN \('queued','working'\)/);
- assert.match(src,/if\(project\.status==='processing'&&!controlIsStopped\(project\)\)fail\(409/);
- assert.match(src,/if\(controlIsStopped\(await getProject\(env,job\.project_id\)\)\)return \{status:'stopped'/);
+ for(const marker of [
+   "if(controlIsStopped(await getProject(env,job.project_id)))fail(410",
+   'ELIGIBLE_MOVIE_CONTROL+" ORDER BY j.created_at',
+   "UPDATE jobs SET status='cancelled',lease=NULL,lease_until=NULL",
+   "WHERE project_id=? AND status IN ('queued','working')",
+   "if(project.status==='processing'&&!controlIsStopped(project))fail(409",
+   "return {status:'stopped',autoAdvanced:false}"
+ ]) assert.ok(src.includes(marker),'Missing safety condition: '+marker);
 });

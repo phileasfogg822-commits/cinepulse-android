@@ -132,6 +132,54 @@ jobs:
           jq -e '.status=="done" and .pipeline.nextStep=="narration_english"' /tmp/scene-ci-intel-finish.json >/dev/null
           task_id='' lease=''
           echo 'EXPERIMENTAL_MUSE_DIGEST_SQLITE_AND_NARRATION_HANDOFF_PASSED'
+      - name: Synthetic live pause, resume, stop and permanent single-movie deletion
+        shell: bash
+        run: |
+          set -euo pipefail
+          admin=$(cat "$RUNNER_TEMP/experiment-admin")
+          base="$STAGE_URL"
+          worker_id='' worker_token='' project_id=''
+          cleanup(){
+            set +e
+            if [[ -n "$project_id" ]]; then
+              curl -fsS --max-time 30 -X POST -H "Authorization: Bearer $admin"                 "$base/v1/projects/$project_id/stop" -H 'Content-Type: application/json' -d '{}' >/dev/null || true
+              curl -fsS --max-time 30 -X DELETE -H "Authorization: Bearer $admin"                 "$base/v1/projects/$project_id" >/dev/null || true
+            fi
+            if [[ -n "$worker_id" ]]; then
+              curl -fsS --max-time 30 -X DELETE -H "Authorization: Bearer $admin"                 "$base/v1/workers/$worker_id" >/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+          curl -fsS "$base/health" | jq -e '.policy.perMoviePauseStopDelete==true' >/dev/null
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json'             -d '{"label":"CI ONLY isolated movie cancellation worker"}' "$base/v1/workers" > /tmp/stop-worker.json
+          worker_id=$(jq -r '.worker.id' /tmp/stop-worker.json)
+          worker_token=$(jq -r '.token' /tmp/stop-worker.json)
+          echo "::add-mask::$worker_token"
+          python3 - "$worker_id" <<'PY'
+          import json,sys
+          movie={'title':'CI ONLY STOP DELETE TEST','workerId':sys.argv[1],
+            'sourceSrt':'1\n00:00:01,000 --> 00:00:02,000\nExperimental SRT.', 'retentionHours':24,
+            'targetMinutes':3,'outputMode':'long_form_only','productionMode':'scene_intelligence_experiment'}
+          open('/tmp/stop-movie.json','w').write(json.dumps(movie))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json'             --data-binary @/tmp/stop-movie.json "$base/v1/projects" > /tmp/stop-created.json
+          project_id=$(jq -r '.projectId' /tmp/stop-created.json)
+          jq -e '.productionMode=="scene_intelligence_experiment"' /tmp/stop-created.json >/dev/null
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json'             -d '{}' "$base/v1/projects/$project_id/pause" | jq -e '.paused==true and .status=="processing"' >/dev/null
+          curl -fsS -H "Authorization: Bearer $worker_token" "$base/w/$worker_id/agent/next" | jq -e '.task==null' >/dev/null
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json'             -d '{}' "$base/v1/projects/$project_id/resume" | jq -e '.paused==false' >/dev/null
+          curl -fsS -H "Authorization: Bearer $worker_token" "$base/w/$worker_id/agent/next" > /tmp/stop-claimed.json
+          jq -e '.task.stepId=="digest"' /tmp/stop-claimed.json >/dev/null
+          task_id=$(jq -r '.task.id' /tmp/stop-claimed.json)
+          lease=$(jq -r '.task.lease' /tmp/stop-claimed.json)
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json'             -d '{}' "$base/v1/projects/$project_id/stop" | jq -e '.status=="stopped" and .revoked==true' >/dev/null
+          code=$(curl -sS -o /tmp/stop-revoked-result.json -w '%{http_code}' -X POST             -H "Authorization: Bearer $worker_token" -H 'Content-Type: application/json'             -d "{\"lease\":\"$lease\",\"output\":\"Ignored because stopped\"}"             "$base/w/$worker_id/tasks/$task_id/result")
+          test "$code" = "410"
+          curl -fsS -H "Authorization: Bearer $admin" "$base/v1/projects/$project_id" | jq -e '.project.status=="stopped" and .project.stopped==true' >/dev/null
+          curl -fsS -H "Authorization: Bearer $worker_token" "$base/w/$worker_id/agent/next" | jq -e '.task==null' >/dev/null
+          curl -fsS -X DELETE -H "Authorization: Bearer $admin"             "$base/v1/projects/$project_id" | jq -e '.deleted==true' >/dev/null
+          project_id=''
+          echo 'MOVIE_PAUSE_RESUME_STOP_LEASE_REVOKE_DELETE_PASSED'
       - name: Verify stable Worker deployment ID unchanged
         if: always()
         run: |

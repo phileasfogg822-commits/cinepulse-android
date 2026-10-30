@@ -424,6 +424,11 @@ public final class MainActivity extends Activity {
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
         summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
         final boolean experimentalProject="scene_intelligence_experiment".equals(project.optString("productionMode"));
+        summary.addView(text(experimentalProject?
+            "MODE: EXPERIMENTAL · Same selected Muse worker · Scene Intelligence + 11 files":
+            "MODE: STABLE · No experimental scene-intelligence stage",13,
+            experimentalProject?GREEN:0xFFFFC47E,true));
+        space(summary,5);
         summary.addView(text(status.equals("ready")?(experimentalProject?"Experimental eleven-file package ready: includes reusable source scene SQLite, bilingual cuts, both MP3s and measured SRTs. Original movie video is linked locally in Windows.":"Long-form export ready for checks. The eight-file Windows package requires complete English/Urdu MP3s, measured SRTs, metadata, digest and non-overlapping final cuts. No shorts or viral files are included."):
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
         space(summary,12);

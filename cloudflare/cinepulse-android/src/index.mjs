@@ -494,7 +494,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   if(method==='GET'&&parts[1]==='dl'&&parts.length===4)return download(request,env,parts,url);

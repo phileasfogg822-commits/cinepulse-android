@@ -17,6 +17,9 @@ on:
       - 'cloudflare/cinepulse-android/**'
       - '.github/workflows/cinepulse-v3828-experiment-check.yml'
   workflow_dispatch:
+concurrency:
+  group: v3828-contract-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:

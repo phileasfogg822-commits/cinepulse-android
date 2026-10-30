@@ -8,6 +8,25 @@ export const EXPERIMENT_STAGES = Object.freeze([
  'mp3_english','srt_english','mp3_urdu','srt_urdu',
  'scene_matching_english','scene_matching_urdu','cut_plan','windows_project'
 ]);
+// Production-compatible experimental queue: existing Muse worker protocol is reused;
+// no second Muse account or desktop scene-matching session is required.
+export const EXPERIMENT_JOB_MARKER='[CINEPULSE-EXPERIMENTAL-SCENE-INTELLIGENCE-V3828]';
+export const EXPERIMENT_JOB_STAGES=Object.freeze([
+ 'digest','scene_intelligence','narration_english','narration_urdu',
+ 'publishing_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu',
+ 'scene_matching','cut_plan','windows_project'
+]);
+export function experimentalQueuePrompt(step,context) {
+ if(step==='scene_matching') {
+  return sceneIntelligenceMuseInstruction('scene_matching_english',context)+'\n'+
+   sceneIntelligenceMuseInstruction('scene_matching_urdu',context)+
+   '\nReturn a single JSON object {"matches":[{"language":"english"|"urdu","sourceStartSeconds":number,"sourceEndSeconds":number,"narrationStartSeconds":number,"narrationEndSeconds":number,"confidence":number}]}. Match all narration beats using ORIGINAL SOURCE SRT and saved source-SRT evidence, whole-movie context, correct characters/actions. This stage is an independent Muse semantic decision for each language, NOT a local lexical match. Save no Shorts or virals.';
+ }
+ if(step==='scene_intelligence') return sceneIntelligenceMuseInstruction(step,context)+
+  '\nRead sourceSrtAsset and sceneIndexAsset of your own task; add grounded character/event relations with exact cue evidence. Output JSON {"events":[{"cueStart":1,"cueEnd":2,"character":"...","event":"...","evidence":"..."}]}. Produce a real portable SQLite scene index from this evidence using available local SQLite tools and upload the actual binary to task scene-index asset before completing. Do not report success unless the upload receipt is returned.';
+ if(step==='cut_plan'||step==='windows_project') return sceneIntelligenceMuseInstruction(step,context);
+ return '';
+}
 export function sceneIntelligenceMuseInstruction(stage,{projectId,sourceSrtSha256,indexVersion=1}={}){
  if(typeof projectId!=='string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{5,127}$/.test(projectId))
    throw new Error('Experiment requires isolated project identity');

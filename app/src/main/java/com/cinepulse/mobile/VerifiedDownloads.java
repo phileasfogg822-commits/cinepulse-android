@@ -374,7 +374,7 @@ final class VerifiedDownloads {
             }
             try(InputStream in=new FileInputStream(verified[8])){
                 byte[] header=new byte[16];
-                if(in.read(header)!=16 || !"SQLite format 3\u0000".equals(new String(header,StandardCharsets.UTF_8)))
+                if(in.read(header)!=16 || !("SQLite format 3"+(char)0).equals(new String(header,StandardCharsets.US_ASCII)))
                     throw new SecurityException("Scene intelligence file is not SQLite");
             }
             JSONObject nativeProject=new JSONObject(new String(

@@ -1,0 +1,70 @@
+name: CinePulse live movie submission mode and worker audit (read-only)
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths: [.github/workflows/cinepulse-live-submission-audit.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Read-only query and privacy-minimized summary of latest CinePulse submissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          npm install --no-audit --no-fund >/dev/null
+          sql="SELECT p.created_at AS created_at, p.status AS project_status,
+          CASE WHEN substr(COALESCE(d.prompt,''),1,50)='[CINEPULSE-EXPERIMENTAL-SCENE-INTELLIGENCE-V3828]' THEN 'EXPERIMENTAL'
+               WHEN substr(COALESCE(d.prompt,''),1,1)='[' THEN 'STABLE_OR_LEGACY'
+               ELSE 'UNKNOWN' END AS movie_mode,
+          w.enabled AS worker_enabled,w.paused AS worker_paused,w.last_seen AS worker_last_seen,
+          (SELECT step_id FROM jobs WHERE project_id=p.id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS latest_step,
+          (SELECT status FROM jobs WHERE project_id=p.id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS latest_job_status,
+          (SELECT COUNT(*) FROM jobs WHERE project_id=p.id AND status='done') AS done_stages,
+          (SELECT COUNT(*) FROM jobs WHERE project_id=p.id AND status='error') AS error_stages,
+          (SELECT COUNT(*) FROM jobs WHERE project_id=p.id AND step_id='scene_intelligence') AS scene_intelligence_tasks,
+          (SELECT COUNT(*) FROM jobs WHERE project_id=p.id AND status='working') AS working_tasks
+          FROM projects p
+          LEFT JOIN workers w ON w.id=p.worker_id
+          LEFT JOIN jobs d ON d.id=(SELECT id FROM jobs WHERE project_id=p.id AND step_id='digest' ORDER BY created_at ASC LIMIT 1)
+          ORDER BY p.created_at DESC,p.rowid DESC LIMIT 7"
+          npx wrangler d1 execute cinepulse-android-db --remote --json --command "$sql" > /tmp/cp-readonly-audit.json 2>/tmp/cp-readonly-error.log || {
+            echo 'READ_ONLY_D1_QUERY_FAILED'
+            sed -n '1,5p' /tmp/cp-readonly-error.log | sed -E 's/[A-Za-z0-9_]{40,}/[redacted]/g'
+            exit 2
+          }
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          const report=JSON.parse(fs.readFileSync('/tmp/cp-readonly-audit.json','utf8'));
+          const groups=Array.isArray(report)?report:[report];
+          const rows=groups.flatMap(g=>g?.results||[]);
+          console.log('READ_ONLY_PROJECT_AUDIT_COUNT='+rows.length);
+          for(let i=0;i<rows.length;i++){
+            const p=rows[i],created=Number(p.created_at),seen=Number(p.worker_last_seen);
+            const createdAt=Number.isFinite(created)&&created>0?new Date(created*1000).toISOString():'unknown';
+            const seenMins=seen>0?Math.max(0,Math.round((Date.now()/1000-seen)/60)):null;
+            console.log('PROJECT_'+(i+1)+' '+JSON.stringify({
+              createdAt,mode:p.movie_mode,projectStatus:p.project_status,
+              step:p.latest_step,stepStatus:p.latest_job_status,
+              doneStages:p.done_stages,errorStages:p.error_stages,
+              sceneIntelligenceStages:p.scene_intelligence_tasks,workingStages:p.working_tasks,
+              workerEnabled:p.worker_enabled===1,workerPaused:p.worker_paused===1,
+              workerLastSeenMinutesAgo:seenMins
+            }));
+          }
+          console.log('READ_ONLY_PROJECT_AUDIT_COMPLETE');
+          NODE

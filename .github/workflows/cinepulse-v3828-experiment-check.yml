@@ -8,6 +8,7 @@ on:
       - 'cloudflare/cinepulse-android/src/experimental-muse-instructions.mjs'
       - 'cloudflare/cinepulse-android/tests/**'
       - 'cloudflare/cinepulse-android/migrations/experimental/**'
+      - 'cloudflare/cinepulse-android/tools/build_scene_sqlite.py'
       - '.github/workflows/cinepulse-v3828-experiment-check.yml'
   pull_request:
     branches:
@@ -55,6 +56,8 @@ jobs:
           assert expected <= actual, expected - actual
           print('Isolated D1-schema syntax/idempotency checks passed; NO remote database touched.')
           PY
+      - name: Verify real portable SQLite scene index and FTS5 lookups
+        run: python3 -m unittest discover -s tests -p 'test_scene_sqlite.py' -v
       - name: Prove deployment is disabled for this workflow
         run: |
           echo 'EXPERIMENT_CONTRACT_ONLY: no Cloudflare credentials used, no Wrangler upload or deploy, no Android release.'

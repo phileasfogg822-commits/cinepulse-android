@@ -1,4 +1,4 @@
-import {buildSceneEvidenceIndex, EXPERIMENT_MODE} from './scene-intelligence-experiment.mjs';
+import {buildSceneEvidenceIndex, retrieveSceneCandidates, EXPERIMENT_MODE} from './scene-intelligence-experiment.mjs';
 import {probeExperimentBindings} from './scene-binding-diagnostics.mjs';
 
 const json=(data,status=200)=>new Response(JSON.stringify(data),{
@@ -81,13 +81,28 @@ export default {
        indexedWindows:index.windows.length,evidenceSha256:await hash(bytes),indexReady:true,
        museReviewComplete:false,visualVerified:false},201);
    }
-   const match=/^\/v1\/experimental\/projects\/([a-zA-Z0-9][a-zA-Z0-9_-]{5,127})\/(index|sqlite|manifest)$/.exec(url.pathname);
+   const match=/^\/v1\/experimental\/projects\/([a-zA-Z0-9][a-zA-Z0-9_-]{5,127})\/(index|sqlite|manifest|candidates)$/.exec(url.pathname);
    if(!match)return err(404,'Experimental route not found');
    const id=match[1],action=match[2];
    const record=await env.SCENE_DB.prepare(
      'SELECT * FROM experimental_scene_indexes WHERE project_id=? ORDER BY version DESC LIMIT 1'
    ).bind(id).first();
    if(!record)return err(404,'Experimental project not found');
+   if(request.method==='GET'&&action==='candidates'){
+     const q=url.searchParams.get('q')||'';
+     const limit=Number(url.searchParams.get('limit')||12);
+     if(!q.trim()||q.length>600||!Number.isSafeInteger(limit)||limit<1||limit>24)
+       return err(422,'Enter 1–600 characters of narration and a limit from 1–24');
+     const source=await env.SCENE_FILES.get('experiments/'+id+'/scene-evidence-v1.json');
+     if(!source)return err(409,'Original movie evidence index unavailable');
+     const evidence=await source.json();
+     if(evidence.projectId!==id||evidence.sourceSrtSha256!==record.source_srt_sha256)
+       return err(409,'Scene evidence fingerprint or project identity mismatch');
+     const matches=retrieveSceneCandidates(evidence,q,limit);
+     return json({projectId:id,sourceSrtSha256:record.source_srt_sha256,
+       candidates:matches,searchType:'subtitle_lexical_only',
+       museSemanticReviewRequired:true,visualVerified:false});
+   }
    if(request.method==='GET'&&action==='index'){
      const obj=await env.SCENE_FILES.get('experiments/'+id+'/scene-evidence-v1.json');
      return obj?new Response(obj.body,{headers:{'Content-Type':'application/json','Cache-Control':'no-store'}}):err(404,'Index missing');

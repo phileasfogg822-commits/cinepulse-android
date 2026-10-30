@@ -49,8 +49,9 @@ final class VerifiedDownloads {
     private File receive(String link,String projectId,String kind,long length,String digest) throws Exception {
         if(!SecurityRules.validDownloadUrl(link,projectId,kind))
             throw new SecurityException("Cloudflare supplied an untrusted download link for "+kind);
-        long max=kind.equals("export_json")?SecurityRules.MAX_JSON_BYTES:
-            kind.equals("source_srt")?SecurityRules.MAX_SRT_BYTES:SecurityRules.MAX_MP3_BYTES;
+        long max=kind.equals("export_json")||kind.equals("windows_project_json")||kind.endsWith("_final_cuts")?SecurityRules.MAX_JSON_BYTES:
+            kind.equals("source_srt")||kind.equals("english_srt")||kind.equals("urdu_srt")||kind.endsWith("_narration")?SecurityRules.MAX_SRT_BYTES:
+            kind.equals("scene_index_sqlite")?12L*1024*1024:SecurityRules.MAX_MP3_BYTES;
         if(length<=0||length>max||digest==null||!digest.matches("(?i)[0-9a-f]{64}"))
             throw new SecurityException("Missing/invalid file size or SHA-256 for "+kind);
         File temp=File.createTempFile("cp-", ".part",cache);
@@ -335,6 +336,129 @@ final class VerifiedDownloads {
             if(bundle!=null)bundle.cleanup();
             if(originals!=null)for(File file:originals)if(file!=null)file.delete();
         }
+    }
+
+    // New opt-in experimental package. Unlike legacy conversion, these eleven
+    // files are already created and hashed by Cloudflare; Android only verifies.
+    private static final String[] EXPERIMENT_KINDS={
+        "windows_project_json","source_srt","english_mp3","urdu_mp3",
+        "english_srt","urdu_srt","english_narration","urdu_narration",
+        "scene_index_sqlite","english_final_cuts","urdu_final_cuts"
+    };
+    private static final String[] EXPERIMENT_NAMES={
+        "CinePulse_Project.json","CinePulse_Source.srt","CinePulse_English.mp3","CinePulse_Urdu.mp3",
+        "CinePulse_English.srt","CinePulse_Urdu.srt",
+        "CinePulse_English_Narration.txt","CinePulse_Urdu_Narration.txt",
+        "Scene_Intelligence.sqlite","English_Final_Cuts.json","Urdu_Final_Cuts.json"
+    };
+    private File[] verifyExperimentalAssets(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
+        JSONObject project=detail.getJSONObject("project");
+        if(!projectId.equals(project.optString("id")) || !"ready".equals(project.optString("status")) ||
+           !"scene_intelligence_experiment".equals(project.optString("productionMode")))
+            throw new SecurityException("This is not a completed experimental CinePulse project");
+        if(!"windows_eleven_verified".equals(links.optString("format")))
+            throw new SecurityException("Cloudflare did not confirm the complete eleven-file experiment");
+        JSONObject files=links.getJSONObject("files");
+        if(files.length()!=EXPERIMENT_KINDS.length)
+            throw new SecurityException("Experimental file manifest count mismatch");
+        File[] verified=new File[EXPERIMENT_KINDS.length];
+        try{
+            for(int i=0;i<EXPERIMENT_KINDS.length;i++){
+                String kind=EXPERIMENT_KINDS[i];
+                JSONObject meta=files.getJSONObject(kind);
+                if(!EXPERIMENT_NAMES[i].equals(meta.optString("filename")))
+                    throw new SecurityException("Cloudflare provided an unexpected filename for "+kind);
+                progress.update("Verifying experimental asset "+(i+1)+"/11");
+                verified[i]=receive(meta.getString("url"),projectId,kind,
+                    meta.getLong("bytes"),meta.getString("sha256"));
+            }
+            try(InputStream in=new FileInputStream(verified[8])){
+                byte[] header=new byte[16];
+                if(in.read(header)!=16 || !("SQLite format 3"+(char)0).equals(new String(header,StandardCharsets.US_ASCII)))
+                    throw new SecurityException("Scene intelligence file is not SQLite");
+            }
+            JSONObject nativeProject=new JSONObject(new String(
+                java.nio.file.Files.readAllBytes(verified[0].toPath()),StandardCharsets.UTF_8));
+            JSONObject cloudImport=nativeProject.optJSONObject("cloudImport");
+            if(cloudImport==null||!projectId.equals(cloudImport.optString("cloudProjectId")))
+                throw new SecurityException("Windows project JSON does not match the experimental movie");
+            return verified;
+        }catch(Exception error){
+            for(File file:verified)if(file!=null)file.delete();
+            throw error;
+        }
+    }
+    String downloadExperimentalToDownloads(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
+        if(!SecurityRules.validUuid(projectId))throw new SecurityException("Invalid experiment project ID");
+        File[] verified=verifyExperimentalAssets(projectId,detail,links,progress);
+        List<Uri> pending=new ArrayList<>();List<File> created=new ArrayList<>();File folder=null;
+        String name=SecurityRules.safeFolderName(detail.getJSONObject("project").optString("title"))+"-"+
+            SecurityRules.shortId(projectId)+"-EXPERIMENT-"+Long.toString(System.currentTimeMillis(),36);
+        String relative=Environment.DIRECTORY_DOWNLOADS+"/CinePulse/"+name+"/";
+        try{
+            if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q){
+                for(int i=0;i<verified.length;i++){
+                    String filename=EXPERIMENT_NAMES[i];
+                    ContentValues props=new ContentValues();
+                    props.put(MediaStore.MediaColumns.DISPLAY_NAME,filename);
+                    props.put(MediaStore.MediaColumns.MIME_TYPE,filename.endsWith(".sqlite")?"application/vnd.sqlite3":
+                        filename.endsWith(".json")?"application/json":filename.endsWith(".mp3")?"audio/mpeg":
+                        filename.endsWith(".srt")?"application/x-subrip":"text/plain");
+                    props.put(MediaStore.MediaColumns.RELATIVE_PATH,relative);
+                    props.put(MediaStore.MediaColumns.IS_PENDING,1);
+                    Uri uri=resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,props);
+                    if(uri==null)throw new IOException("Cannot save "+filename);
+                    pending.add(uri);
+                    try(OutputStream out=resolver.openOutputStream(uri,"w")){
+                        if(out==null)throw new IOException("Cannot open output for "+filename);
+                        copy(verified[i],out);
+                    }
+                    progress.update("Saving experimental file "+(i+1)+"/11");
+                }
+                for(Uri uri:pending){
+                    ContentValues props=new ContentValues();
+                    props.put(MediaStore.MediaColumns.IS_PENDING,0);
+                    if(resolver.update(uri,props,null,null)!=1)
+                        throw new IOException("Cannot publish all verified experimental files");
+                }
+            }else{
+                File parent=new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),"CinePulse");
+                if(!parent.isDirectory()&&!parent.mkdirs())throw new IOException("Cannot create CinePulse Downloads folder");
+                folder=new File(parent,name);
+                if(!folder.mkdirs())throw new IOException("Cannot create isolated experimental folder");
+                for(int i=0;i<verified.length;i++){
+                    File output=new File(folder,EXPERIMENT_NAMES[i]);
+                    if(!output.createNewFile())throw new IOException("Cannot create "+EXPERIMENT_NAMES[i]);
+                    created.add(output);
+                    try(OutputStream out=new FileOutputStream(output)){copy(verified[i],out);}
+                    progress.update("Saving experimental file "+(i+1)+"/11");
+                }
+            }
+            return "Saved 11 SHA-256 verified experimental assets to Downloads/CinePulse/"+name+
+                ". The portable SQLite source index is reusable for future languages. Move the entire folder to Windows and link the original movie file. No Muse matching is started by Android download.";
+        }catch(Exception e){
+            for(Uri uri:pending)try{resolver.delete(uri,null,null);}catch(Exception ignored){}
+            for(File file:created)file.delete();
+            if(folder!=null)folder.delete();
+            throw e;
+        }finally{for(File file:verified)if(file!=null)file.delete();}
+    }
+    ZipResult createExperimentalZip(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
+        File[] verified=verifyExperimentalAssets(projectId,detail,links,progress);
+        File zip=null;
+        try{
+            zip=File.createTempFile("cinepulse-experiment-", ".zip",cache);
+            progress.update("Packaging 11 verified experimental assets");
+            try(ZipOutputStream out=new ZipOutputStream(new FileOutputStream(zip))){
+                for(int i=0;i<verified.length;i++)zipFile(out,EXPERIMENT_NAMES[i],verified[i]);
+            }
+            if(zip.length()<100)throw new IOException("Experimental ZIP is empty");
+            return new ZipResult(zip,
+                "CinePulse-"+SecurityRules.safeFolderName(detail.getJSONObject("project").optString("title"))+
+                "-"+SecurityRules.shortId(projectId)+"-EXPERIMENT.zip",
+                "11 server-signed, byte-size and SHA-256 verified files, including source scene SQLite and both final cut plans. No movie video is included.");
+        }catch(Exception e){if(zip!=null)zip.delete();throw e;}
+        finally{for(File file:verified)if(file!=null)file.delete();}
     }
 
 }

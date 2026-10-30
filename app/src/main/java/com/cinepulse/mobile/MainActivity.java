@@ -21,6 +21,7 @@ import android.view.WindowManager;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -81,7 +82,7 @@ public final class MainActivity extends Activity {
     private void setLocalState(String id,String state){
         archivePrefs().edit().putString("state_"+id,state).apply();
     }
-    private static boolean terminalStatus(String status){return "ready".equals(status)||"needs_review".equals(status);}
+    private static boolean terminalStatus(String status){return "ready".equals(status)||"needs_review".equals(status)||"stopped".equals(status);}
     private void archiveDialog(String id,String status,boolean reviewed){
         if(!SecurityRules.validUuid(id))return;
         String title=reviewed?"Mark reviewed and archive?":"Hide from active movies?";
@@ -95,7 +96,7 @@ public final class MainActivity extends Activity {
             }).show();
     }
     private void permanentlyDelete(String id,String status){
-        if(!terminalStatus(status)){showError("Only ready or needs_review projects may be deleted. Stop active work on the backend first.");return;}
+        if(!terminalStatus(status)){showError("Stop this movie first to revoke its Muse lease before deleting.");return;}
         EditText confirmation=new EditText(this);confirmation.setSingleLine(true);
         confirmation.setHint("Type DELETE");
         new AlertDialog.Builder(this).setTitle("Permanently delete Cloudflare movie?")
@@ -245,15 +246,19 @@ public final class MainActivity extends Activity {
             space(c,12);Button open=action(status.equals("ready")?"View & download package →":"View timeline →",()->loadDetail(id),false);
             c.addView(open,new LinearLayout.LayoutParams(-1,dp(42)));
             space(c,6);
-            if(!terminalStatus(status)){
-                if(p.has("paused")){
-                    boolean moviePaused=p.optBoolean("paused",false);
-                    c.addView(action(moviePaused?"▶ Resume this movie":"⏸ Pause this movie",
-                        ()->confirmMoviePause(id,!moviePaused),false));
-                }else{
-                    c.addView(text("Individual movie pause awaits Cloudflare support; worker pause affects all jobs.",11,MUTED,false));
-                }
-                c.addView(text("Individual STOP is not available until Cloudflare exposes safe project cancellation. Hiding does NOT stop processing.",11,0xFFFFC47E,false));
+            if("processing".equals(status)){
+                boolean moviePaused=p.optBoolean("paused",false);
+                c.addView(action(moviePaused?"▶ Resume this movie":"⏸ Pause this movie",
+                    ()->confirmMoviePause(id,!moviePaused),false));
+                c.addView(action("⏹ Stop this movie (Muse lease revoked)",
+                    ()->confirmMovieStop(id,false),false));
+                c.addView(action("🗑 Stop + permanently delete this movie",
+                    ()->confirmMovieStop(id,true),false));
+            }else if("needs_review".equals(status)){
+                c.addView(action("⏹ Stop remaining Muse tasks",()->confirmMovieStop(id,false),false));
+            }else if("stopped".equals(status)){
+                c.addView(action("🗑 Permanently delete this stopped movie",
+                    ()->permanentlyDelete(id,status),false));
             }
             space(c,6);
             if(archived)c.addView(action("Restore to active list",()->{setLocalState(id,"active");renderHome();},false));
@@ -319,6 +324,16 @@ public final class MainActivity extends Activity {
         if(ids.isEmpty()){showError("There are no active workers. Resume or create a worker first.");return;}
         LinearLayout form=vertical();pad(form,24,0,24,0);
         form.addView(text("Project title",13,Color.DKGRAY,true));form.addView(name);
+        form.addView(text("MODE: EXPERIMENTAL ONLY — 11-FILE SCENE INTELLIGENCE",15,0xFF00795E,true));
+        CheckBox experiment=new CheckBox(this);
+        experiment.setText("✓ Experimental Scene Intelligence (required)");
+        experiment.setChecked(true);
+        form.addView(experiment);
+        form.addView(text("This Preview build CANNOT submit a stable movie. It will use the same selected Muse worker and create a new isolated experimental project.",13,Color.DKGRAY,true));
+        form.addView(text("Processing worker (existing Muse connection)",13,Color.DKGRAY,true));
+        Spinner spinner=new Spinner(this);
+        ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);
+        spinner.setAdapter(adapter);form.addView(spinner);
         EditText minutes=new EditText(this);
         minutes.setSingleLine(true);
         minutes.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -326,14 +341,12 @@ public final class MainActivity extends Activity {
         minutes.setHint("Narration minutes (3–60)");
         form.addView(text("Desired narration length (minutes; each language)",13,Color.DKGRAY,true));
         form.addView(minutes);
-        form.addView(text("Muse will aim for this duration once the Cloudflare backend accepts targetMinutes. MP3/STT duration is verified after generation.",12,Color.DKGRAY,false));
-        form.addView(text("Processing worker",13,Color.DKGRAY,true));
-        Spinner spinner=new Spinner(this);
-        ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);
-        spinner.setAdapter(adapter);form.addView(spinner);
-        new AlertDialog.Builder(this).setTitle("Send movie to Muse")
-            .setMessage("Only the selected SRT text will be uploaded, never the source movie video. Worker queues stay isolated.")
-            .setView(form).setNegativeButton("Cancel",null)
+        form.addView(text("Muse aims for this duration. The actual MP3 and speech-to-text timing are verified later.",12,Color.DKGRAY,false));
+        ScrollView submissionScroll=new ScrollView(this);
+        submissionScroll.setFillViewport(false);
+        submissionScroll.addView(form);
+        new AlertDialog.Builder(this).setTitle("EXPERIMENTAL MOVIE · Scene Intelligence")
+            .setView(submissionScroll).setNegativeButton("Cancel",null)
             .setPositiveButton("Submit",(d,w)->{
                 String title=name.getText().toString().trim();
                 if(title.isEmpty()||title.length()>160){showError("Enter a project title under 160 characters");return;}
@@ -341,13 +354,26 @@ public final class MainActivity extends Activity {
                 try{target=Integer.parseInt(minutes.getText().toString().trim());}
                 catch(NumberFormatException e){showError("Enter a narration duration from 3 to 60 minutes.");return;}
                 if(target<3||target>60){showError("Narration duration must be 3–60 minutes.");return;}
-                String worker=ids.get(spinner.getSelectedItemPosition());
-                task("Uploading subtitle",()->{
-                    String srt=readSrt(uri);return api.createProject(title,worker,srt,48,target);
+                if(!experiment.isChecked()){
+                    showError("Experimental mode is required in this Preview app. Tick the Scene Intelligence checkbox before submitting.");
+                    return;
+                }
+                int chosenWorker=spinner.getSelectedItemPosition();
+                if(chosenWorker<0||chosenWorker>=ids.size()){showError("Select an existing Muse worker.");return;}
+                String worker=ids.get(chosenWorker);
+                task("Uploading EXPERIMENTAL movie subtitle",()->{
+                    String srt=readSrt(uri);
+                    return api.createExperimentalProject(title,worker,srt,48,target);
                 },r->{
                     int accepted=r.optInt("targetMinutes",-1);
-                    new AlertDialog.Builder(this).setTitle("Movie queued")
-                        .setMessage(accepted==target?
+                    boolean confirmedExperiment="scene_intelligence_experiment".equals(r.optString("productionMode"));
+                    boolean expectedExperiment=true;
+                    new AlertDialog.Builder(this).setTitle(confirmedExperiment?"EXPERIMENTAL MOVIE QUEUED":"WARNING: MODE NOT CONFIRMED")
+                        .setMessage(expectedExperiment&&!confirmedExperiment?
+                            "Cloudflare did not confirm experimental mode. The server may have accepted this as a stable project; do not submit the same movie again automatically. Check the project timeline and update the backend first.":
+                            confirmedExperiment?
+                            "New isolated experimental movie queued on the same Muse worker. Digest will build reusable source scene evidence, and Muse must finalize both narrations and cut plans before the 11-file SQLite package becomes available.":
+                            accepted==target?
                             "Cloudflare accepted the "+target+"-minute narration target. CinePulse requested only English and Urdu long-form processing; verify that your deployed worker supports long_form_only before assuming shorts are skipped.":
                             "Movie submitted, but this backend has not confirmed the narration target or long_form_only processing policy. Update Cloudflare before relying on those controls.")
                         .setPositiveButton("View projects",(innerDialog,innerWhich)->refresh()).show();
@@ -403,26 +429,36 @@ public final class MainActivity extends Activity {
         content.addView(action("← All movies",()->{openedProject=null;renderHome();},false),fullWithBottom(15));
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
         summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
-        summary.addView(text(status.equals("ready")?"Long-form export ready for checks. The eight-file Windows package requires complete English/Urdu MP3s, measured SRTs, metadata, digest and non-overlapping final cuts. No shorts or viral files are included.":
+        final boolean experimentalProject="scene_intelligence_experiment".equals(project.optString("productionMode"));
+        summary.addView(text(experimentalProject?
+            "MODE: EXPERIMENTAL · Same selected Muse worker · Scene Intelligence + 11 files":
+            "MODE: STABLE · No experimental scene-intelligence stage",13,
+            experimentalProject?GREEN:0xFFFFC47E,true));
+        space(summary,5);
+        summary.addView(text(status.equals("ready")?(experimentalProject?"Experimental eleven-file package ready: includes reusable source scene SQLite, bilingual cuts, both MP3s and measured SRTs. Original movie video is linked locally in Windows.":"Long-form export ready for checks. The eight-file Windows package requires complete English/Urdu MP3s, measured SRTs, metadata, digest and non-overlapping final cuts. No shorts or viral files are included."):
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
         space(summary,12);
         if(status.equals("ready")){
-            summary.addView(action("Download long-form Windows package (8 files)",()->startPackageDownload(id),true));
+            summary.addView(action(experimentalProject?"Download experimental Windows package (11 files)":"Download long-form Windows package (8 files)",()->startPackageDownload(id),true));
             space(summary,7);
             summary.addView(action("Verify and share Windows-ready ZIP",()->shareProjectZip(id),false));
         }
         if("processing".equals(status)||"needs_review".equals(status)){
             space(summary,7);
-            if(!project.has("paused")){
-                summary.addView(text("Pause movie unavailable: the matching Cloudflare backend v0.1.7 has not been deployed. Pause worker is a separate operation.",12,0xFFFFC47E,false));
-            }else{
-            final boolean paused=project.optBoolean("paused",false);
-            summary.addView(action(paused?"▶ Resume only this movie":"⏸ Pause only this movie",
-                ()->confirmMoviePause(id,!paused),false));
-            summary.addView(text(paused?
-                "This movie is paused. Its queued stages will not be claimed, but other movies on the same Muse worker continue.":
-                "Pauses only this movie ID, not the entire Muse worker. An active leased task may finish first.",12,MUTED,false));
+            if("processing".equals(status)){
+                final boolean paused=project.optBoolean("paused",false);
+                summary.addView(action(paused?"▶ Resume only this movie":"⏸ Pause only this movie",
+                    ()->confirmMoviePause(id,!paused),false));
+                summary.addView(text(paused?
+                    "Paused: no new Muse task for this movie will be claimed; current task may finish.":
+                    "Pause only this project, not other movies on its shared Muse worker.",12,MUTED,false));
+                space(summary,8);
             }
+            summary.addView(action("⏹ Stop this movie and revoke Muse task lease",
+                ()->confirmMovieStop(id,false),false));
+            space(summary,7);
+            summary.addView(action("🗑 Stop + permanently delete this movie",
+                ()->confirmMovieStop(id,true),false));
         }
         int target=project.optInt("targetMinutes",-1);
         space(summary,8);
@@ -430,8 +466,10 @@ public final class MainActivity extends Activity {
         if(terminalStatus(status)){
             space(summary,7);
             summary.addView(action("Mark reviewed & archive locally",()->archiveDialog(id,status,true),false));
-            space(summary,7);
-            summary.addView(action("Delete movie permanently from Cloudflare",()->permanentlyDelete(id,status),false));
+            if(!"needs_review".equals(status)){
+                space(summary,7);
+                summary.addView(action("Delete movie permanently from Cloudflare",()->permanentlyDelete(id,status),false));
+            }
         }else{
             space(summary,7);
             summary.addView(action("Hide movie from my active list",()->archiveDialog(id,status,false),false));
@@ -506,6 +544,37 @@ public final class MainActivity extends Activity {
         }
         space(c,9);
         c.addView(text("A request is not a job claim: the existing assigned Muse worker must be online and polling to execute it. No other movie is restarted.",11,MUTED,false));
+    }
+    private void confirmMovieStop(String projectId,boolean deleteAfterStop){
+        if(!SecurityRules.validUuid(projectId)){showError("Invalid movie ID");return;}
+        final EditText confirmation=new EditText(this);
+        if(deleteAfterStop){
+            confirmation.setSingleLine(true);
+            confirmation.setHint("Type DELETE to erase this movie");
+        }
+        AlertDialog.Builder builder=new AlertDialog.Builder(this)
+            .setTitle(deleteAfterStop?"Permanently STOP + DELETE this movie?":"STOP only this movie?")
+            .setMessage(deleteAfterStop?
+                "This will revoke this movie's Muse task lease, cancel queued stages, and permanently remove ONLY this movie's Cloudflare jobs, source SRT, MP3s, SQLite and other assets. Other movies and the Muse worker are untouched. Existing external Muse computation cannot be killed, but its results will be rejected. Type DELETE.":
+                "Cancel this movie's queued tasks and revoke any active server lease. Other movies on the same Muse worker continue. This cannot be resumed. You may delete this movie afterward.")
+            .setNegativeButton("Keep movie",null);
+        if(deleteAfterStop)builder.setView(confirmation);
+        builder.setPositiveButton(deleteAfterStop?"Stop + delete permanently":"Stop this movie",(d,w)->{
+            if(deleteAfterStop&&!"DELETE".equals(confirmation.getText().toString().trim())){
+                showError("Deletion cancelled. Type DELETE exactly.");return;
+            }
+            task(deleteAfterStop?"Stopping and deleting this movie":"Stopping one movie",()->{
+                JSONObject stopped=api.stopMovie(projectId);
+                return deleteAfterStop?api.deleteProject(projectId):stopped;
+            },result->{
+                if(deleteAfterStop){
+                    archivePrefs().edit().remove("state_"+projectId).apply();
+                    openedProject=null;
+                    Toast.makeText(this,"Only the selected movie was permanently deleted",Toast.LENGTH_LONG).show();
+                    refresh();
+                }else loadDetail(projectId);
+            });
+        }).show();
     }
     private void confirmMoviePause(String projectId,boolean pause){
         if(!SecurityRules.validUuid(projectId)){showError("Invalid movie ID");return;}
@@ -792,8 +861,13 @@ public final class MainActivity extends Activity {
     private void shareProjectZip(String id){
         if(!SecurityRules.validUuid(id)){showError("Invalid project ID");return;}
         task("Downloading and verifying complete ZIP",()->{
-            JSONObject detail=api.project(id),links=api.downloads(id);
-            return new VerifiedDownloads(getContentResolver(),getCacheDir()).createVerifiedZip(id,detail,links,
+            JSONObject detail=api.project(id);
+            boolean experiment="scene_intelligence_experiment".equals(detail.getJSONObject("project").optString("productionMode"));
+            JSONObject links=experiment?api.experimentalDownloads(id):api.downloads(id);
+            VerifiedDownloads manager=new VerifiedDownloads(getContentResolver(),getCacheDir());
+            return experiment?manager.createExperimentalZip(id,detail,links,
+                step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
+                manager.createVerifiedZip(id,detail,links,
                 step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
         },result->{
             String excerpt=result.report.length()>1500?result.report.substring(0,1500)+"\n… full report is in ZIP":result.report;
@@ -834,8 +908,13 @@ public final class MainActivity extends Activity {
     private void downloadProject(String id){
         task("Downloading 4 files to Downloads/CinePulse",()->{
             // Fresh signed links on every click; verify all files before publishing any.
-            JSONObject detail=api.project(id),urls=api.downloads(id);
-            return new VerifiedDownloads(getContentResolver(),getCacheDir()).downloadToDownloads(
+            JSONObject detail=api.project(id);
+            boolean experiment="scene_intelligence_experiment".equals(detail.getJSONObject("project").optString("productionMode"));
+            JSONObject urls=experiment?api.experimentalDownloads(id):api.downloads(id);
+            VerifiedDownloads manager=new VerifiedDownloads(getContentResolver(),getCacheDir());
+            return experiment?manager.downloadExperimentalToDownloads(
+                id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
+                manager.downloadToDownloads(
                 id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
         },message->new AlertDialog.Builder(this).setTitle("Verified Windows package downloaded")
             .setMessage(message).setPositiveButton("Done",null).show());

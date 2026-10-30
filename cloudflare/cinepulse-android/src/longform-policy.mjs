@@ -48,7 +48,7 @@ export function normalizePublishingMetadata(result){
     throw new Error('Invalid metadata keywords or hashtags');
   return {description:m.description,keywords:m.keywords,hashtags:m.hashtags};
 }
-export function validateFinalCutPlan(cuts, {sourceSrt,englishSrt,urduSrt}){
+export function validateFinalCutPlan(cuts, {sourceSrt,englishSrt,urduSrt,experimentalReview=false}){
   if(!Array.isArray(cuts)||cuts.length===0||cuts.length>4500) throw new Error('Final cut plan must contain one or more cuts');
   const sourceLimit=srtLastTimestamp(sourceSrt);
   const target={english:srtLastTimestamp(englishSrt),urdu:srtLastTimestamp(urduSrt)};
@@ -56,20 +56,26 @@ export function validateFinalCutPlan(cuts, {sourceSrt,englishSrt,urduSrt}){
   for(const language of ['english','urdu']){
     const group=cuts.filter(c=>c?.language===language);
     if(!group.length) throw new Error(language+': final cuts missing');
-    let expected=0,total=0;const intervals=[];
+    let expected=0,total=0;const intervals=[];const reviewWarnings=[];
     for(let i=0;i<group.length;i++){
       const c=group[i];const ss=c.sourceStartSeconds,se=c.sourceEndSeconds;
       const ns=c.narrationStartSeconds,ne=c.narrationEndSeconds;
       if(![ss,se,ns,ne].every(number)) throw new Error(language+': non-numeric timestamp at cut '+(i+1));
       const sd=se-ss,nd=ne-ns;
       if(sd<LONGFORM_MIN_CLIP-EPS||sd>LONGFORM_MAX_CLIP+EPS||
-         nd<LONGFORM_MIN_CLIP-EPS||nd>LONGFORM_MAX_CLIP+EPS)
-        throw new Error(language+': cut '+(i+1)+' outside 3–6 seconds');
+         nd<LONGFORM_MIN_CLIP-EPS||nd>LONGFORM_MAX_CLIP+EPS){
+        if(experimentalReview)reviewWarnings.push(language+': cut '+(i+1)+' outside preferred 3–6 seconds');
+        else throw new Error(language+': cut '+(i+1)+' outside 3–6 seconds');
+      }
+      if(sd<=0||nd<=0)throw new Error(language+': cut '+(i+1)+' must have positive duration');
       if(ss<0||se>sourceLimit+EPS) throw new Error(language+': cut '+(i+1)+' outside movie SRT timeline');
       if(Math.abs(sd-nd)>EPS) throw new Error(language+': source and narration clip lengths differ at cut '+(i+1));
       if(Math.abs(ns-expected)>EPS) throw new Error(language+': narration cuts overlap or leave a gap at cut '+(i+1));
       for(const [lo,hi] of intervals){
-        if(ss<hi-EPS && se>lo+EPS) throw new Error(language+': source movie footage overlaps at cut '+(i+1));
+        if(ss<hi-EPS && se>lo+EPS){
+          if(experimentalReview){reviewWarnings.push(language+': source movie footage repeats at cut '+(i+1));break;}
+          throw new Error(language+': source movie footage overlaps at cut '+(i+1));
+        }
       }
       intervals.push([ss,se]);expected=ne;total+=sd;
     }
@@ -77,7 +83,9 @@ export function validateFinalCutPlan(cuts, {sourceSrt,englishSrt,urduSrt}){
       throw new Error(language+': total final footage does not match measured narration SRT duration');
     totals[language]={cuts:group.length,audioSeconds:stamp(target[language]),videoSeconds:stamp(total),
       firstAudioStart:group[0].narrationStartSeconds,lastAudioEnd:stamp(expected),
-      overlapCount:0,minCutSeconds:LONGFORM_MIN_CLIP,maxCutSeconds:LONGFORM_MAX_CLIP};
+      overlapCount:reviewWarnings.filter(w=>w.includes('repeats')).length,
+      minCutSeconds:LONGFORM_MIN_CLIP,maxCutSeconds:LONGFORM_MAX_CLIP,
+      ...(experimentalReview?{reviewWarnings}:{} )};
   }
   if(cuts.some(c=>c?.language!=='english'&&c?.language!=='urdu'))
     throw new Error('Unexpected cut language, only English and Urdu are supported');

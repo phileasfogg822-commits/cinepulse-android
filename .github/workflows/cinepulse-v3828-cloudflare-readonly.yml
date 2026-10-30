@@ -1,0 +1,42 @@
+name: CinePulse Cloudflare v3.8.28 READ-ONLY access probe
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - '.github/workflows/cinepulse-v3828-cloudflare-readonly.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify Cloudflare Worker metadata through existing CI secrets (GET only)
+        env:
+          CF_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CF_TOKEN}" || -z "${CF_ACCOUNT}" ]]; then
+            echo "CLOUDFLARE_NOT_CONFIGURED_IN_GITHUB_SECRETS"
+            exit 0
+          fi
+          if [[ ! "${CF_ACCOUNT}" =~ ^[[:xdigit:]]{32}$ ]]; then
+            echo "::error::Account ID is not 32 hex digits"
+            exit 1
+          fi
+          url="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/workers/scripts/cinepulse-android-bridge/settings"
+          status=$(curl --silent --show-error --max-time 35 -o /tmp/cinepulse-settings.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${CF_TOKEN}" -H "Accept: application/json" "${url}")
+          if [[ "${status}" != "200" ]] || ! jq -e '.success == true' /tmp/cinepulse-settings.json >/dev/null; then
+            echo "CLOUDFLARE_READONLY_PROBE_FAILED_HTTP_${status}"
+            exit 1
+          fi
+          echo "CLOUDFLARE_WORKER_METADATA_READ_OK"
+          jq -e '.result.bindings | any(.name=="DB" and .type=="d1")' /tmp/cinepulse-settings.json >/dev/null
+          jq -e '.result.bindings | any(.name=="FILES" and .type=="r2_bucket")' /tmp/cinepulse-settings.json >/dev/null
+          echo "D1_AND_R2_WORKER_BINDINGS_PRESENT"
+          rm -f /tmp/cinepulse-settings.json
+          echo "READ_ONLY_ONLY: no deploy, version upload, D1 or R2 mutation."

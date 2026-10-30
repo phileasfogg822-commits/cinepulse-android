@@ -4,6 +4,9 @@ import { allocateFinalLongFormCuts } from './server-cut-planner.mjs';
 import { buildWindowsProject, WINDOWS_FILE_KINDS, WINDOWS_FILE_NAMES } from './windows-export.mjs';
 import { MUSE_V4_MARKER, MUSE_V4_STAGES, museStageInstructions, verifyMuseWindowsProject, canonicalMuseAnalysis } from './muse-production-contract.mjs';
 import { assetRow,registerAsset,assetTableFor,allAssetKeys,allAssetMetadata,storageTotals,ensureWindowsAssets } from './asset-registry.mjs';
+import { EXPERIMENT_JOB_MARKER,EXPERIMENT_JOB_STAGES,experimentalQueuePrompt } from './experimental-muse-instructions.mjs';
+import { createExperimentIndex,experimentalSourceInfo,validateSceneIntelligenceOutput,storeExperimentAsset,experimentalAssetRow,isExperimentAssetKind,EXPERIMENT_ASSET_NAMES,ensureExperimentTables,experimentR2Key } from './experimental-bridge-runtime.mjs';
+import { ensureMovieControls, MOVIE_CONTROL_JOIN, MOVIE_CONTROL_FIELDS, ELIGIBLE_MOVIE_CONTROL, publicMovieState, controlIsStopped } from './movie-controls.mjs';
 
 // Legacy projects continue through their original stages. New projects use metadata only.
 const STAGES = ['digest','narration_english','narration_urdu','viral_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
@@ -15,16 +18,18 @@ async function projectPolicy(env,projectId){
   // No D1 migration: distinguish new and legacy projects by the durable digest job prompt.
   const row=await env.DB.prepare("SELECT prompt FROM jobs WHERE project_id=? AND step_id='digest' ORDER BY created_at ASC LIMIT 1").bind(projectId).first();
   const prompt=String(row?.prompt||'');
-  const museOwnsCuts=prompt.startsWith(MUSE_V4_MARKER);
+  const experiment=prompt.startsWith(EXPERIMENT_JOB_MARKER);
+  const museOwnsCuts=experiment||prompt.startsWith(MUSE_V4_MARKER);
   const serverCuts=prompt.startsWith(LONGFORM_MARKER_V3);
   const longForm=museOwnsCuts||serverCuts||prompt.startsWith(LONGFORM_MARKER);
   const targetMinutes=longForm ? Number(/targetMinutes=(\d+)/.exec(prompt)?.[1]||10) : null;
-  return {longForm,serverCuts,museOwnsCuts,targetMinutes,
-    stages:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
+  return {longForm,serverCuts,museOwnsCuts,experiment,targetMinutes,
+    stages:experiment?EXPERIMENT_JOB_STAGES:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
 }
 
 const ASSET_TYPES = {
   source_srt:'application/x-subrip',english_mp3:'audio/mpeg',urdu_mp3:'audio/mpeg',
+  scene_index_sqlite:'application/vnd.sqlite3',english_final_cuts:'application/json',urdu_final_cuts:'application/json',
   export_json:'application/json',windows_project_json:'application/json',
   english_srt:'application/x-subrip',urdu_srt:'application/x-subrip',
   english_narration:'text/plain; charset=utf-8',urdu_narration:'text/plain; charset=utf-8'
@@ -55,13 +60,13 @@ const getJson = async (request,limit=MAX_JSON) => {
   try {return JSON.parse(body||'{}');} catch {fail(400,'Invalid JSON body');}
 };
 const requireUUID = v=>{if(!isUuid(v))fail(400,'Invalid identifier');return v;};
-async function getProject(env,id) {const project=await env.DB.prepare('SELECT * FROM projects WHERE id=?').bind(requireUUID(id)).first();if(!project)fail(404,'Project not found');return project;}
+async function getProject(env,id) {const project=await env.DB.prepare('SELECT p.*, '+MOVIE_CONTROL_FIELDS+' FROM projects p '+MOVIE_CONTROL_JOIN+' WHERE p.id=?').bind(requireUUID(id)).first();if(!project)fail(404,'Project not found');return project;}
 async function getJob(env,id) {const job=await env.DB.prepare('SELECT * FROM jobs WHERE id=?').bind(requireUUID(id)).first();if(!job)fail(404,'Task not found');return job;}
 const publicWorker=w=>({id:w.id,label:w.label,movieTitle:w.movie_title,enabled:!!w.enabled,paused:!!w.paused,createdAt:w.created_at,lastSeen:w.last_seen});
-const publicProject=p=>({id:p.id,workerId:p.worker_id,title:p.title,status:p.status,retentionHours:p.retention_hours,createdAt:p.created_at,readyAt:p.ready_at,firstDownloadedAt:p.first_downloaded_at,expiresAt:p.expires_at});
+const publicProject=p=>({id:p.id,workerId:p.worker_id,title:p.title,...publicMovieState(p),retentionHours:p.retention_hours,createdAt:p.created_at,readyAt:p.ready_at,firstDownloadedAt:p.first_downloaded_at,expiresAt:p.expires_at});
 const publicJob=j=>({id:j.id,workerId:j.worker_id,projectId:j.project_id,stepId:j.step_id,status:j.status,createdAt:j.created_at,finishedAt:j.finished_at,leaseUntil:j.lease_until,error:j.error||null});
 const objectKey=(projectId,kind)=>`projects/${projectId}/${kind}`;
-async function assetByKind(env,projectId,kind){return assetRow(env,projectId,kind);}
+async function assetByKind(env,projectId,kind){return isExperimentAssetKind(kind)?experimentalAssetRow(env,projectId,kind):assetRow(env,projectId,kind);}
 async function logDaily(env,delta) {
   // Writes ONLY for mutation/download events; no D1 writes for empty Muse polls.
   const names=['projects_created','jobs_created','jobs_completed','uploaded_bytes','downloads','deleted_projects'];
@@ -86,6 +91,7 @@ function promptFor(step) {
   }
 }
 async function queueTask(env,project,step,requestedPrompt){
+  if(controlIsStopped(await getProject(env,project.id)))fail(410,'Stopped movie cannot queue another Muse task');
   const timestamp=nowSeconds();const id=newId();
   let prompt=requestedPrompt||promptFor(step);
   if(!requestedPrompt && (step==='narration_english'||step==='narration_urdu')){
@@ -119,11 +125,15 @@ async function taskDetail(env,job) {
     },digest:outputs.digest}):undefined;
   const kind=job.step_id==='srt_english'?'english_mp3':job.step_id==='srt_urdu'?'urdu_mp3':'source_srt';
   const assetPath=`/tasks/${job.id}/asset`;
+  const experimentSource=policy.experiment?await experimentalSourceInfo(env,job.project_id):null;
+  const experimentPrompt=policy.experiment?experimentalQueuePrompt(job.step_id,{projectId:job.project_id,sourceSrtSha256:experimentSource.sourceSrtSha256}):'';
   return {...publicJob(job),lease:job.lease,
-    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
+    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
       policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
     movie:policy.museOwnsCuts?{id:movie.id,title:movie.title,targetMinutes:policy.targetMinutes,workerId:movie.worker_id}:undefined,
     sourceSrtAsset:policy.museOwnsCuts?{path:assetPath+'/source_srt',mime:ASSET_TYPES.source_srt,name:'CinePulse_Source.srt'}:undefined,
+    sceneIndexAsset:policy.experiment?{path:assetPath+'/scene_index_json',mime:'application/json',name:'Scene_Evidence.json',sourceSrtSha256:experimentSource.sourceSrtSha256,uploadSqlitePath:assetPath+'/scene_index_sqlite'}:undefined,
+    productionMode:policy.experiment?'scene_intelligence_experiment':undefined,
     audioManifest:audioManifest||undefined,
     analysisReference,
     analysisFieldPaths:analysisReference?{
@@ -189,6 +199,7 @@ async function uploadAudio(request,env,projectId,kind) {
 }
 
 async function finalizeProject(env,project,manifest,{generatedByCloudflare=false,verifiedMuseJob=false}={}) {
+  if(controlIsStopped(await getProject(env,project.id)))fail(410,'Stopped movie cannot finalize');
   const policy=await projectPolicy(env,project.id);
   if(policy.serverCuts&&!generatedByCloudflare)
     fail(409,'Legacy V3 server-generated cut plan requires its normal task pipeline.');
@@ -209,7 +220,8 @@ async function finalizeProject(env,project,manifest,{generatedByCloudflare=false
   const sourceSrt=await srt.text();
   let cutMetrics=null;
   if(policy.longForm){try{cutMetrics=validateFinalCutPlan(manifest.cutPlan,{
-    sourceSrt,englishSrt:manifest.narrationSrts.english,urduSrt:manifest.narrationSrts.urdu
+    sourceSrt,englishSrt:manifest.narrationSrts.english,urduSrt:manifest.narrationSrts.urdu,
+    experimentalReview:policy.experiment
   });}catch(error){fail(422,'Final cuts cannot be exported: '+error.message);}}
   const document={
     schema:'cinepulse.render-project.v1',generatedAt:new Date().toISOString(),
@@ -241,12 +253,20 @@ async function finalizeProject(env,project,manifest,{generatedByCloudflare=false
       projectId:project.id,title:project.title,sourceSrt,
       narrations:manifest.narrations,narrationSrts:manifest.narrationSrts,
       digest:manifest.digest,cutPlan:manifest.cutPlan,metadata:manifest.metadata,
-      mp3Manifest:document.audio
+      mp3Manifest:document.audio,experimentalReview:policy.experiment
     }):buildWindowsProject({
       project,sourceSrt,digest:manifest.digest,narrations:manifest.narrations,
       narrationSrts:manifest.narrationSrts,cuts:manifest.cutPlan,
       metadata:manifest.metadata,mp3s:document.audio,metrics:cutMetrics
     });
+    if(policy.experiment){
+      if(!(await assetByKind(env,project.id,'scene_index_sqlite')))fail(409,'Experimental scene SQLite must be present');
+      const englishCuts=manifest.cutPlan.filter(c=>c.language==='english');
+      const urduCuts=manifest.cutPlan.filter(c=>c.language==='urdu');
+      if(!englishCuts.length||!urduCuts.length)fail(422,'Both language cut plans must be finalized');
+      await storeExperimentAsset(env,{projectId:project.id,kind:'english_final_cuts',bytes:new TextEncoder().encode(JSON.stringify(englishCuts))});
+      await storeExperimentAsset(env,{projectId:project.id,kind:'urdu_final_cuts',bytes:new TextEncoder().encode(JSON.stringify(urduCuts))});
+    }
     const serverFiles={
       windows_project_json:JSON.stringify(projectJson),
       english_srt:manifest.narrationSrts.english,urdu_srt:manifest.narrationSrts.urdu,
@@ -260,7 +280,7 @@ async function finalizeProject(env,project,manifest,{generatedByCloudflare=false
     // Readiness means all EIGHT requested files exist physically in R2 and
     // each D1 registry points to a file of the advertised byte count.
     // Do not mark a movie ready on metadata alone.
-    for(const kind of WINDOWS_FILE_KINDS){
+    for(const kind of (policy.experiment?[...WINDOWS_FILE_KINDS,...Object.keys(EXPERIMENT_ASSET_NAMES)]:WINDOWS_FILE_KINDS)){
       const row=await assetByKind(env,project.id,kind);
       if(!row||!row.r2_key||!Number.isSafeInteger(Number(row.bytes))||Number(row.bytes)<1)
         fail(500,'Missing generated Windows asset: '+kind);
@@ -352,6 +372,7 @@ async function autoFinalize(env,project){
  * Caller is an authenticated administrator; retry is idempotent.
  */
 async function recoverAcceptedFinalization(env,project){
+  if(controlIsStopped(await getProject(env,project.id)))return {attempted:false,reason:'movie_stopped'};
   if(project.status!=='needs_review')return {attempted:false,reason:'not_needs_review'};
   if(project.expires_at&&project.expires_at<=nowSeconds())
     return {attempted:false,reason:'expired'};
@@ -388,6 +409,7 @@ async function recoverOneCompletedProject(env,workerId=null){
   return {attempted:false};
 }
 async function advancePipeline(env,job){
+  if(controlIsStopped(await getProject(env,job.project_id)))return {status:'stopped',autoAdvanced:false};
   const policy=await projectPolicy(env,job.project_id);
   const stages=policy.stages;
   const current=stages.indexOf(job.step_id);
@@ -407,25 +429,28 @@ async function signedLinks(env,request,project){
   const expiry=Math.min(now+DOWNLOAD_LINK_SECONDS,project.expires_at||now+DOWNLOAD_LINK_SECONDS);
   const files={};
   const format=new URL(request.url).searchParams.get('format');
-  if(format && format!=='windows')fail(400,'Unknown download format');
-  const kinds=format==='windows'?WINDOWS_FILE_KINDS:['export_json','english_mp3','urdu_mp3'];
+  const policy=await projectPolicy(env,project.id);
+  if(format && format!=='windows' && format!=='windows_experiment')fail(400,'Unknown download format');
+  if(format==='windows_experiment'&&!policy.experiment)fail(409,'Experimental package is only available for experimental projects');
+  const kinds=format==='windows_experiment'?[...WINDOWS_FILE_KINDS,...Object.keys(EXPERIMENT_ASSET_NAMES)]:format==='windows'?WINDOWS_FILE_KINDS:['export_json','english_mp3','urdu_mp3'];
   for(const kind of kinds){
     const asset=await assetByKind(env,project.id,kind);
     if(!asset)fail(409,`Server-owned Windows export missing ${kind}. This old project must use legacy download mode; no APK-side cut correction is allowed.`);
     const sig=await signDownload(env.DOWNLOAD_SIGNING_KEY,project.id,kind,expiry);
-    files[kind]={filename:WINDOWS_FILE_NAMES[kind]||fileNames[kind],bytes:asset.bytes,sha256:asset.sha256,
+    files[kind]={filename:EXPERIMENT_ASSET_NAMES[kind]||WINDOWS_FILE_NAMES[kind]||fileNames[kind],bytes:asset.bytes,sha256:asset.sha256,
       url:`${base}/dl/${project.id}/${kind}?exp=${expiry}&sig=${sig}`,linkExpiresAt:expiry};
   }
-  return {project:publicProject(project),files,format:format==='windows'?'windows_eight_verified':'legacy_three',
+  return {project:publicProject(project),files,format:format==='windows_experiment'?'windows_eleven_verified':format==='windows'?'windows_eight_verified':'legacy_three',
     retentionHours:project.retention_hours,info:'Cloudflare prepared all Windows files; Android only verifies SHA-256 and downloads them. Signed links expire after 15 minutes.'};
 }
 async function download(req,env,parts,url){
   const [, ,pid,kind]=parts;
-  if(!isUuid(pid)||!['export_json',...WINDOWS_FILE_KINDS].includes(kind))fail(404,'File not found');
+  if(!isUuid(pid)||!['export_json',...WINDOWS_FILE_KINDS,...Object.keys(EXPERIMENT_ASSET_NAMES)].includes(kind))fail(404,'File not found');
   const exp=url.searchParams.get('exp'),sig=url.searchParams.get('sig');
   if(!await verifyDownload(env.DOWNLOAD_SIGNING_KEY,pid,kind,exp,sig||''))fail(403,'Download link expired or invalid');
   const project=await getProject(env,pid);
   if(project.status!=='ready'||(project.expires_at&&project.expires_at<=nowSeconds()))fail(410,'Project no longer available');
+  if(isExperimentAssetKind(kind)&&!(await projectPolicy(env,pid)).experiment)fail(404,'Not an experimental asset');
   const asset=await assetByKind(env,pid,kind);
   if(!asset)fail(404,'Download file missing');
   const obj=await env.FILES.get(asset.r2_key);if(!obj)fail(404,'Stored file missing');
@@ -433,16 +458,29 @@ async function download(req,env,parts,url){
   // First *successful* download starts the post-download 24/48-hour retention clock.
   await env.DB.prepare('UPDATE projects SET first_downloaded_at=COALESCE(first_downloaded_at,?),expires_at=COALESCE(expires_at,?) WHERE id=?').bind(time,time+project.retention_hours*3600,pid).run();
   await logDaily(env,{downloads:1});
-  return new Response(obj.body,{status:200,headers:{'Content-Type':ASSET_TYPES[kind],'Content-Disposition':`attachment; filename="${WINDOWS_FILE_NAMES[kind]||fileNames[kind]}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Length':String(asset.bytes)}});
+  return new Response(obj.body,{status:200,headers:{'Content-Type':ASSET_TYPES[kind],'Content-Disposition':`attachment; filename="${EXPERIMENT_ASSET_NAMES[kind]||WINDOWS_FILE_NAMES[kind]||fileNames[kind]}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Length':String(asset.bytes)}});
 }
 async function removeProject(env,pid){
   const project=await getProject(env,pid);
   const busy=await env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND status='working' LIMIT 1").bind(pid).first();
   if(busy)fail(409,'Project has an active Muse lease; wait until it completes or expires');
   const rows=await allAssetKeys(env,pid);
+  const experimental=(await projectPolicy(env,pid)).experiment;
+  if(experimental){
+    await ensureExperimentTables(env);
+    const stored=await env.DB.prepare('SELECT r2_key FROM experimental_package_assets WHERE project_id=?').bind(pid).all();
+    for(const row of stored.results||[])rows.push(row);
+    rows.push({r2_key:experimentR2Key(pid,'scene-evidence-v1.json')});
+  }
   // Deletes are idempotent. If R2 fails, D1 remains intact for safe retry.
   for(const a of rows)await env.FILES.delete(a.r2_key);
+  if(experimental)await env.DB.batch([
+    env.DB.prepare('DELETE FROM experimental_package_assets WHERE project_id=?').bind(pid),
+    env.DB.prepare('DELETE FROM experimental_scene_windows WHERE project_id=?').bind(pid),
+    env.DB.prepare('DELETE FROM experimental_scene_indexes WHERE project_id=?').bind(pid)
+  ]);
   await env.DB.batch([
+    env.DB.prepare('DELETE FROM cinepulse_movie_controls WHERE project_id=?').bind(pid),
     env.DB.prepare('DELETE FROM windows_assets WHERE project_id=?').bind(pid),
     env.DB.prepare('DELETE FROM assets WHERE project_id=?').bind(pid),
     env.DB.prepare('DELETE FROM jobs WHERE project_id=?').bind(pid),
@@ -462,9 +500,10 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
+  await ensureMovieControls(env);
   if(method==='GET'&&parts[1]==='dl'&&parts.length===4)return download(request,env,parts,url);
   if(parts[1]==='w'&&parts.length>=4){
     const wid=parts[2],worker=await authWorker(request,env,wid);
@@ -476,7 +515,7 @@ async function route(request,env){
     }
     if(method==='GET'&&tail==='/agent/queue'){
       const [waiting,active]=await Promise.all([
-        env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE worker_id=? AND status='queued'").bind(wid).first(),
+        env.DB.prepare("SELECT COUNT(*) AS n FROM jobs j LEFT JOIN cinepulse_movie_controls c ON c.project_id=j.project_id WHERE j.worker_id=? AND j.status='queued' AND "+ELIGIBLE_MOVIE_CONTROL).bind(wid).first(),
         env.DB.prepare("SELECT * FROM jobs WHERE worker_id=? AND status='working' ORDER BY created_at LIMIT 1").bind(wid).first()
       ]);
       return json({queuedCount:waiting?.n||0,paused:!!worker.paused,activeTask:active?publicJob(active):null,notice:(waiting?.n||0)>0?'Waiting tasks available':'No waiting tasks.',nextEndpoint:'/agent/next'});
@@ -487,7 +526,7 @@ async function route(request,env){
       if(worker.paused||tail==='/agent/current')return json({task:null,paused:!!worker.paused});
       const time=nowSeconds(),id=newId(),expire=time+LEASE_SECONDS;
       // Atomic conditional claim; prevents two parallel Muse polls from taking the same job.
-      job=await env.DB.prepare("UPDATE jobs SET status='working',lease=?,lease_until=? WHERE id=(SELECT id FROM jobs WHERE worker_id=? AND status='queued' ORDER BY created_at LIMIT 1) AND NOT EXISTS (SELECT 1 FROM jobs WHERE worker_id=? AND status='working' AND lease_until>?) RETURNING *").bind(id,expire,wid,wid,time).first();
+      job=await env.DB.prepare("UPDATE jobs SET status='working',lease=?,lease_until=? WHERE id=(SELECT j.id FROM jobs j LEFT JOIN cinepulse_movie_controls c ON c.project_id=j.project_id WHERE j.worker_id=? AND j.status='queued' AND "+ELIGIBLE_MOVIE_CONTROL+" ORDER BY j.created_at LIMIT 1) AND NOT EXISTS (SELECT 1 FROM jobs WHERE worker_id=? AND status='working' AND lease_until>?) RETURNING *").bind(id,expire,wid,wid,time).first();
       if(!job)return json({task:null,paused:false,notice:'No waiting tasks.'});
       return json({task:await taskDetail(env,job),paused:false,nextEndpoint:'/agent/next'});
     }
@@ -495,10 +534,17 @@ async function route(request,env){
     if(taskMatch){
       const jid=requireUUID(taskMatch[1]),action=taskMatch[2]||'',job=await getJob(env,jid);
       if(job.worker_id!==wid)fail(403,'Cross-worker task access forbidden');
+      if(controlIsStopped(await getProject(env,job.project_id)))fail(410,'Stopped movie; task lease revoked, results/uploads rejected');
       const validLease=request.headers.get('X-CinePulse-Lease')===job.lease && job.status==='working'&&job.lease_until>nowSeconds();
       if(method==='GET'&&action===''){return json({...publicJob(job),...(job.status==='done'?{output:job.output}:{}),lease:job.lease});}
       if(method==='GET'&&(action==='asset'||action.startsWith('asset/'))){
         const kind=action==='asset'?(job.step_id==='srt_english'?'english_mp3':job.step_id==='srt_urdu'?'urdu_mp3':'source_srt'):action.slice('asset/'.length);
+        if(kind==='scene_index_json'){
+          if(!(await projectPolicy(env,job.project_id)).experiment)fail(404,'Experimental source index unavailable');
+          const file=await env.FILES.get(experimentR2Key(job.project_id,'scene-evidence-v1.json'));
+          if(!file)fail(404,'Experimental source index missing');
+          return new Response(file.body,{headers:{'Content-Type':'application/json','Cache-Control':'private, no-store'}});
+        }
         if(!['source_srt','english_mp3','urdu_mp3'].includes(kind))fail(404,'Asset not found');
         const row=await assetByKind(env,job.project_id,kind);if(!row)fail(404,'Asset not uploaded yet');
         const file=await env.FILES.get(row.r2_key);if(!file)fail(404,'Asset missing');
@@ -506,7 +552,15 @@ async function route(request,env){
       }
       if(method==='POST'&&action.startsWith('asset/')){
         if(!validLease)fail(409,'Valid active lease required for upload');
-        const kind=action.slice('asset/'.length);if(!['english_mp3','urdu_mp3'].includes(kind))fail(400,'Only MP3 uploads supported');
+        const kind=action.slice('asset/'.length);
+        if(kind==='scene_index_sqlite'){
+          const policy=await projectPolicy(env,job.project_id);
+          if(!policy.experiment||job.step_id!=='scene_intelligence')fail(403,'Only experimental scene intelligence may upload SQLite');
+          if(Number(request.headers.get('content-length')||0)>12*1024*1024)fail(413,'Scene SQLite exceeds 12 MiB');
+          const binary=await request.arrayBuffer();
+          try{return json(await storeExperimentAsset(env,{projectId:job.project_id,kind,bytes:binary}),201);}catch(error){fail(422,String(error.message));}
+        }
+        if(!['english_mp3','urdu_mp3'].includes(kind))fail(400,'Only MP3 and authorized scene SQLite uploads supported');
         if((job.step_id==='mp3_english'&&kind!=='english_mp3')||(job.step_id==='mp3_urdu'&&kind!=='urdu_mp3'))fail(403,'Audio asset does not match this stage');
         if(!['mp3_english','mp3_urdu'].includes(job.step_id))fail(403,'Only MP3 stage may upload audio');
         return json(await uploadAudio(request,env,job.project_id,kind),201);
@@ -534,6 +588,12 @@ async function route(request,env){
         if(job.step_id==='mp3_english'&&!await assetByKind(env,job.project_id,'english_mp3'))fail(409,'Real English MP3 upload required');
         if(job.step_id==='mp3_urdu'&&!await assetByKind(env,job.project_id,'urdu_mp3'))fail(409,'Real Urdu MP3 upload required');
         if(['srt_english','srt_urdu'].includes(job.step_id))normalizeSrt(output);
+        if(job.step_id==='scene_intelligence'){
+          const policy=await projectPolicy(env,job.project_id);
+          if(!policy.experiment)fail(403,'Scene intelligence is experimental only');
+          if(!(await assetByKind(env,job.project_id,'scene_index_sqlite')))fail(409,'Upload a real Scene_Intelligence.sqlite before completion');
+          try{validateSceneIntelligenceOutput(output);}catch(error){fail(422,'Scene intelligence rejected: '+String(error.message));}
+        }
         // Keep Muse's lease and previous work intact when Muse submits an
         // incorrect calculation. Feed exact validation errors back into its
         // next task poll, so only Muse repairs the proposed edit decisions.
@@ -574,7 +634,8 @@ async function route(request,env){
             const original=await env.FILES.get((await getProject(env,job.project_id)).source_srt_key);
             if(!original)fail(409,'Movie source SRT missing');
             try{validateFinalCutPlan(cuts,{
-              sourceSrt:await original.text(),englishSrt:outputs.srt_english,urduSrt:outputs.srt_urdu
+              sourceSrt:await original.text(),englishSrt:outputs.srt_english,urduSrt:outputs.srt_urdu,
+              experimentalReview:policy.experiment
             });}catch(error){fail(422,'Final timestamp checks failed: '+error.message);}
           }else if(!Array.isArray(cuts)||!cuts.length||cuts.some(c=>!Number.isFinite(c.sourceStartSeconds)||!Number.isFinite(c.sourceEndSeconds)||c.sourceEndSeconds<=c.sourceStartSeconds))
             fail(422,'Legacy cut plan source timestamps invalid');
@@ -596,6 +657,7 @@ async function route(request,env){
                 narrations:{english:old.narration_english,urdu:old.narration_urdu},
                 narrationSrts:{english:old.srt_english,urdu:old.srt_urdu},
                 digest:old.digest,cutPlan:JSON.parse(old.cut_plan),metadata,
+                experimentalReview:policy.experiment,
                 mp3Manifest:{
                   english:{filename:fileNames.english_mp3,bytes:en.bytes,sha256:en.sha256},
                   urdu:{filename:fileNames.urdu_mp3,bytes:ur.bytes,sha256:ur.sha256}
@@ -607,7 +669,7 @@ async function route(request,env){
         }catch(error){
           const policy=await projectPolicy(env,job.project_id);
           if(policy.museOwnsCuts && [422].includes(error?.status) &&
-             ['scene_matching','cut_plan','windows_project'].includes(job.step_id)){
+             ['scene_intelligence','scene_matching','cut_plan','windows_project'].includes(job.step_id)){
             const feedback='RETRY REQUIRED: '+String(error.message||'Invalid Muse output').slice(0,1200)+
               '\nRecalculate and resubmit the full corrected result. Do not ask Cloudflare or Android to invent edits.';
             await env.DB.prepare("UPDATE jobs SET prompt=? WHERE id=? AND lease=? AND status='working'")
@@ -675,6 +737,8 @@ async function route(request,env){
   }
   if(method==='POST'&&url.pathname==='/v1/projects'){
     const body=await getJson(request);
+    const experiment=body.productionMode==='scene_intelligence_experiment';
+    if(body.productionMode && body.productionMode!=='stable' && !experiment)fail(422,'Unknown CinePulse production mode');
     let requested;try{requested=isLongFormCreateRequest(body);}catch(error){fail(422,error.message);}
     const title=requireString(body.title,'movie title'),workerId=requireUUID(body.workerId),worker=await env.DB.prepare('SELECT * FROM workers WHERE id=? AND enabled=1').bind(workerId).first();
     if(!worker)fail(404,'Select an active Muse worker');
@@ -692,21 +756,26 @@ async function route(request,env){
         env.DB.prepare("INSERT INTO assets(project_id,kind,r2_key,bytes,sha256,created_at) VALUES(?,'source_srt',?,?,?,?)").bind(pid,key,bytes.byteLength,await sha256(bytes),time)
       ]);
     }catch(error){await env.FILES.delete(key);throw error;}
+    if(experiment){
+      try{await createExperimentIndex(env,{projectId:pid,title,sourceSrt:srt});}
+      catch(error){await removeProject(env,pid);fail(422,'Experimental subtitle evidence creation failed: '+String(error.message));}
+    }
     await logDaily(env,{projects_created:1,uploaded_bytes:bytes.byteLength});
     // Durable project-level policy stored in the first digest job prompt: no schema migration.
-    const policyPrompt=`${MUSE_V4_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=8\n${promptFor('digest')}`;
+    const policyPrompt=`${experiment?EXPERIMENT_JOB_MARKER:MUSE_V4_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=${experiment?11:8}\n${promptFor('digest')}`;
     const taskId=await queueTask(env,{id:pid,worker_id:workerId},'digest',policyPrompt);
     return json({projectId:pid,workerId,title,firstTaskId:taskId,stage:'digest',status:'processing',retentionHours:hours,
+      productionMode:experiment?'scene_intelligence_experiment':'stable',
       targetMinutes:requested.targetMinutes,outputMode:requested.outputMode,
       modules:{digest:true,englishNarration:true,urduNarration:true,metadata:true,englishMp3:true,urduMp3:true,
         englishMeasuredSrt:true,urduMeasuredSrt:true,sceneMatching:true,finalCuts:true,
-        finalCutOwner:'muse',windowsProjectOwner:'muse',windowsAssets:8,shorts:false,virals:false}},201);
+        finalCutOwner:'muse',windowsProjectOwner:'muse',windowsAssets:experiment?11:8,shorts:false,virals:false}},201);
   }
   if(method==='GET'&&url.pathname==='/v1/projects'){
     // Admin authenticated listing is also the safe self-heal opportunity for
     // accepted final jobs stuck at storage registration. At most one per poll.
     const recovery=await recoverOneCompletedProject(env);
-    const rows=await env.DB.prepare('SELECT * FROM projects ORDER BY created_at DESC LIMIT 200').all();
+    const rows=await env.DB.prepare('SELECT p.*, '+MOVIE_CONTROL_FIELDS+' FROM projects p '+MOVIE_CONTROL_JOIN+' ORDER BY p.created_at DESC LIMIT 200').all();
     return json({projects:(rows.results||[]).map(publicProject),
       ...(recovery.attempted?{finalizationRecovery:recovery}:{})});
   }
@@ -714,19 +783,43 @@ async function route(request,env){
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
     if(method==='GET'&&!action){
-      const recovery=project.status==='needs_review'&&project.updated_at<nowSeconds()-30?
+      const recovery=!controlIsStopped(project)&&project.status==='needs_review'&&project.updated_at<nowSeconds()-30?
         await recoverAcceptedFinalization(env,project):{attempted:false};
       const updated=recovery.attempted?await getProject(env,pid):project;
       const rows=await env.DB.prepare('SELECT * FROM jobs WHERE project_id=? ORDER BY created_at').bind(pid).all();
       const assetRows=await allAssetMetadata(env,pid);
-      return json({project:publicProject(updated),jobs:(rows.results||[]).map(publicJob),
+      return json({project:{...publicProject(updated),productionMode:(await projectPolicy(env,pid)).experiment?'scene_intelligence_experiment':'stable'},jobs:(rows.results||[]).map(publicJob),
         assets:assetRows,...(recovery.attempted?{finalizationRecovery:recovery}:{})});
+    }
+    if(method==='POST'&&['pause','resume','stop'].includes(action)){
+      if(project.status==='ready'&&!controlIsStopped(project))fail(409,'Ready movies can be deleted after downloading');
+      const time=nowSeconds();
+      if(action==='stop'){
+        // Transactionally revoke active task lease and cancel queued stages
+        // for this PROJECT ID only. Other movies on this worker continue.
+        await env.DB.batch([
+          env.DB.prepare("INSERT INTO cinepulse_movie_controls(project_id,paused,stopped,updated_at) VALUES(?,0,1,?) ON CONFLICT(project_id) DO UPDATE SET paused=0,stopped=1,updated_at=excluded.updated_at").bind(pid,time),
+          env.DB.prepare("UPDATE jobs SET status='cancelled',lease=NULL,lease_until=NULL,finished_at=?,error='Stopped by movie administrator' WHERE project_id=? AND status IN ('queued','working')").bind(time,pid),
+          env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=? AND status='processing'").bind(time,pid)
+        ]);
+        return json({projectId:pid,status:'stopped',paused:false,stopped:true,revoked:true,
+          message:'Movie stopped: active server lease revoked, queued tasks cancelled. An already-running external Muse request cannot be forcibly killed, but its uploads and results are rejected. Other movies keep processing.'});
+      }
+      if(controlIsStopped(project))fail(409,'Stopped movies cannot resume; submit again explicitly if needed');
+      if(project.status!=='processing')fail(409,'Only processing movies can be paused or resumed');
+      const paused=action==='pause'?1:0;
+      await env.DB.prepare("INSERT INTO cinepulse_movie_controls(project_id,paused,stopped,updated_at) VALUES(?,?,0,?) ON CONFLICT(project_id) DO UPDATE SET paused=excluded.paused,updated_at=excluded.updated_at WHERE stopped=0").bind(pid,paused,time).run();
+      return json({projectId:pid,status:'processing',paused:!!paused,stopped:false,
+        message:paused?'This movie is paused; current task may complete but no new stages will be claimed. Other movies continue.':'Movie resumed on its original Muse worker.'});
     }
     if(method==='POST'&&action==='repair-finalization'){
       const result=await recoverAcceptedFinalization(env,project);
       return json({project:publicProject(await getProject(env,pid)),recovery:result});
     }
-    if(method==='DELETE'&&!action){await removeProject(env,pid);return json({deleted:true,id:pid,notice:'All project files and tasks removed; this cannot be undone'});}
+    if(method==='DELETE'&&!action){
+      if(project.status==='processing'&&!controlIsStopped(project))fail(409,'Stop this movie before deleting an active project');
+      await removeProject(env,pid);return json({deleted:true,id:pid,notice:'This movie and its Muse queue tasks, scene evidence and R2 assets were deleted. Other movies and worker credentials are unchanged.'});
+    }
     if(method==='POST'&&action==='finalize'){
       const m=await getJson(request);const result=await finalizeProject(env,project,m);
       return json(result);

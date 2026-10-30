@@ -1,0 +1,37 @@
+name: CinePulse Cloudflare D1-R2 permission audit (READ ONLY)
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths: ['.github/workflows/cinepulse-v3828-permissions-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-scopes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect actual GitHub-secret Cloudflare capabilities without displaying tokens
+        env:
+          CF_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CF_TOKEN"
+          [[ "$CF_ACCOUNT" =~ ^[0-9a-fA-F]{32}$ ]]
+          base="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT"
+          for service in worker d1 r2; do
+            case "$service" in
+              worker) endpoint="$base/workers/scripts/cinepulse-android-bridge/settings" ;;
+              d1) endpoint="$base/d1/database?per_page=1" ;;
+              r2) endpoint="$base/r2/buckets?per_page=1" ;;
+            esac
+            status=$(curl -sS --max-time 30 -o "/tmp/cf-$service.json" -w '%{http_code}' \
+              -H "Authorization: Bearer $CF_TOKEN" \
+              -H 'Accept: application/json' "$endpoint")
+            success=$(jq -r '.success // false' "/tmp/cf-$service.json" 2>/dev/null || echo false)
+            error_code=$(jq -r '[.errors[]?.code][0] // "none"' "/tmp/cf-$service.json" 2>/dev/null || echo unknown)
+            echo "CLOUDFLARE_SCOPE_${service^^} HTTP=$status SUCCESS=$success ERROR_CODE=$error_code"
+          done
+          echo 'Audit complete: no writes, no deployments and no credential values logged.'

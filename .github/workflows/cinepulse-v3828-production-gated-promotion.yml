@@ -78,14 +78,14 @@ jobs:
           sleep 3
           for attempt in $(seq 1 12); do
             status=$(curl -sS --connect-timeout 10 --max-time 20 -o /tmp/cp-after-health.json -w '%{http_code}' "$PROD_ORIGIN/health") || status=000
-            if [[ "$status" == "200" ]] && jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.museOwnsCuts==true' /tmp/cp-after-health.json >/dev/null; then break; fi
+            if [[ "$status" == "200" ]] && jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.museOwnsCuts==true' /tmp/cp-after-health.json >/dev/null; then break; fi
             sleep 3
           done
           [[ "$status" == "200" ]]
-          jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.windowsAssetCount==8' /tmp/cp-after-health.json >/dev/null
+          jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.windowsAssetCount==8' /tmp/cp-after-health.json >/dev/null
           no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects")
           test "$no_auth" = "401"
-          echo 'PRODUCTION_EXPERIMENT_OPT_IN_AVAILABLE_STABLE_ENDPOINT_ALIVE_AND_AUTH_LOCKED'
+          echo 'PRODUCTION_EXPERIMENT_OPT_IN_AND_MOVIE_PAUSE_STOP_DELETE_AVAILABLE_STABLE_ENDPOINT_ALIVE_AND_AUTH_LOCKED'
           trap - EXIT
       - name: Report active version on success
         if: success()

@@ -1,0 +1,97 @@
+name: CinePulse v3.8.28 guarded production bridge promotion
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - '.github/workflows/cinepulse-v3828-production-gated-promotion.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-main-bridge-production-deploy
+  cancel-in-progress: false
+jobs:
+  production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      PROD_ORIGIN: https://cinepulse-android-bridge.maryumblog.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify current target, backup deployed version, verify live Worker health
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]]
+          node <<'NODE'
+          import {readFileSync} from 'node:fs';
+          const c=JSON.parse(readFileSync('wrangler.json','utf8'));
+          if(c.name!=='cinepulse-android-bridge'||c.main!=='src/index.mjs'||!c.keep_vars)
+            throw Error('Unexpected production script or missing keep_vars');
+          if(c.d1_databases?.[0]?.binding!=='DB'||c.r2_buckets?.[0]?.binding!=='FILES')
+            throw Error('Production D1/R2 binding names changed');
+          NODE
+          curl -fsS --connect-timeout 12 --max-time 25 "$PROD_ORIGIN/health" > /tmp/cp-before-health.json
+          jq -e '.status=="online" and .cloudOrigin==true and .policy.museOwnsCuts==true and .policy.windowsAssetCount==8' /tmp/cp-before-health.json >/dev/null
+          curl -fsS --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/cinepulse-android-bridge/deployments" > /tmp/cp-before-deployments.json
+          jq -e '.success==true' /tmp/cp-before-deployments.json >/dev/null
+          jq -r '[.result.deployments[]?.versions[]? | select(.percentage==100) | .version_id][0] // empty' /tmp/cp-before-deployments.json > /tmp/cp-previous-id
+          [[ "$(cat /tmp/cp-previous-id)" =~ ^[a-fA-F0-9-]{36}$ ]]
+          echo 'BASELINE_PRODUCTION_VERSION_CAPTURED'
+      - name: Run all Cloudflare regressions and portable SQLite builder tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          node --check src/index.mjs
+          node --test tests/*.test.mjs
+          python3 -m unittest discover -s tests -p 'test_scene_sqlite.py' -v
+          npx wrangler deploy --dry-run --config wrangler.json
+          echo 'PRE_DEPLOY_TESTS_PASSED'
+      - name: Deploy with guaranteed failure-triggered rollback and smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous=$(cat /tmp/cp-previous-id)
+          deployed=0
+          rollback_on_failure(){
+            rc=$?
+            if [[ "$rc" != "0" && "$deployed" == "1" ]]; then
+              echo "::error::Production verification failed; reverting to preserved previous Worker version"
+              npx wrangler rollback "$previous" --name cinepulse-android-bridge --message "CinePulse v3828 automatic rollback after failed health/auth check" || true
+            fi
+            exit "$rc"
+          }
+          trap rollback_on_failure EXIT
+          npx wrangler deploy --config wrangler.json
+          deployed=1
+          sleep 3
+          for attempt in $(seq 1 12); do
+            status=$(curl -sS --connect-timeout 10 --max-time 20 -o /tmp/cp-after-health.json -w '%{http_code}' "$PROD_ORIGIN/health") || status=000
+            if [[ "$status" == "200" ]] && jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.museOwnsCuts==true' /tmp/cp-after-health.json >/dev/null; then break; fi
+            sleep 3
+          done
+          [[ "$status" == "200" ]]
+          jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.windowsAssetCount==8' /tmp/cp-after-health.json >/dev/null
+          no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects")
+          test "$no_auth" = "401"
+          echo 'PRODUCTION_EXPERIMENT_OPT_IN_AVAILABLE_STABLE_ENDPOINT_ALIVE_AND_AUTH_LOCKED'
+          trap - EXIT
+      - name: Report active version on success
+        if: success()
+        shell: bash
+        run: |
+          curl -fsS --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/cinepulse-android-bridge/deployments" > /tmp/cp-after-deployments.json
+          jq -e '.success==true' /tmp/cp-after-deployments.json >/dev/null
+          echo 'PRODUCTION_PROMOTION_VERIFIED'

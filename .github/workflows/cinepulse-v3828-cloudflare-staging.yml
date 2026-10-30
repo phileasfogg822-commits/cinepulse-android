@@ -1,10 +1,5 @@
 name: CinePulse v3.8.28 ISOLATED Cloudflare staging deployment
 on:
-  push:
-    branches: [feature/scene-intelligence-v3828-staging]
-    paths:
-      - '.github/workflows/cinepulse-v3828-cloudflare-staging.yml'
-      - 'cloudflare/cinepulse-android/src/staging-scene-worker.mjs'
   workflow_dispatch:
 permissions:
   contents: read

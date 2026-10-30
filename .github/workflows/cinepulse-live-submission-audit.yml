@@ -44,7 +44,17 @@ jobs:
           ORDER BY p.created_at DESC,p.rowid DESC LIMIT 7"
           npx wrangler d1 execute cinepulse-android-db --remote --json --command "$sql" > /tmp/cp-readonly-audit.json 2>/tmp/cp-readonly-error.log || {
             echo 'READ_ONLY_D1_QUERY_FAILED'
-            sed -n '1,5p' /tmp/cp-readonly-error.log | sed -E 's/[A-Za-z0-9_]{40,}/[redacted]/g'
+            node --input-type=module - <<'ERRORREPORT'
+            import fs from 'node:fs';
+            const stdout=fs.readFileSync('/tmp/cp-readonly-audit.json','utf8');
+            const stderr=fs.readFileSync('/tmp/cp-readonly-error.log','utf8');
+            const scrub=x=>String(x).replace(/Bearer\\s+[^\\s]+/gi,'Bearer [REDACTED]').replace(/[A-Za-z0-9_]{40,}/g,'[REDACTED]').slice(0,350);
+            try{
+              const obj=JSON.parse(stdout);
+              const groups=Array.isArray(obj)?obj:[obj];
+              console.log('D1_ERROR_JSON='+JSON.stringify(groups.map(o=>({success:o?.success,errors:(o?.errors||[]).map(e=>({code:e.code,message:scrub(e.message)}))}))));
+            }catch{ console.log('D1_ERROR_STDERR='+scrub(stderr)); }
+            ERRORREPORT
             exit 2
           }
           node --input-type=module - <<'NODE'

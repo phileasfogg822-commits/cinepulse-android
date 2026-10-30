@@ -34,6 +34,22 @@ export default {
    if(!authorized(request,env))return err(401,'Staging bearer token required');
    if(!env.SCENE_DB||!env.SCENE_FILES)return err(503,'Staging bindings missing');
    if(request.method==='POST'&&url.pathname==='/v1/experimental/projects'){
+     // D1 Worker binding uses ONLY experiment-prefixed tables.
+     // No D1 control-plane API call and no stable table alteration.
+     await env.SCENE_DB.prepare(`CREATE TABLE IF NOT EXISTS experimental_scene_indexes(
+       project_id TEXT NOT NULL,source_srt_sha256 TEXT NOT NULL,
+       version INTEGER NOT NULL,r2_snapshot_key TEXT NOT NULL,
+       snapshot_sha256 TEXT NOT NULL,status TEXT NOT NULL,
+       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+       PRIMARY KEY(project_id,source_srt_sha256,version))`).run();
+     await env.SCENE_DB.prepare(`CREATE TABLE IF NOT EXISTS experimental_scene_windows(
+       project_id TEXT NOT NULL,source_srt_sha256 TEXT NOT NULL,
+       version INTEGER NOT NULL,window_id TEXT NOT NULL,
+       source_start_ms INTEGER NOT NULL,source_end_ms INTEGER NOT NULL,
+       cue_start INTEGER NOT NULL,cue_end INTEGER NOT NULL,
+       subtitle_text TEXT NOT NULL,character_events_json TEXT DEFAULT '{}',
+       visual_verified INTEGER NOT NULL DEFAULT 0,
+       PRIMARY KEY(project_id,source_srt_sha256,version,window_id))`).run();
      const body=JSON.parse(new TextDecoder().decode(await readBody(request,2200000)));
      const index=await buildSceneEvidenceIndex({
        projectId:body.projectId,title:body.title,sourceSrt:body.sourceSrt

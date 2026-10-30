@@ -21,6 +21,7 @@ import android.view.WindowManager;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -327,6 +328,11 @@ public final class MainActivity extends Activity {
         form.addView(text("Desired narration length (minutes; each language)",13,Color.DKGRAY,true));
         form.addView(minutes);
         form.addView(text("Muse will aim for this duration once the Cloudflare backend accepts targetMinutes. MP3/STT duration is verified after generation.",12,Color.DKGRAY,false));
+        CheckBox experiment=new CheckBox(this);
+        experiment.setText("Experimental scene intelligence (new isolated project, 11-file package)");
+        experiment.setChecked(false);
+        form.addView(experiment);
+        form.addView(text("Stable (unchecked) preserves the current successful Muse workflow. Experimental creates a new project ID, builds the source scene index during digest, and asks the SAME Muse worker to finish both cut plans before download.",12,Color.DKGRAY,false));
         form.addView(text("Processing worker",13,Color.DKGRAY,true));
         Spinner spinner=new Spinner(this);
         ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);
@@ -343,11 +349,19 @@ public final class MainActivity extends Activity {
                 if(target<3||target>60){showError("Narration duration must be 3–60 minutes.");return;}
                 String worker=ids.get(spinner.getSelectedItemPosition());
                 task("Uploading subtitle",()->{
-                    String srt=readSrt(uri);return api.createProject(title,worker,srt,48,target);
+                    String srt=readSrt(uri);
+                    return experiment.isChecked()?api.createExperimentalProject(title,worker,srt,48,target):
+                        api.createProject(title,worker,srt,48,target);
                 },r->{
                     int accepted=r.optInt("targetMinutes",-1);
+                    boolean confirmedExperiment="scene_intelligence_experiment".equals(r.optString("productionMode"));
+                    boolean expectedExperiment=experiment.isChecked();
                     new AlertDialog.Builder(this).setTitle("Movie queued")
-                        .setMessage(accepted==target?
+                        .setMessage(expectedExperiment&&!confirmedExperiment?
+                            "Cloudflare did not confirm experimental mode. The server may have accepted this as a stable project; do not submit the same movie again automatically. Check the project timeline and update the backend first.":
+                            confirmedExperiment?
+                            "New isolated experimental movie queued on the same Muse worker. Digest will build reusable source scene evidence, and Muse must finalize both narrations and cut plans before the 11-file SQLite package becomes available.":
+                            accepted==target?
                             "Cloudflare accepted the "+target+"-minute narration target. CinePulse requested only English and Urdu long-form processing; verify that your deployed worker supports long_form_only before assuming shorts are skipped.":
                             "Movie submitted, but this backend has not confirmed the narration target or long_form_only processing policy. Update Cloudflare before relying on those controls.")
                         .setPositiveButton("View projects",(innerDialog,innerWhich)->refresh()).show();
@@ -403,11 +417,12 @@ public final class MainActivity extends Activity {
         content.addView(action("← All movies",()->{openedProject=null;renderHome();},false),fullWithBottom(15));
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
         summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
-        summary.addView(text(status.equals("ready")?"Long-form export ready for checks. The eight-file Windows package requires complete English/Urdu MP3s, measured SRTs, metadata, digest and non-overlapping final cuts. No shorts or viral files are included.":
+        final boolean experimentalProject="scene_intelligence_experiment".equals(project.optString("productionMode"));
+        summary.addView(text(status.equals("ready")?(experimentalProject?"Experimental eleven-file package ready: includes reusable source scene SQLite, bilingual cuts, both MP3s and measured SRTs. Original movie video is linked locally in Windows.":"Long-form export ready for checks. The eight-file Windows package requires complete English/Urdu MP3s, measured SRTs, metadata, digest and non-overlapping final cuts. No shorts or viral files are included."):
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
         space(summary,12);
         if(status.equals("ready")){
-            summary.addView(action("Download long-form Windows package (8 files)",()->startPackageDownload(id),true));
+            summary.addView(action(experimentalProject?"Download experimental Windows package (11 files)":"Download long-form Windows package (8 files)",()->startPackageDownload(id),true));
             space(summary,7);
             summary.addView(action("Verify and share Windows-ready ZIP",()->shareProjectZip(id),false));
         }
@@ -792,8 +807,13 @@ public final class MainActivity extends Activity {
     private void shareProjectZip(String id){
         if(!SecurityRules.validUuid(id)){showError("Invalid project ID");return;}
         task("Downloading and verifying complete ZIP",()->{
-            JSONObject detail=api.project(id),links=api.downloads(id);
-            return new VerifiedDownloads(getContentResolver(),getCacheDir()).createVerifiedZip(id,detail,links,
+            JSONObject detail=api.project(id);
+            boolean experiment="scene_intelligence_experiment".equals(detail.getJSONObject("project").optString("productionMode"));
+            JSONObject links=experiment?api.experimentalDownloads(id):api.downloads(id);
+            VerifiedDownloads manager=new VerifiedDownloads(getContentResolver(),getCacheDir());
+            return experiment?manager.createExperimentalZip(id,detail,links,
+                step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
+                manager.createVerifiedZip(id,detail,links,
                 step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
         },result->{
             String excerpt=result.report.length()>1500?result.report.substring(0,1500)+"\n… full report is in ZIP":result.report;
@@ -834,8 +854,13 @@ public final class MainActivity extends Activity {
     private void downloadProject(String id){
         task("Downloading 4 files to Downloads/CinePulse",()->{
             // Fresh signed links on every click; verify all files before publishing any.
-            JSONObject detail=api.project(id),urls=api.downloads(id);
-            return new VerifiedDownloads(getContentResolver(),getCacheDir()).downloadToDownloads(
+            JSONObject detail=api.project(id);
+            boolean experiment="scene_intelligence_experiment".equals(detail.getJSONObject("project").optString("productionMode"));
+            JSONObject urls=experiment?api.experimentalDownloads(id):api.downloads(id);
+            VerifiedDownloads manager=new VerifiedDownloads(getContentResolver(),getCacheDir());
+            return experiment?manager.downloadExperimentalToDownloads(
+                id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
+                manager.downloadToDownloads(
                 id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
         },message->new AlertDialog.Builder(this).setTitle("Verified Windows package downloaded")
             .setMessage(message).setPositiveButton("Done",null).show());

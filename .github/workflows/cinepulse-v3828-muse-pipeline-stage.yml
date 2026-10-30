@@ -1,4 +1,5 @@
 name: CinePulse v3828 experimental Muse queue staging (synthetic, auto-cleanup)
+# Re-verify new one-movie controls after contract tests passed; this deploys ONLY the separate staging Worker.
 on:
   push:
     branches: [feature/scene-intelligence-v3828-staging]

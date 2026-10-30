@@ -255,6 +255,14 @@ async function finalizeProject(env,project,manifest,{generatedByCloudflare=false
       narrationSrts:manifest.narrationSrts,cuts:manifest.cutPlan,
       metadata:manifest.metadata,mp3s:document.audio,metrics:cutMetrics
     });
+    if(policy.experiment){
+      if(!(await assetByKind(env,project.id,'scene_index_sqlite')))fail(409,'Experimental scene SQLite must be present');
+      const englishCuts=manifest.cutPlan.filter(c=>c.language==='english');
+      const urduCuts=manifest.cutPlan.filter(c=>c.language==='urdu');
+      if(!englishCuts.length||!urduCuts.length)fail(422,'Both language cut plans must be finalized');
+      await storeExperimentAsset(env,{projectId:project.id,kind:'english_final_cuts',bytes:new TextEncoder().encode(JSON.stringify(englishCuts))});
+      await storeExperimentAsset(env,{projectId:project.id,kind:'urdu_final_cuts',bytes:new TextEncoder().encode(JSON.stringify(urduCuts))});
+    }
     const serverFiles={
       windows_project_json:JSON.stringify(projectJson),
       english_srt:manifest.narrationSrts.english,urdu_srt:manifest.narrationSrts.urdu,
@@ -268,7 +276,7 @@ async function finalizeProject(env,project,manifest,{generatedByCloudflare=false
     // Readiness means all EIGHT requested files exist physically in R2 and
     // each D1 registry points to a file of the advertised byte count.
     // Do not mark a movie ready on metadata alone.
-    for(const kind of WINDOWS_FILE_KINDS){
+    for(const kind of (policy.experiment?[...WINDOWS_FILE_KINDS,...Object.keys(EXPERIMENT_ASSET_NAMES)]:WINDOWS_FILE_KINDS)){
       const row=await assetByKind(env,project.id,kind);
       if(!row||!row.r2_key||!Number.isSafeInteger(Number(row.bytes))||Number(row.bytes)<1)
         fail(500,'Missing generated Windows asset: '+kind);
@@ -451,8 +459,20 @@ async function removeProject(env,pid){
   const busy=await env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND status='working' LIMIT 1").bind(pid).first();
   if(busy)fail(409,'Project has an active Muse lease; wait until it completes or expires');
   const rows=await allAssetKeys(env,pid);
+  const experimental=(await projectPolicy(env,pid)).experiment;
+  if(experimental){
+    await ensureExperimentTables(env);
+    const stored=await env.DB.prepare('SELECT r2_key FROM experimental_package_assets WHERE project_id=?').bind(pid).all();
+    for(const row of stored.results||[])rows.push(row);
+    rows.push({r2_key:experimentR2Key(pid,'scene-evidence-v1.json')});
+  }
   // Deletes are idempotent. If R2 fails, D1 remains intact for safe retry.
   for(const a of rows)await env.FILES.delete(a.r2_key);
+  if(experimental)await env.DB.batch([
+    env.DB.prepare('DELETE FROM experimental_package_assets WHERE project_id=?').bind(pid),
+    env.DB.prepare('DELETE FROM experimental_scene_windows WHERE project_id=?').bind(pid),
+    env.DB.prepare('DELETE FROM experimental_scene_indexes WHERE project_id=?').bind(pid)
+  ]);
   await env.DB.batch([
     env.DB.prepare('DELETE FROM windows_assets WHERE project_id=?').bind(pid),
     env.DB.prepare('DELETE FROM assets WHERE project_id=?').bind(pid),

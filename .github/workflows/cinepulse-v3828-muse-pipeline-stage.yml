@@ -88,8 +88,18 @@ jobs:
           }
           trap cleanup EXIT
           curl -fsS --retry 8 --retry-delay 2 "$base/health" | jq -e '.status=="online"' >/dev/null
-          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json' \
-            --data '{"label":"CI synthetic v3828 ephemeral worker"}' "$base/v1/workers" > /tmp/scene-ci-worker.json
+          # Newly rotated staging secrets can need edge propagation after wrangler secret put.
+          # Retry only this synthetic staging auth probe; do not touch production credentials.
+          code=''
+          for auth_attempt in $(seq 1 12); do
+            code=$(curl -sS --max-time 20 -o /tmp/scene-ci-worker.json -w '%{http_code}' \
+              -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json' \
+              --data '{"label":"CI synthetic v3828 ephemeral worker"}' "$base/v1/workers") || code=000
+            if [[ "$code" == "201" ]]; then break; fi
+            [[ "$code" == "401" || "$code" == "503" ]] || { echo "STAGING_WORKER_CREATE_HTTP_$code"; exit 2; }
+            sleep 3
+          done
+          test "$code" = "201" || { echo "STAGING_AUTH_NOT_READY_AFTER_ROTATION"; exit 2; }
           worker_id=$(jq -r '.worker.id' /tmp/scene-ci-worker.json)
           worker_token=$(jq -r '.token' /tmp/scene-ci-worker.json)
           echo "::add-mask::$worker_token"

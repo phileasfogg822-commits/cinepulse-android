@@ -126,7 +126,7 @@ async function taskDetail(env,job) {
   const experimentSource=policy.experiment?await experimentalSourceInfo(env,job.project_id):null;
   const experimentPrompt=policy.experiment?experimentalQueuePrompt(job.step_id,{projectId:job.project_id,sourceSrtSha256:experimentSource.sourceSrtSha256}):'';
   return {...publicJob(job),lease:job.lease,
-    prompt:policy.museOwnsCuts?((experimentPrompt||museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes}))+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
+    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
       policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
     movie:policy.museOwnsCuts?{id:movie.id,title:movie.title,targetMinutes:policy.targetMinutes,workerId:movie.worker_id}:undefined,
     sourceSrtAsset:policy.museOwnsCuts?{path:assetPath+'/source_srt',mime:ASSET_TYPES.source_srt,name:'CinePulse_Source.srt'}:undefined,
@@ -658,7 +658,7 @@ async function route(request,env){
         }catch(error){
           const policy=await projectPolicy(env,job.project_id);
           if(policy.museOwnsCuts && [422].includes(error?.status) &&
-             ['scene_matching','cut_plan','windows_project'].includes(job.step_id)){
+             ['scene_intelligence','scene_matching','cut_plan','windows_project'].includes(job.step_id)){
             const feedback='RETRY REQUIRED: '+String(error.message||'Invalid Muse output').slice(0,1200)+
               '\nRecalculate and resubmit the full corrected result. Do not ask Cloudflare or Android to invent edits.';
             await env.DB.prepare("UPDATE jobs SET prompt=? WHERE id=? AND lease=? AND status='working'")

@@ -51,7 +51,7 @@ test('11-file policy keeps the 8 stable kinds and adds only three experimental f
   ['scene_index_sqlite','english_final_cuts','urdu_final_cuts'].sort());
  const app=readFileSync(new URL('../src/index.mjs',import.meta.url),'utf8');
  assert.match(app,/productionMode==='scene_intelligence_experiment'/);
- assert.match(app,/policy\.experiment\?EXPERIMENT_JOB_STAGES/);
+ assert.match(app,/experiment\?EXPERIMENT_JOB_STAGES/);
  assert.match(app,/format==='windows_experiment'/);
  assert.match(app,/windowsAssets:experiment\?11:8/);
  assert.match(app,/createExperimentIndex\(env/);

@@ -38,11 +38,11 @@ jobs:
       - name: Security source checks and Android build
         run: |
           python3 tools/verify_source.py
-          gradle --no-daemon --stacktrace lintDebug testDebugUnitTest assembleDebug
+          gradle --no-daemon --stacktrace -PcinepulsePreview=true lintDebug testDebugUnitTest assembleDebug
       - name: Upload isolated experimental debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: CinePulse-v3828-EXPERIMENT-Android-debug
+          name: CinePulse-v3828-EXPERIMENT-PREVIEW-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
           if-no-files-found: error

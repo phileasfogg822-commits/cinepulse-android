@@ -6,6 +6,7 @@ import { MUSE_V4_MARKER, MUSE_V4_STAGES, museStageInstructions, verifyMuseWindow
 import { assetRow,registerAsset,assetTableFor,allAssetKeys,allAssetMetadata,storageTotals,ensureWindowsAssets } from './asset-registry.mjs';
 import { EXPERIMENT_JOB_MARKER,EXPERIMENT_JOB_STAGES,experimentalQueuePrompt } from './experimental-muse-instructions.mjs';
 import { createExperimentIndex,experimentalSourceInfo,validateSceneIntelligenceOutput,storeExperimentAsset,experimentalAssetRow,isExperimentAssetKind,EXPERIMENT_ASSET_NAMES,ensureExperimentTables,experimentR2Key } from './experimental-bridge-runtime.mjs';
+import { ensureMovieControls, MOVIE_CONTROL_JOIN, MOVIE_CONTROL_FIELDS, ELIGIBLE_MOVIE_CONTROL, publicMovieState, controlIsStopped } from './movie-controls.mjs';
 
 // Legacy projects continue through their original stages. New projects use metadata only.
 const STAGES = ['digest','narration_english','narration_urdu','viral_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
@@ -59,10 +60,10 @@ const getJson = async (request,limit=MAX_JSON) => {
   try {return JSON.parse(body||'{}');} catch {fail(400,'Invalid JSON body');}
 };
 const requireUUID = v=>{if(!isUuid(v))fail(400,'Invalid identifier');return v;};
-async function getProject(env,id) {const project=await env.DB.prepare('SELECT * FROM projects WHERE id=?').bind(requireUUID(id)).first();if(!project)fail(404,'Project not found');return project;}
+async function getProject(env,id) {const project=await env.DB.prepare('SELECT p.*, '+MOVIE_CONTROL_FIELDS+' FROM projects p '+MOVIE_CONTROL_JOIN+' WHERE p.id=?').bind(requireUUID(id)).first();if(!project)fail(404,'Project not found');return project;}
 async function getJob(env,id) {const job=await env.DB.prepare('SELECT * FROM jobs WHERE id=?').bind(requireUUID(id)).first();if(!job)fail(404,'Task not found');return job;}
 const publicWorker=w=>({id:w.id,label:w.label,movieTitle:w.movie_title,enabled:!!w.enabled,paused:!!w.paused,createdAt:w.created_at,lastSeen:w.last_seen});
-const publicProject=p=>({id:p.id,workerId:p.worker_id,title:p.title,status:p.status,retentionHours:p.retention_hours,createdAt:p.created_at,readyAt:p.ready_at,firstDownloadedAt:p.first_downloaded_at,expiresAt:p.expires_at});
+const publicProject=p=>({id:p.id,workerId:p.worker_id,title:p.title,...publicMovieState(p),retentionHours:p.retention_hours,createdAt:p.created_at,readyAt:p.ready_at,firstDownloadedAt:p.first_downloaded_at,expiresAt:p.expires_at});
 const publicJob=j=>({id:j.id,workerId:j.worker_id,projectId:j.project_id,stepId:j.step_id,status:j.status,createdAt:j.created_at,finishedAt:j.finished_at,leaseUntil:j.lease_until,error:j.error||null});
 const objectKey=(projectId,kind)=>`projects/${projectId}/${kind}`;
 async function assetByKind(env,projectId,kind){return isExperimentAssetKind(kind)?experimentalAssetRow(env,projectId,kind):assetRow(env,projectId,kind);}
@@ -90,6 +91,7 @@ function promptFor(step) {
   }
 }
 async function queueTask(env,project,step,requestedPrompt){
+  if(controlIsStopped(await getProject(env,project.id)))fail(410,'Stopped movie cannot queue another Muse task');
   const timestamp=nowSeconds();const id=newId();
   let prompt=requestedPrompt||promptFor(step);
   if(!requestedPrompt && (step==='narration_english'||step==='narration_urdu')){
@@ -197,6 +199,7 @@ async function uploadAudio(request,env,projectId,kind) {
 }
 
 async function finalizeProject(env,project,manifest,{generatedByCloudflare=false,verifiedMuseJob=false}={}) {
+  if(controlIsStopped(await getProject(env,project.id)))fail(410,'Stopped movie cannot finalize');
   const policy=await projectPolicy(env,project.id);
   if(policy.serverCuts&&!generatedByCloudflare)
     fail(409,'Legacy V3 server-generated cut plan requires its normal task pipeline.');
@@ -369,6 +372,7 @@ async function autoFinalize(env,project){
  * Caller is an authenticated administrator; retry is idempotent.
  */
 async function recoverAcceptedFinalization(env,project){
+  if(controlIsStopped(await getProject(env,project.id)))return {attempted:false,reason:'movie_stopped'};
   if(project.status!=='needs_review')return {attempted:false,reason:'not_needs_review'};
   if(project.expires_at&&project.expires_at<=nowSeconds())
     return {attempted:false,reason:'expired'};
@@ -405,6 +409,7 @@ async function recoverOneCompletedProject(env,workerId=null){
   return {attempted:false};
 }
 async function advancePipeline(env,job){
+  if(controlIsStopped(await getProject(env,job.project_id)))return {status:'stopped',autoAdvanced:false};
   const policy=await projectPolicy(env,job.project_id);
   const stages=policy.stages;
   const current=stages.indexOf(job.step_id);
@@ -475,6 +480,7 @@ async function removeProject(env,pid){
     env.DB.prepare('DELETE FROM experimental_scene_indexes WHERE project_id=?').bind(pid)
   ]);
   await env.DB.batch([
+    env.DB.prepare('DELETE FROM cinepulse_movie_controls WHERE project_id=?').bind(pid),
     env.DB.prepare('DELETE FROM windows_assets WHERE project_id=?').bind(pid),
     env.DB.prepare('DELETE FROM assets WHERE project_id=?').bind(pid),
     env.DB.prepare('DELETE FROM jobs WHERE project_id=?').bind(pid),
@@ -494,9 +500,10 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
+  await ensureMovieControls(env);
   if(method==='GET'&&parts[1]==='dl'&&parts.length===4)return download(request,env,parts,url);
   if(parts[1]==='w'&&parts.length>=4){
     const wid=parts[2],worker=await authWorker(request,env,wid);
@@ -508,7 +515,7 @@ async function route(request,env){
     }
     if(method==='GET'&&tail==='/agent/queue'){
       const [waiting,active]=await Promise.all([
-        env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE worker_id=? AND status='queued'").bind(wid).first(),
+        env.DB.prepare("SELECT COUNT(*) AS n FROM jobs j LEFT JOIN cinepulse_movie_controls c ON c.project_id=j.project_id WHERE j.worker_id=? AND j.status='queued' AND "+ELIGIBLE_MOVIE_CONTROL).bind(wid).first(),
         env.DB.prepare("SELECT * FROM jobs WHERE worker_id=? AND status='working' ORDER BY created_at LIMIT 1").bind(wid).first()
       ]);
       return json({queuedCount:waiting?.n||0,paused:!!worker.paused,activeTask:active?publicJob(active):null,notice:(waiting?.n||0)>0?'Waiting tasks available':'No waiting tasks.',nextEndpoint:'/agent/next'});
@@ -519,7 +526,7 @@ async function route(request,env){
       if(worker.paused||tail==='/agent/current')return json({task:null,paused:!!worker.paused});
       const time=nowSeconds(),id=newId(),expire=time+LEASE_SECONDS;
       // Atomic conditional claim; prevents two parallel Muse polls from taking the same job.
-      job=await env.DB.prepare("UPDATE jobs SET status='working',lease=?,lease_until=? WHERE id=(SELECT id FROM jobs WHERE worker_id=? AND status='queued' ORDER BY created_at LIMIT 1) AND NOT EXISTS (SELECT 1 FROM jobs WHERE worker_id=? AND status='working' AND lease_until>?) RETURNING *").bind(id,expire,wid,wid,time).first();
+      job=await env.DB.prepare("UPDATE jobs SET status='working',lease=?,lease_until=? WHERE id=(SELECT j.id FROM jobs j LEFT JOIN cinepulse_movie_controls c ON c.project_id=j.project_id WHERE j.worker_id=? AND j.status='queued' AND "+ELIGIBLE_MOVIE_CONTROL+" ORDER BY j.created_at LIMIT 1) AND NOT EXISTS (SELECT 1 FROM jobs WHERE worker_id=? AND status='working' AND lease_until>?) RETURNING *").bind(id,expire,wid,wid,time).first();
       if(!job)return json({task:null,paused:false,notice:'No waiting tasks.'});
       return json({task:await taskDetail(env,job),paused:false,nextEndpoint:'/agent/next'});
     }
@@ -527,6 +534,7 @@ async function route(request,env){
     if(taskMatch){
       const jid=requireUUID(taskMatch[1]),action=taskMatch[2]||'',job=await getJob(env,jid);
       if(job.worker_id!==wid)fail(403,'Cross-worker task access forbidden');
+      if(controlIsStopped(await getProject(env,job.project_id)))fail(410,'Stopped movie; task lease revoked, results/uploads rejected');
       const validLease=request.headers.get('X-CinePulse-Lease')===job.lease && job.status==='working'&&job.lease_until>nowSeconds();
       if(method==='GET'&&action===''){return json({...publicJob(job),...(job.status==='done'?{output:job.output}:{}),lease:job.lease});}
       if(method==='GET'&&(action==='asset'||action.startsWith('asset/'))){
@@ -767,7 +775,7 @@ async function route(request,env){
     // Admin authenticated listing is also the safe self-heal opportunity for
     // accepted final jobs stuck at storage registration. At most one per poll.
     const recovery=await recoverOneCompletedProject(env);
-    const rows=await env.DB.prepare('SELECT * FROM projects ORDER BY created_at DESC LIMIT 200').all();
+    const rows=await env.DB.prepare('SELECT p.*, '+MOVIE_CONTROL_FIELDS+' FROM projects p '+MOVIE_CONTROL_JOIN+' ORDER BY p.created_at DESC LIMIT 200').all();
     return json({projects:(rows.results||[]).map(publicProject),
       ...(recovery.attempted?{finalizationRecovery:recovery}:{})});
   }
@@ -775,7 +783,7 @@ async function route(request,env){
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
     if(method==='GET'&&!action){
-      const recovery=project.status==='needs_review'&&project.updated_at<nowSeconds()-30?
+      const recovery=!controlIsStopped(project)&&project.status==='needs_review'&&project.updated_at<nowSeconds()-30?
         await recoverAcceptedFinalization(env,project):{attempted:false};
       const updated=recovery.attempted?await getProject(env,pid):project;
       const rows=await env.DB.prepare('SELECT * FROM jobs WHERE project_id=? ORDER BY created_at').bind(pid).all();
@@ -783,11 +791,35 @@ async function route(request,env){
       return json({project:{...publicProject(updated),productionMode:(await projectPolicy(env,pid)).experiment?'scene_intelligence_experiment':'stable'},jobs:(rows.results||[]).map(publicJob),
         assets:assetRows,...(recovery.attempted?{finalizationRecovery:recovery}:{})});
     }
+    if(method==='POST'&&['pause','resume','stop'].includes(action)){
+      if(project.status==='ready'&&!controlIsStopped(project))fail(409,'Ready movies can be deleted after downloading');
+      const time=nowSeconds();
+      if(action==='stop'){
+        // Transactionally revoke active task lease and cancel queued stages
+        // for this PROJECT ID only. Other movies on this worker continue.
+        await env.DB.batch([
+          env.DB.prepare("INSERT INTO cinepulse_movie_controls(project_id,paused,stopped,updated_at) VALUES(?,0,1,?) ON CONFLICT(project_id) DO UPDATE SET paused=0,stopped=1,updated_at=excluded.updated_at").bind(pid,time),
+          env.DB.prepare("UPDATE jobs SET status='cancelled',lease=NULL,lease_until=NULL,finished_at=?,error='Stopped by movie administrator' WHERE project_id=? AND status IN ('queued','working')").bind(time,pid),
+          env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=? AND status='processing'").bind(time,pid)
+        ]);
+        return json({projectId:pid,status:'stopped',paused:false,stopped:true,revoked:true,
+          message:'Movie stopped: active server lease revoked, queued tasks cancelled. An already-running external Muse request cannot be forcibly killed, but its uploads and results are rejected. Other movies keep processing.'});
+      }
+      if(controlIsStopped(project))fail(409,'Stopped movies cannot resume; submit again explicitly if needed');
+      if(project.status!=='processing')fail(409,'Only processing movies can be paused or resumed');
+      const paused=action==='pause'?1:0;
+      await env.DB.prepare("INSERT INTO cinepulse_movie_controls(project_id,paused,stopped,updated_at) VALUES(?,?,0,?) ON CONFLICT(project_id) DO UPDATE SET paused=excluded.paused,updated_at=excluded.updated_at WHERE stopped=0").bind(pid,paused,time).run();
+      return json({projectId:pid,status:'processing',paused:!!paused,stopped:false,
+        message:paused?'This movie is paused; current task may complete but no new stages will be claimed. Other movies continue.':'Movie resumed on its original Muse worker.'});
+    }
     if(method==='POST'&&action==='repair-finalization'){
       const result=await recoverAcceptedFinalization(env,project);
       return json({project:publicProject(await getProject(env,pid)),recovery:result});
     }
-    if(method==='DELETE'&&!action){await removeProject(env,pid);return json({deleted:true,id:pid,notice:'All project files and tasks removed; this cannot be undone'});}
+    if(method==='DELETE'&&!action){
+      if(project.status==='processing'&&!controlIsStopped(project))fail(409,'Stop this movie before deleting an active project');
+      await removeProject(env,pid);return json({deleted:true,id:pid,notice:'This movie and its Muse queue tasks, scene evidence and R2 assets were deleted. Other movies and worker credentials are unchanged.'});
+    }
     if(method==='POST'&&action==='finalize'){
       const m=await getJson(request);const result=await finalizeProject(env,project,m);
       return json(result);

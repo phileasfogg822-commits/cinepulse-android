@@ -28,7 +28,7 @@ jobs:
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           npm install --no-audit --no-fund >/dev/null
           sql="SELECT p.created_at AS created_at, p.status AS project_status,
-          CASE WHEN substr(COALESCE(d.prompt,''),1,50)='[CINEPULSE-EXPERIMENTAL-SCENE-INTELLIGENCE-V3828]' THEN 'EXPERIMENTAL'
+          CASE WHEN instr(COALESCE(d.prompt,''),'[CINEPULSE-EXPERIMENTAL-SCENE-INTELLIGENCE-V3828]')=1 THEN 'EXPERIMENTAL'
                WHEN substr(COALESCE(d.prompt,''),1,1)='[' THEN 'STABLE_OR_LEGACY'
                ELSE 'UNKNOWN' END AS movie_mode,
           w.enabled AS worker_enabled,w.paused AS worker_paused,w.last_seen AS worker_last_seen,

@@ -1,0 +1,161 @@
+name: CinePulse v3.8.28 ISOLATED Cloudflare staging deployment
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - '.github/workflows/cinepulse-v3828-cloudflare-staging.yml'
+      - 'cloudflare/cinepulse-android/src/staging-scene-worker.mjs'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-v3828-scene-staging
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      STAGING_DB: cinepulse-v3828-scene-staging
+      STAGING_BUCKET: cinepulse-v3828-scene-staging
+      STAGING_WORKER: cinepulse-v3828-staging
+      STAGING_URL: https://cinepulse-v3828-staging.maryumblog.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate isolated source and original Cloudflare tests
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-fA-F0-9]{32}$ ]]
+          node --check src/staging-scene-worker.mjs
+          node --test tests/*.test.mjs
+          python3 - <<'PY'
+          import sqlite3,pathlib
+          db=sqlite3.connect(':memory:')
+          sql=pathlib.Path('migrations/experimental/0001_scene_intelligence.sql').read_text()
+          db.executescript(sql)
+          db.executescript(sql)
+          print('STAGING_D1_MIGRATION_VALIDATED_LOCALLY')
+          PY
+      - name: Record stable Worker deployment version without changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/cinepulse-android-bridge/deployments" \
+            -o /tmp/cinepulse-stable-before.json
+          jq -e '.success==true' /tmp/cinepulse-stable-before.json >/dev/null
+          jq -r '[.result.deployments[]?.versions[]? | select(.percentage==100) | .version_id][0] // empty' \
+            /tmp/cinepulse-stable-before.json > /tmp/cinepulse-stable-id
+          test -s /tmp/cinepulse-stable-id
+      - name: Install Wrangler and provision isolated staging D1/R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          # Never create or modify cinepulse-android-db or cinepulse-android-assets.
+          test "$STAGING_DB" != "cinepulse-android-db"
+          test "$STAGING_BUCKET" != "cinepulse-android-assets"
+          npx wrangler d1 list --json > /tmp/cinepulse-d1-list.json
+          db_id=$(jq -r --arg n "$STAGING_DB" '[.[] | select(.name==$n) | .uuid][0] // empty' /tmp/cinepulse-d1-list.json)
+          if [[ -z "$db_id" ]]; then
+            npx wrangler d1 create "$STAGING_DB" --location apac
+            npx wrangler d1 list --json > /tmp/cinepulse-d1-list.json
+            db_id=$(jq -r --arg n "$STAGING_DB" '[.[] | select(.name==$n) | .uuid][0] // empty' /tmp/cinepulse-d1-list.json)
+          fi
+          [[ "$db_id" =~ ^[a-fA-F0-9-]{36}$ ]]
+          test "$db_id" != "bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd"
+          if ! npx wrangler r2 bucket list | grep -F "$STAGING_BUCKET" >/dev/null; then
+            npx wrangler r2 bucket create "$STAGING_BUCKET"
+          fi
+          node - "$db_id" <<'NODE'
+          import {writeFileSync} from 'node:fs';
+          const id=process.argv[2];
+          const config={
+            $schema:'https://json.schemastore.org/wrangler',
+            name:process.env.STAGING_WORKER,
+            main:'src/staging-scene-worker.mjs',
+            compatibility_date:'2026-10-01',
+            workers_dev:true,keep_vars:true,
+            d1_databases:[{binding:'SCENE_DB',database_name:process.env.STAGING_DB,database_id:id}],
+            r2_buckets:[{binding:'SCENE_FILES',bucket_name:process.env.STAGING_BUCKET}]
+          };
+          writeFileSync('wrangler.scene-staging.generated.json',JSON.stringify(config,null,2));
+          NODE
+          npx wrangler d1 execute "$STAGING_DB" --remote \
+            --config wrangler.scene-staging.generated.json \
+            --file migrations/experimental/0001_scene_intelligence.sql
+          echo 'ISOLATED_STAGING_D1_R2_CREATED_OR_REUSED'
+      - name: Deploy staging Worker only, with a private test bearer
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config wrangler.scene-staging.generated.json
+          test_token=$(openssl rand -hex 32)
+          printf '%s' "$test_token" | npx wrangler secret put STAGING_ACCESS_TOKEN \
+            --config wrangler.scene-staging.generated.json >/dev/null
+          echo "::add-mask::$test_token"
+          printf '%s' "$test_token" > /tmp/cinepulse-test-token
+          chmod 600 /tmp/cinepulse-test-token
+          echo 'STAGING_WORKER_DEPLOYED_WITH_PRIVATE_AUTH'
+      - name: Smoke-test real SRT index, R2 SQLite upload and authenticated download
+        shell: bash
+        run: |
+          set -euo pipefail
+          token=$(cat /tmp/cinepulse-test-token)
+          health=$(curl -fsS --retry 6 --retry-delay 2 "$STAGING_URL/health")
+          echo "$health" | jq -e '.status=="online" and .mode=="scene_intelligence_experiment"' >/dev/null
+          python3 - <<'PY'
+          import json,sqlite3
+          payload={
+            'projectId':'ci-staging-demo-20261030',
+            'title':'Synthetic Scene Test',
+            'sourceSrt':('1\n00:00:01,000 --> 00:00:02,000\nPeter enters garden.\n\n'
+                         '2\n00:00:02,100 --> 00:00:03,000\nThe birds sing.')
+          }
+          open('/tmp/cinepulse-ingest.json','w').write(json.dumps(payload))
+          db=sqlite3.connect('/tmp/cinepulse-scene.sqlite')
+          db.executescript('CREATE TABLE source_cues(cue_id INTEGER PRIMARY KEY,text TEXT);'
+                           "INSERT INTO source_cues VALUES (1,'Peter enters garden');")
+          db.close()
+          PY
+          curl -fsS --retry 4 --retry-delay 2 -X POST \
+            -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            --data-binary @/tmp/cinepulse-ingest.json \
+            "$STAGING_URL/v1/experimental/projects" -o /tmp/cinepulse-index-result.json
+          jq -e '.indexedWindows >= 1 and .visualVerified==false and .museReviewComplete==false' \
+            /tmp/cinepulse-index-result.json >/dev/null
+          curl -fsS -X POST -H "Authorization: Bearer $token" \
+            --data-binary @/tmp/cinepulse-scene.sqlite \
+            "$STAGING_URL/v1/experimental/projects/ci-staging-demo-20261030/sqlite" \
+            -o /tmp/cinepulse-snapshot-result.json
+          jq -e '.status=="stored_unverified_schema"' /tmp/cinepulse-snapshot-result.json >/dev/null
+          curl -fsS -H "Authorization: Bearer $token" \
+            "$STAGING_URL/v1/experimental/projects/ci-staging-demo-20261030/sqlite" \
+            -o /tmp/cinepulse-scene-downloaded.sqlite
+          cmp /tmp/cinepulse-scene.sqlite /tmp/cinepulse-scene-downloaded.sqlite
+          status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            "$STAGING_URL/v1/experimental/projects/ci-staging-demo-20261030/sqlite")
+          test "$status" = 401
+          echo 'STAGING_E2E_INDEX_SQLITE_STORAGE_DOWNLOAD_AND_AUTH_TEST_PASSED'
+      - name: Verify stable production Worker version unchanged
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/cinepulse-android-bridge/deployments" \
+            -o /tmp/cinepulse-stable-after.json
+          jq -e '.success==true' /tmp/cinepulse-stable-after.json >/dev/null
+          after=$(jq -r '[.result.deployments[]?.versions[]? | select(.percentage==100) | .version_id][0] // empty' /tmp/cinepulse-stable-after.json)
+          before=$(cat /tmp/cinepulse-stable-id)
+          test "$before" = "$after"
+          echo 'STABLE_CINEPULSE_WORKER_VERSION_UNCHANGED'

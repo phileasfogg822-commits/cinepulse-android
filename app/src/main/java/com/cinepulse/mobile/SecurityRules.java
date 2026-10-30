@@ -24,7 +24,7 @@ public final class SecurityRules {
         return s.length() > 45 ? s.substring(0,45).trim() : s;
     }
     public static boolean validDownloadUrl(String url, String projectId, String kind) {
-        if (!validUuid(projectId) || !kind.matches("export_json|english_mp3|urdu_mp3|source_srt") || url == null) return false;
+        if (!validUuid(projectId) || !kind.matches("export_json|english_mp3|urdu_mp3|source_srt|windows_project_json|english_srt|urdu_srt|english_narration|urdu_narration|scene_index_sqlite|english_final_cuts|urdu_final_cuts") || url == null) return false;
         try {
             URI uri = URI.create(url);
             URI base = URI.create(BASE);

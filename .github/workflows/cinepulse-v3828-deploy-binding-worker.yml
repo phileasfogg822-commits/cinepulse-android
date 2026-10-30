@@ -2,7 +2,9 @@ name: CinePulse v3828 separate Worker staging
 on:
   push:
     branches: [feature/scene-intelligence-v3828-staging]
-    paths: ['.github/workflows/cinepulse-v3828-deploy-binding-worker.yml']
+    paths:
+      - '.github/workflows/cinepulse-v3828-deploy-binding-worker.yml'
+      - 'cloudflare/cinepulse-android/src/staging-scene-worker.mjs'
   workflow_dispatch:
 permissions:
   contents: read
@@ -63,6 +65,9 @@ jobs:
           PY
           curl -fsS --retry 3 --retry-delay 2 -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary @/tmp/scene-ingest.json "$url/v1/experimental/projects" -o /tmp/scene-ingested.json
           jq -e '.indexReady==true and .visualVerified==false and .indexedWindows>0' /tmp/scene-ingested.json >/dev/null
+          curl -fsS -H "Authorization: Bearer $token" "$url/v1/experimental/projects/ci-3828-worker-binding-check/candidates?q=Peter%20garden&limit=4" -o /tmp/scene-candidates.json
+          jq -e '.candidates[0].lexicalOverlap>0 and .museSemanticReviewRequired==true and .visualVerified==false' /tmp/scene-candidates.json >/dev/null
+          echo 'EXPERIMENTAL_SOURCE_EVIDENCE_RETRIEVAL_PASSED'
           curl -fsS --retry 3 --retry-delay 2 -X POST -H "Authorization: Bearer $token" --data-binary @/tmp/scene-snapshot.sqlite "$url/v1/experimental/projects/ci-3828-worker-binding-check/sqlite" -o /tmp/scene-snapshot-uploaded.json
           jq -e '.status=="stored_unverified_schema"' /tmp/scene-snapshot-uploaded.json >/dev/null
           curl -fsS --retry 3 --retry-delay 2 -H "Authorization: Bearer $token" "$url/v1/experimental/projects/ci-3828-worker-binding-check/sqlite" -o /tmp/scene-snapshot-downloaded.sqlite

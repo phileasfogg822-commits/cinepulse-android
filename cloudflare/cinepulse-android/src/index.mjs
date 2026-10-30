@@ -217,7 +217,8 @@ async function finalizeProject(env,project,manifest,{generatedByCloudflare=false
   const sourceSrt=await srt.text();
   let cutMetrics=null;
   if(policy.longForm){try{cutMetrics=validateFinalCutPlan(manifest.cutPlan,{
-    sourceSrt,englishSrt:manifest.narrationSrts.english,urduSrt:manifest.narrationSrts.urdu
+    sourceSrt,englishSrt:manifest.narrationSrts.english,urduSrt:manifest.narrationSrts.urdu,
+    experimentalReview:policy.experiment
   });}catch(error){fail(422,'Final cuts cannot be exported: '+error.message);}}
   const document={
     schema:'cinepulse.render-project.v1',generatedAt:new Date().toISOString(),
@@ -249,7 +250,7 @@ async function finalizeProject(env,project,manifest,{generatedByCloudflare=false
       projectId:project.id,title:project.title,sourceSrt,
       narrations:manifest.narrations,narrationSrts:manifest.narrationSrts,
       digest:manifest.digest,cutPlan:manifest.cutPlan,metadata:manifest.metadata,
-      mp3Manifest:document.audio
+      mp3Manifest:document.audio,experimentalReview:policy.experiment
     }):buildWindowsProject({
       project,sourceSrt,digest:manifest.digest,narrations:manifest.narrations,
       narrationSrts:manifest.narrationSrts,cuts:manifest.cutPlan,
@@ -625,7 +626,8 @@ async function route(request,env){
             const original=await env.FILES.get((await getProject(env,job.project_id)).source_srt_key);
             if(!original)fail(409,'Movie source SRT missing');
             try{validateFinalCutPlan(cuts,{
-              sourceSrt:await original.text(),englishSrt:outputs.srt_english,urduSrt:outputs.srt_urdu
+              sourceSrt:await original.text(),englishSrt:outputs.srt_english,urduSrt:outputs.srt_urdu,
+              experimentalReview:policy.experiment
             });}catch(error){fail(422,'Final timestamp checks failed: '+error.message);}
           }else if(!Array.isArray(cuts)||!cuts.length||cuts.some(c=>!Number.isFinite(c.sourceStartSeconds)||!Number.isFinite(c.sourceEndSeconds)||c.sourceEndSeconds<=c.sourceStartSeconds))
             fail(422,'Legacy cut plan source timestamps invalid');
@@ -647,6 +649,7 @@ async function route(request,env){
                 narrations:{english:old.narration_english,urdu:old.narration_urdu},
                 narrationSrts:{english:old.srt_english,urdu:old.srt_urdu},
                 digest:old.digest,cutPlan:JSON.parse(old.cut_plan),metadata,
+                experimentalReview:policy.experiment,
                 mp3Manifest:{
                   english:{filename:fileNames.english_mp3,bytes:en.bytes,sha256:en.sha256},
                   urdu:{filename:fileNames.urdu_mp3,bytes:ur.bytes,sha256:ur.sha256}

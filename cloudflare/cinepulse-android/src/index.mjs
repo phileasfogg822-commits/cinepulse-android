@@ -510,6 +510,12 @@ async function route(request,env){
       if(method==='GET'&&action===''){return json({...publicJob(job),...(job.status==='done'?{output:job.output}:{}),lease:job.lease});}
       if(method==='GET'&&(action==='asset'||action.startsWith('asset/'))){
         const kind=action==='asset'?(job.step_id==='srt_english'?'english_mp3':job.step_id==='srt_urdu'?'urdu_mp3':'source_srt'):action.slice('asset/'.length);
+        if(kind==='scene_index_json'){
+          if(!(await projectPolicy(env,job.project_id)).experiment)fail(404,'Experimental source index unavailable');
+          const file=await env.FILES.get(experimentR2Key(job.project_id,'scene-evidence-v1.json'));
+          if(!file)fail(404,'Experimental source index missing');
+          return new Response(file.body,{headers:{'Content-Type':'application/json','Cache-Control':'private, no-store'}});
+        }
         if(!['source_srt','english_mp3','urdu_mp3'].includes(kind))fail(404,'Asset not found');
         const row=await assetByKind(env,job.project_id,kind);if(!row)fail(404,'Asset not uploaded yet');
         const file=await env.FILES.get(row.r2_key);if(!file)fail(404,'Asset missing');
@@ -517,7 +523,15 @@ async function route(request,env){
       }
       if(method==='POST'&&action.startsWith('asset/')){
         if(!validLease)fail(409,'Valid active lease required for upload');
-        const kind=action.slice('asset/'.length);if(!['english_mp3','urdu_mp3'].includes(kind))fail(400,'Only MP3 uploads supported');
+        const kind=action.slice('asset/'.length);
+        if(kind==='scene_index_sqlite'){
+          const policy=await projectPolicy(env,job.project_id);
+          if(!policy.experiment||job.step_id!=='scene_intelligence')fail(403,'Only experimental scene intelligence may upload SQLite');
+          if(Number(request.headers.get('content-length')||0)>12*1024*1024)fail(413,'Scene SQLite exceeds 12 MiB');
+          const binary=await request.arrayBuffer();
+          try{return json(await storeExperimentAsset(env,{projectId:job.project_id,kind,bytes:binary}),201);}catch(error){fail(422,String(error.message));}
+        }
+        if(!['english_mp3','urdu_mp3'].includes(kind))fail(400,'Only MP3 and authorized scene SQLite uploads supported');
         if((job.step_id==='mp3_english'&&kind!=='english_mp3')||(job.step_id==='mp3_urdu'&&kind!=='urdu_mp3'))fail(403,'Audio asset does not match this stage');
         if(!['mp3_english','mp3_urdu'].includes(job.step_id))fail(403,'Only MP3 stage may upload audio');
         return json(await uploadAudio(request,env,job.project_id,kind),201);
@@ -545,6 +559,12 @@ async function route(request,env){
         if(job.step_id==='mp3_english'&&!await assetByKind(env,job.project_id,'english_mp3'))fail(409,'Real English MP3 upload required');
         if(job.step_id==='mp3_urdu'&&!await assetByKind(env,job.project_id,'urdu_mp3'))fail(409,'Real Urdu MP3 upload required');
         if(['srt_english','srt_urdu'].includes(job.step_id))normalizeSrt(output);
+        if(job.step_id==='scene_intelligence'){
+          const policy=await projectPolicy(env,job.project_id);
+          if(!policy.experiment)fail(403,'Scene intelligence is experimental only');
+          if(!(await assetByKind(env,job.project_id,'scene_index_sqlite')))fail(409,'Upload a real Scene_Intelligence.sqlite before completion');
+          try{validateSceneIntelligenceOutput(output);}catch(error){fail(422,'Scene intelligence rejected: '+String(error.message));}
+        }
         // Keep Muse's lease and previous work intact when Muse submits an
         // incorrect calculation. Feed exact validation errors back into its
         // next task poll, so only Muse repairs the proposed edit decisions.

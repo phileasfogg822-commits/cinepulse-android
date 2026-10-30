@@ -320,6 +320,18 @@ public final class MainActivity extends Activity {
         if(ids.isEmpty()){showError("There are no active workers. Resume or create a worker first.");return;}
         LinearLayout form=vertical();pad(form,24,0,24,0);
         form.addView(text("Project title",13,Color.DKGRAY,true));form.addView(name);
+        // The experimental debug build must never hide its production-mode choice
+        // below the narration-minute input on smaller Android 8-10 screens.
+        form.addView(text("MOVIE PROCESSING MODE",13,Color.DKGRAY,true));
+        CheckBox experiment=new CheckBox(this);
+        experiment.setText("Experimental scene intelligence (11-file SQLite package)");
+        experiment.setChecked(true);
+        form.addView(experiment);
+        form.addView(text("Experimental creates a new isolated MOVIE project on your selected existing Muse worker. Uncheck only to use the stable eight-file pipeline.",12,Color.DKGRAY,false));
+        form.addView(text("Processing worker (existing Muse connection)",13,Color.DKGRAY,true));
+        Spinner spinner=new Spinner(this);
+        ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);
+        spinner.setAdapter(adapter);form.addView(spinner);
         EditText minutes=new EditText(this);
         minutes.setSingleLine(true);
         minutes.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -327,19 +339,13 @@ public final class MainActivity extends Activity {
         minutes.setHint("Narration minutes (3–60)");
         form.addView(text("Desired narration length (minutes; each language)",13,Color.DKGRAY,true));
         form.addView(minutes);
-        form.addView(text("Muse will aim for this duration once the Cloudflare backend accepts targetMinutes. MP3/STT duration is verified after generation.",12,Color.DKGRAY,false));
-        CheckBox experiment=new CheckBox(this);
-        experiment.setText("Experimental scene intelligence (new isolated project, 11-file package)");
-        experiment.setChecked(false);
-        form.addView(experiment);
-        form.addView(text("Stable (unchecked) preserves the current successful Muse workflow. Experimental creates a new project ID, builds the source scene index during digest, and asks the SAME Muse worker to finish both cut plans before download.",12,Color.DKGRAY,false));
-        form.addView(text("Processing worker",13,Color.DKGRAY,true));
-        Spinner spinner=new Spinner(this);
-        ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);
-        spinner.setAdapter(adapter);form.addView(spinner);
+        form.addView(text("Muse aims for this duration. The actual MP3 and speech-to-text timing are verified later.",12,Color.DKGRAY,false));
+        ScrollView submissionScroll=new ScrollView(this);
+        submissionScroll.setFillViewport(false);
+        submissionScroll.addView(form);
         new AlertDialog.Builder(this).setTitle("Send movie to Muse")
-            .setMessage("Only the selected SRT text will be uploaded, never the source movie video. Worker queues stay isolated.")
-            .setView(form).setNegativeButton("Cancel",null)
+            .setMessage("Review the experimental mode and existing Muse worker before submitting. Only the original SRT is uploaded.")
+            .setView(submissionScroll).setNegativeButton("Cancel",null)
             .setPositiveButton("Submit",(d,w)->{
                 String title=name.getText().toString().trim();
                 if(title.isEmpty()||title.length()>160){showError("Enter a project title under 160 characters");return;}

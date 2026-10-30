@@ -1,0 +1,24 @@
+name: CinePulse v3828 binding staging dry run
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths: ['.github/workflows/cinepulse-v3828-binding-dryrun.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: node --check src/staging-scene-worker.mjs
+      - run: npx wrangler deploy --dry-run --config wrangler.scene-binding.staging.json
+      - run: echo "BINDING_CONFIG_BUNDLED_NO_DEPLOYMENT"

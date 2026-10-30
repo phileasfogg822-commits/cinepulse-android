@@ -26,7 +26,7 @@ final class CloudApi {
         }
     }
     JSONObject call(String method,String route,JSONObject body) throws Exception {
-        if(!route.startsWith("/v1/") || route.contains("..") || route.contains("?") && !route.startsWith("/v1/jobs?") && !route.matches("^/v1/projects/[0-9a-f-]{36}/downloads\\\\?format=windows_experiment$"))
+        if(!route.startsWith("/v1/") || route.contains("..") || route.contains("?") && !route.startsWith("/v1/jobs?") && !route.matches("^/v1/projects/[0-9a-f-]{36}/downloads[?]format=windows_experiment$"))
             throw new SecurityException("Unexpected API route");
         URL url=new URL(SecurityRules.BASE + route);
         HttpURLConnection conn=(HttpURLConnection)url.openConnection();

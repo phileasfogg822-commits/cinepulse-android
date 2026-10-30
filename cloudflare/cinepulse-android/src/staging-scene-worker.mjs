@@ -1,4 +1,5 @@
 import {buildSceneEvidenceIndex, EXPERIMENT_MODE} from './scene-intelligence-experiment.mjs';
+import {probeExperimentBindings} from './scene-binding-diagnostics.mjs';
 
 const json=(data,status=200)=>new Response(JSON.stringify(data),{
   status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}
@@ -33,6 +34,8 @@ export default {
        note:'Private experimental scene evidence service, not connected to stable Muse or Android'});
    if(!authorized(request,env))return err(401,'Staging bearer token required');
    if(!env.SCENE_DB||!env.SCENE_FILES)return err(503,'Staging bindings missing');
+   if(request.method==='GET'&&url.pathname==='/v1/experimental/diagnostics/bindings')
+     return json(await probeExperimentBindings(env));
    if(request.method==='POST'&&url.pathname==='/v1/experimental/projects'){
      // D1 Worker binding uses ONLY experiment-prefixed tables.
      // No D1 control-plane API call and no stable table alteration.

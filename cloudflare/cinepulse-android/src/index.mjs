@@ -777,7 +777,7 @@ async function route(request,env){
       const updated=recovery.attempted?await getProject(env,pid):project;
       const rows=await env.DB.prepare('SELECT * FROM jobs WHERE project_id=? ORDER BY created_at').bind(pid).all();
       const assetRows=await allAssetMetadata(env,pid);
-      return json({project:publicProject(updated),jobs:(rows.results||[]).map(publicJob),
+      return json({project:{...publicProject(updated),productionMode:(await projectPolicy(env,pid)).experiment?'scene_intelligence_experiment':'stable'},jobs:(rows.results||[]).map(publicJob),
         assets:assetRows,...(recovery.attempted?{finalizationRecovery:recovery}:{})});
     }
     if(method==='POST'&&action==='repair-finalization'){

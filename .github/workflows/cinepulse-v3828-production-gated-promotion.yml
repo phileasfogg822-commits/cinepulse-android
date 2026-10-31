@@ -4,6 +4,7 @@ on:
     branches: [feature/scene-intelligence-v3828-staging]
     paths:
       - '.github/workflows/cinepulse-v3828-production-gated-promotion.yml'
+      - 'cloudflare/cinepulse-android/src/index.mjs'
       - 'cloudflare/cinepulse-android/src/longform-policy.mjs'
       - 'cloudflare/cinepulse-android/tests/cutplan-srt-diagnostics.test.mjs'
   workflow_dispatch:
@@ -84,7 +85,7 @@ jobs:
             sleep 3
           done
           [[ "$status" == "200" ]]
-          jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.windowsAssetCount==8' /tmp/cp-after-health.json >/dev/null
+          jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.windowsAssetCount==8 and .build=="android-cloud-backend-0.4.3-v3828-cutplan-srt-diagnostics"' /tmp/cp-after-health.json >/dev/null
           no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects")
           test "$no_auth" = "401"
           echo 'PRODUCTION_EXPERIMENT_OPT_IN_AND_MOVIE_PAUSE_STOP_DELETE_AVAILABLE_STABLE_ENDPOINT_ALIVE_AND_AUTH_LOCKED'
@@ -96,4 +97,6 @@ jobs:
           curl -fsS --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/cinepulse-android-bridge/deployments" > /tmp/cp-after-deployments.json
           jq -e '.success==true' /tmp/cp-after-deployments.json >/dev/null
+          jq -r '[.result.deployments[]?.versions[]? | select(.percentage==100) | .version_id][0] // "MISSING_ACTIVE_VERSION"' /tmp/cp-after-deployments.json | sed 's/^/ACTIVE_CLOUDFLARE_VERSION_ID=/'
+          jq -r '.build' /tmp/cp-after-health.json | sed 's/^/ACTIVE_HEALTH_BUILD=/'
           echo 'PRODUCTION_PROMOTION_VERIFIED'

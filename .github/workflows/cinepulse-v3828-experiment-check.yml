@@ -1,0 +1,66 @@
+name: CinePulse v3.8.28 experimental contract (NO DEPLOY)
+on:
+  push:
+    branches:
+      - feature/scene-intelligence-v3828-staging
+    paths:
+      - 'cloudflare/cinepulse-android/src/scene-intelligence-experiment.mjs'
+      - 'cloudflare/cinepulse-android/src/experimental-muse-instructions.mjs'
+      - 'cloudflare/cinepulse-android/tests/**'
+      - 'cloudflare/cinepulse-android/migrations/experimental/**'
+      - 'cloudflare/cinepulse-android/tools/build_scene_sqlite.py'
+      - '.github/workflows/cinepulse-v3828-experiment-check.yml'
+  pull_request:
+    branches:
+      - ops/cloudflare-deploy-bridge
+    paths:
+      - 'cloudflare/cinepulse-android/**'
+      - '.github/workflows/cinepulse-v3828-experiment-check.yml'
+  workflow_dispatch:
+concurrency:
+  group: v3828-contract-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  isolated-contract-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax and isolated experimental regression checks
+        run: |
+          set -euo pipefail
+          node --check src/scene-intelligence-experiment.mjs
+          node --check src/experimental-muse-instructions.mjs
+          node --test tests/scene-intelligence-experiment.test.mjs tests/experimental-muse-instructions.test.mjs
+      - name: Check existing Worker regression suite
+        run: node --test tests/*.test.mjs
+      - name: Validate staging D1 SQL on isolated in-memory SQLite
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3, pathlib
+          db = sqlite3.connect(':memory:')
+          sql = pathlib.Path('migrations/experimental/0001_scene_intelligence.sql').read_text()
+          db.executescript(sql)
+          db.executescript(sql)
+          expected = {'experimental_scene_indexes','experimental_scene_windows',
+                      'experimental_scene_fts','experimental_package_assets',
+                      'experimental_cut_plan_versions'}
+          actual = {name for (name,) in db.execute(
+              "SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
+          assert expected <= actual, expected - actual
+          print('Isolated D1-schema syntax/idempotency checks passed; NO remote database touched.')
+          PY
+      - name: Verify real portable SQLite scene index and FTS5 lookups
+        run: python3 -m unittest discover -s tests -p 'test_scene_sqlite.py' -v
+      - name: Prove deployment is disabled for this workflow
+        run: |
+          echo 'EXPERIMENT_CONTRACT_ONLY: no Cloudflare credentials used, no Wrangler upload or deploy, no Android release.'

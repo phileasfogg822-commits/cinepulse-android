@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/wrangler",
+  "name": "cinepulse-v3828-binding-stage",
+  "main": "src/staging-scene-worker.mjs",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "keep_vars": true,
+  "d1_databases": [
+    {
+      "binding": "SCENE_DB",
+      "database_name": "cinepulse-android-db",
+      "database_id": "bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "SCENE_FILES",
+      "bucket_name": "cinepulse-android-assets"
+    }
+  ]
+}

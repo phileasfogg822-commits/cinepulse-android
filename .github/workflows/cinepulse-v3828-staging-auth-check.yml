@@ -1,0 +1,32 @@
+name: CinePulse staging auth response (READ ONLY)
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths: ['.github/workflows/cinepulse-v3828-staging-auth-check.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe staging health and auth without credentials
+        run: |
+          set -euo pipefail
+          root=https://cinepulse-v3828-binding-stage.maryumblog.workers.dev
+          for path in /health /v1/experimental/projects /v1/experimental/diagnostics/bindings; do
+            status=$(curl -sS --max-time 20 -o /tmp/cp-staging-body -w '%{http_code}' "$root$path") || status=network-error
+            echo "PROBE path=$path status=$status"
+            if [[ "$path" != "/health" ]]; then
+              python3 - <<'PY'
+          import json
+          from pathlib import Path
+          s=Path('/tmp/cp-staging-body').read_text(errors='replace')
+          try:
+             j=json.loads(s)
+             print('response:',str(j.get('error','no-error-key'))[:120])
+          except Exception:
+             print('non-json-response-len:',len(s))
+          PY
+            fi
+          done

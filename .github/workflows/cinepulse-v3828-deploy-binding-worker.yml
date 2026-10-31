@@ -1,0 +1,83 @@
+name: CinePulse v3828 separate Worker staging
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - '.github/workflows/cinepulse-v3828-deploy-binding-worker.yml'
+      - 'cloudflare/cinepulse-android/src/staging-scene-worker.mjs'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy-staging-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify isolated target and bundle
+        run: |
+          node -e "const p=require('./wrangler.scene-binding.staging.json');if(p.name!=='cinepulse-v3828-binding-stage'||p.main!=='src/staging-scene-worker.mjs')process.exit(1)"
+          npm install --no-audit --no-fund
+          npx wrangler deploy --dry-run --config wrangler.scene-binding.staging.json
+      - name: Deploy distinct Worker using existing D1/R2 bindings
+        run: npx wrangler deploy --config wrangler.scene-binding.staging.json
+      - name: Set private staging-only token (not exposed to APK)
+        run: |
+          set -euo pipefail
+          token=$(openssl rand -hex 32)
+          echo "::add-mask::$token"
+          printf '%s' "$token" > "$RUNNER_TEMP/cinepulse-stage-token"
+          chmod 600 "$RUNNER_TEMP/cinepulse-stage-token"
+          printf '%s' "$token" | npx wrangler secret put STAGING_ACCESS_TOKEN --config wrangler.scene-binding.staging.json >/dev/null
+      - name: Verify live Worker D1/R2 bindings and synthetic SQLite roundtrip
+        run: |
+          set -euo pipefail
+          url=https://cinepulse-v3828-binding-stage.maryumblog.workers.dev
+          token=$(cat "$RUNNER_TEMP/cinepulse-stage-token")
+          for attempt in $(seq 1 10); do
+            code=$(curl -sS --max-time 20 -o /tmp/scene-binding-check.json -w '%{http_code}' -H "Authorization: Bearer $token" "$url/v1/experimental/diagnostics/bindings") || code=000
+            if [[ "$code" == 200 ]]; then break; fi
+            sleep 2
+          done
+          test "$code" = 200
+          jq -e '.d1Binding=="reachable" and .r2Binding=="reachable" and .mutationsMade==false' /tmp/scene-binding-check.json >/dev/null
+          echo 'LIVE_SCENE_D1_R2_BINDINGS_REACHABLE'
+          python3 - <<'PY'
+          import json,sqlite3
+          p={'projectId':'ci-3828-worker-binding-check',
+             'title':'CI synthetic evidence only',
+             'sourceSrt':('1\n00:00:01,000 --> 00:00:02,000\nPeter walks into a garden.\n\n'
+                          '2\n00:00:02,100 --> 00:00:03,500\nThe old man speaks.')}
+          open('/tmp/scene-ingest.json','w').write(json.dumps(p))
+          db=sqlite3.connect('/tmp/scene-snapshot.sqlite')
+          db.execute('CREATE TABLE source_evidence (id INTEGER PRIMARY KEY, text TEXT)')
+          db.execute('INSERT INTO source_evidence(text) VALUES (?)',('Peter walks into a garden',))
+          db.commit();db.close()
+          PY
+          curl -fsS --retry 3 --retry-delay 2 -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary @/tmp/scene-ingest.json "$url/v1/experimental/projects" -o /tmp/scene-ingested.json
+          jq -e '.indexReady==true and .visualVerified==false and .indexedWindows>0' /tmp/scene-ingested.json >/dev/null
+          curl -fsS -H "Authorization: Bearer $token" "$url/v1/experimental/projects/ci-3828-worker-binding-check/candidates?q=Peter%20garden&limit=4" -o /tmp/scene-candidates.json
+          jq -e '.candidates[0].lexicalOverlap>0 and .museSemanticReviewRequired==true and .visualVerified==false' /tmp/scene-candidates.json >/dev/null
+          echo 'EXPERIMENTAL_SOURCE_EVIDENCE_RETRIEVAL_PASSED'
+          curl -fsS --retry 3 --retry-delay 2 -X POST -H "Authorization: Bearer $token" --data-binary @/tmp/scene-snapshot.sqlite "$url/v1/experimental/projects/ci-3828-worker-binding-check/sqlite" -o /tmp/scene-snapshot-uploaded.json
+          jq -e '.status=="stored_unverified_schema"' /tmp/scene-snapshot-uploaded.json >/dev/null
+          curl -fsS --retry 3 --retry-delay 2 -H "Authorization: Bearer $token" "$url/v1/experimental/projects/ci-3828-worker-binding-check/sqlite" -o /tmp/scene-snapshot-downloaded.sqlite
+          cmp /tmp/scene-snapshot.sqlite /tmp/scene-snapshot-downloaded.sqlite
+          echo 'EXPERIMENTAL_D1_R2_SQLITE_ROUNDTRIP_PASSED'
+      - name: Verify public health only, keep private endpoints locked
+        run: |
+          set -euo pipefail
+          url=https://cinepulse-v3828-binding-stage.maryumblog.workers.dev
+          curl -fsS --retry 6 --retry-delay 2 "$url/health" | jq -e '.status=="online"'
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "$url/v1/experimental/projects")
+          test "$code" = 401
+          echo "SEPARATE_WORKER_ONLINE_PRIVATE_ENDPOINTS_LOCKED"

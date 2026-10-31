@@ -102,7 +102,7 @@ export function verifyMuseAnalysis(analysis,{narrations,digest}){
 
 export function verifyMuseWindowsProject(candidate,{
   projectId,title,sourceSrt,narrations,narrationSrts,
-  digest,cutPlan,metadata,mp3Manifest
+  digest,cutPlan,metadata,mp3Manifest,experimentalReview=false
 }){
   if(!candidate||typeof candidate!=='object'||Array.isArray(candidate))
     throw Error('Muse Windows project must be a native JSON object');
@@ -163,7 +163,8 @@ export function verifyMuseWindowsProject(candidate,{
     reconstructedCuts.push(...numericCuts);
   }
   validateFinalCutPlan(reconstructedCuts,{
-    sourceSrt,englishSrt:narrationSrts.english,urduSrt:narrationSrts.urdu
+    sourceSrt,englishSrt:narrationSrts.english,urduSrt:narrationSrts.urdu,
+    experimentalReview
   });
   if(c.cloudImport?.sourceVideoFrameInspectionRequired!==false||
       c.cloudImport?.importedFilePathsAreRelative!==true)

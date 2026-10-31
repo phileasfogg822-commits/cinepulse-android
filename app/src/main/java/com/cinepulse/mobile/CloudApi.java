@@ -26,7 +26,7 @@ final class CloudApi {
         }
     }
     JSONObject call(String method,String route,JSONObject body) throws Exception {
-        if(!route.startsWith("/v1/") || route.contains("..") || route.contains("?") && !route.startsWith("/v1/jobs?"))
+        if(!route.startsWith("/v1/") || route.contains("..") || route.contains("?") && !route.startsWith("/v1/jobs?") && !route.matches("^/v1/projects/[0-9a-f-]{36}/downloads[?]format=windows_experiment$"))
             throw new SecurityException("Unexpected API route");
         URL url=new URL(SecurityRules.BASE + route);
         HttpURLConnection conn=(HttpURLConnection)url.openConnection();
@@ -57,6 +57,7 @@ final class CloudApi {
     JSONObject projects() throws Exception {return call("GET","/v1/projects",null);}
     JSONObject project(String id) throws Exception {return call("GET","/v1/projects/"+checked(id),null);}
     JSONObject downloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads",null);}
+    JSONObject experimentalDownloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads?format=windows_experiment",null);}
     JSONObject jobs() throws Exception {return call("GET","/v1/jobs",null);}
     JSONObject nudge(String jobId) throws Exception {return call("POST","/v1/jobs/"+checked(jobId)+"/nudge",new JSONObject());}
     JSONObject recovery(String projectId) throws Exception {return call("GET","/v1/projects/"+checked(projectId)+"/recovery",null);}
@@ -65,6 +66,9 @@ final class CloudApi {
             throw new SecurityException("Unsupported stage to retry");
         return call("POST","/v1/projects/"+checked(projectId)+"/recovery",
             new JSONObject().put("stepId",stepId).put("confirm",true));
+    }
+    JSONObject stopMovie(String projectId) throws Exception {
+        return call("POST","/v1/projects/"+checked(projectId)+"/stop",new JSONObject());
     }
     JSONObject toggleMovie(String projectId,boolean pause) throws Exception {
         return call("POST","/v1/projects/"+checked(projectId)+(pause?"/pause":"/resume"),new JSONObject());
@@ -101,6 +105,11 @@ final class CloudApi {
         // may ignore it, so the UI reports whether the server acknowledged it.
         return call("POST","/v1/projects",
             longFormProjectPayload(title,workerId,sourceSrt,retentionHours,targetMinutes));
+    }
+    JSONObject createExperimentalProject(String title,String workerId,String sourceSrt,int retentionHours,int targetMinutes) throws Exception {
+        JSONObject body=longFormProjectPayload(title,workerId,sourceSrt,retentionHours,targetMinutes);
+        body.put("productionMode","scene_intelligence_experiment");
+        return call("POST","/v1/projects",body);
     }
     private String checked(String id){if(!SecurityRules.validUuid(id))throw new IllegalArgumentException("Invalid project or worker ID");return id;}
 }

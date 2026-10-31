@@ -1,0 +1,203 @@
+name: CinePulse v3828 experimental Muse queue staging (synthetic, auto-cleanup)
+# Re-verify new one-movie controls after contract tests passed; this deploys ONLY the separate staging Worker.
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - '.github/workflows/cinepulse-v3828-muse-pipeline-stage.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-v3828-muse-staging
+  cancel-in-progress: false
+jobs:
+  muse-stage-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      STAGE_URL: https://cinepulse-v3828-pipeline-stage.maryumblog.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify Worker source and distinct staging target
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          node - <<'JS'
+          import fs from 'node:fs';
+          const c=JSON.parse(fs.readFileSync('wrangler.scene-pipeline.staging.json','utf8'));
+          if(c.name!=='cinepulse-v3828-pipeline-stage' ||
+             c.main!=='src/index.mjs'||c.name==='cinepulse-android-bridge')
+            throw Error('Not an isolated CinePulse staging Worker');
+          JS
+          node --check src/index.mjs
+          node --test tests/*.test.mjs
+          npm install --no-audit --no-fund
+          npx wrangler deploy --dry-run --config wrangler.scene-pipeline.staging.json
+      - name: Record stable production Worker version
+        run: |
+          set -euo pipefail
+          curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/cinepulse-android-bridge/deployments" -o /tmp/live-version.json
+          jq -r '[.result.deployments[]?.versions[]? | select(.percentage==100) | .version_id][0] // empty' /tmp/live-version.json > /tmp/production-version-id
+          test -s /tmp/production-version-id
+      - name: Deploy separate full-pipeline Worker and test-only private credentials
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config wrangler.scene-pipeline.staging.json
+          admin=$(openssl rand -hex 32)
+          sign=$(openssl rand -hex 32)
+          echo "::add-mask::$admin"
+          echo "::add-mask::$sign"
+          printf '%s' "$admin" > "$RUNNER_TEMP/experiment-admin"
+          chmod 600 "$RUNNER_TEMP/experiment-admin"
+          printf '%s' "$admin" | npx wrangler secret put ADMIN_TOKEN --config wrangler.scene-pipeline.staging.json >/dev/null
+          printf '%s' "$sign" | npx wrangler secret put DOWNLOAD_SIGNING_KEY --config wrangler.scene-pipeline.staging.json >/dev/null
+          echo 'SEPARATE_MUSE_PIPELINE_STAGING_DEPLOYED'
+      - name: Exercise digest to SQLite to Muse narration, clean up synthetic project
+        shell: bash
+        run: |
+          set -euo pipefail
+          admin=$(cat "$RUNNER_TEMP/experiment-admin")
+          base="$STAGE_URL"
+          worker_id='' worker_token='' project_id='' task_id='' lease=''
+          cleanup(){
+            set +e
+            if [[ -n "$task_id" && -n "$lease" && -n "$worker_id" && -n "$worker_token" ]]; then
+              jq -n --arg lease "$lease" '{lease:$lease,error:"Synthetic CI test cleanup"}' > /tmp/scene-cleanup-error.json
+              curl -sS --max-time 20 -X POST -H "Authorization: Bearer $worker_token" -H 'Content-Type: application/json' \
+                --data-binary @/tmp/scene-cleanup-error.json \
+                "$base/w/$worker_id/tasks/$task_id/result" >/dev/null || true
+            fi
+            if [[ -n "$project_id" ]]; then
+              curl -sS --max-time 25 -X DELETE -H "Authorization: Bearer $admin" \
+                "$base/v1/projects/$project_id" >/dev/null || true
+            fi
+            if [[ -n "$worker_id" ]]; then
+              curl -sS --max-time 25 -X DELETE -H "Authorization: Bearer $admin" \
+                "$base/v1/workers/$worker_id" >/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+          curl -fsS --retry 8 --retry-delay 2 "$base/health" | jq -e '.status=="online"' >/dev/null
+          # Newly rotated staging secrets can need edge propagation after wrangler secret put.
+          # Retry only this synthetic staging auth probe; do not touch production credentials.
+          code=''
+          for auth_attempt in $(seq 1 12); do
+            code=$(curl -sS --max-time 20 -o /tmp/scene-ci-worker.json -w '%{http_code}' \
+              -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json' \
+              --data '{"label":"CI synthetic v3828 ephemeral worker"}' "$base/v1/workers") || code=000
+            if [[ "$code" == "201" ]]; then break; fi
+            [[ "$code" == "401" || "$code" == "503" ]] || { echo "STAGING_WORKER_CREATE_HTTP_$code"; exit 2; }
+            sleep 3
+          done
+          test "$code" = "201" || { echo "STAGING_AUTH_NOT_READY_AFTER_ROTATION"; exit 2; }
+          worker_id=$(jq -r '.worker.id' /tmp/scene-ci-worker.json)
+          worker_token=$(jq -r '.token' /tmp/scene-ci-worker.json)
+          echo "::add-mask::$worker_token"
+          test -n "$worker_id"
+          python3 - "$worker_id" <<'PY'
+          import json,sys
+          source='1\n00:00:01,000 --> 00:00:02,500\nPeter entered the garden.\n\n2\n00:00:03,000 --> 00:00:04,000\nMr McGregor looked toward Peter.'
+          body={'title':'CI SYNTHETIC SCENE INDEX TEST','workerId':sys.argv[1],
+                'sourceSrt':source,'retentionHours':24,'targetMinutes':3,
+                'outputMode':'long_form_only','productionMode':'scene_intelligence_experiment',
+                'modules':{'shorts':False,'virals':False}}
+          open('/tmp/scene-ci-create.json','w').write(json.dumps(body))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json' \
+            --data-binary @/tmp/scene-ci-create.json "$base/v1/projects" > /tmp/scene-ci-project.json
+          jq -e '.stage=="digest" and .productionMode=="scene_intelligence_experiment" and .modules.windowsAssets==11' /tmp/scene-ci-project.json >/dev/null
+          project_id=$(jq -r '.projectId' /tmp/scene-ci-project.json)
+          curl -fsS -H "Authorization: Bearer $worker_token" "$base/w/$worker_id/agent/next" > /tmp/scene-ci-digest.json
+          jq -e '.task.stepId=="digest"' /tmp/scene-ci-digest.json >/dev/null
+          task_id=$(jq -r '.task.id' /tmp/scene-ci-digest.json)
+          lease=$(jq -r '.task.lease' /tmp/scene-ci-digest.json)
+          jq -n --arg lease "$lease" --arg output 'Peter enters a garden and Mr McGregor notices him. Grounded only in original subtitle cues.' '{lease:$lease,output:$output}' > /tmp/scene-ci-result.json
+          curl -fsS -X POST -H "Authorization: Bearer $worker_token" -H 'Content-Type: application/json' \
+            --data-binary @/tmp/scene-ci-result.json "$base/w/$worker_id/tasks/$task_id/result" > /tmp/scene-ci-digest-finish.json
+          jq -e '.status=="done" and .pipeline.nextStep=="scene_intelligence"' /tmp/scene-ci-digest-finish.json >/dev/null
+          task_id='' lease=''
+          curl -fsS -H "Authorization: Bearer $worker_token" "$base/w/$worker_id/agent/next" > /tmp/scene-ci-intelligence.json
+          jq -e '.task.stepId=="scene_intelligence" and .task.productionMode=="scene_intelligence_experiment" and (.task.sceneIndexAsset.path | endswith("/scene_index_json"))' /tmp/scene-ci-intelligence.json >/dev/null
+          task_id=$(jq -r '.task.id' /tmp/scene-ci-intelligence.json)
+          lease=$(jq -r '.task.lease' /tmp/scene-ci-intelligence.json)
+          curl -fsS -H "Authorization: Bearer $worker_token" "$base/w/$worker_id/tasks/$task_id/asset/scene_index_json" > /tmp/scene-ci-evidence.json
+          jq -e --arg id "$project_id" '.projectId==$id and .sourceCueCount==2' /tmp/scene-ci-evidence.json >/dev/null
+          python3 tools/build_scene_sqlite.py --index /tmp/scene-ci-evidence.json --output /tmp/scene-ci-knowledge.sqlite > /tmp/scene-ci-snapshot-manifest.json
+          curl -fsS -X POST -H "Authorization: Bearer $worker_token" -H "X-CinePulse-Lease: $lease" \
+            -H 'Content-Type: application/vnd.sqlite3' --data-binary @/tmp/scene-ci-knowledge.sqlite \
+            "$base/w/$worker_id/tasks/$task_id/asset/scene_index_sqlite" > /tmp/scene-ci-sqlite-receipt.json
+          jq -e '.kind=="scene_index_sqlite" and .bytes>500' /tmp/scene-ci-sqlite-receipt.json >/dev/null
+          jq -n --arg lease "$lease" --arg output '{"events":[{"cueStart":1,"cueEnd":2,"character":"Peter","event":"Peter enters a garden","evidence":"Source subtitle cue 1"}]}' '{lease:$lease,output:$output}' > /tmp/scene-ci-intel-result.json
+          curl -fsS -X POST -H "Authorization: Bearer $worker_token" -H 'Content-Type: application/json' \
+            --data-binary @/tmp/scene-ci-intel-result.json "$base/w/$worker_id/tasks/$task_id/result" > /tmp/scene-ci-intel-finish.json
+          jq -e '.status=="done" and .pipeline.nextStep=="narration_english"' /tmp/scene-ci-intel-finish.json >/dev/null
+          task_id='' lease=''
+          echo 'EXPERIMENTAL_MUSE_DIGEST_SQLITE_AND_NARRATION_HANDOFF_PASSED'
+      - name: Synthetic live pause, resume, stop and permanent single-movie deletion
+        shell: bash
+        run: |
+          set -euo pipefail
+          admin=$(cat "$RUNNER_TEMP/experiment-admin")
+          base="$STAGE_URL"
+          worker_id='' worker_token='' project_id=''
+          cleanup(){
+            set +e
+            if [[ -n "$project_id" ]]; then
+              curl -fsS --max-time 30 -X POST -H "Authorization: Bearer $admin"                 "$base/v1/projects/$project_id/stop" -H 'Content-Type: application/json' -d '{}' >/dev/null || true
+              curl -fsS --max-time 30 -X DELETE -H "Authorization: Bearer $admin"                 "$base/v1/projects/$project_id" >/dev/null || true
+            fi
+            if [[ -n "$worker_id" ]]; then
+              curl -fsS --max-time 30 -X DELETE -H "Authorization: Bearer $admin"                 "$base/v1/workers/$worker_id" >/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+          curl -fsS "$base/health" | jq -e '.policy.perMoviePauseStopDelete==true' >/dev/null
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json'             -d '{"label":"CI ONLY isolated movie cancellation worker"}' "$base/v1/workers" > /tmp/stop-worker.json
+          worker_id=$(jq -r '.worker.id' /tmp/stop-worker.json)
+          worker_token=$(jq -r '.token' /tmp/stop-worker.json)
+          echo "::add-mask::$worker_token"
+          python3 - "$worker_id" <<'PY'
+          import json,sys
+          movie={'title':'CI ONLY STOP DELETE TEST','workerId':sys.argv[1],
+            'sourceSrt':'1\n00:00:01,000 --> 00:00:02,000\nExperimental SRT.', 'retentionHours':24,
+            'targetMinutes':3,'outputMode':'long_form_only','productionMode':'scene_intelligence_experiment'}
+          open('/tmp/stop-movie.json','w').write(json.dumps(movie))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json'             --data-binary @/tmp/stop-movie.json "$base/v1/projects" > /tmp/stop-created.json
+          project_id=$(jq -r '.projectId' /tmp/stop-created.json)
+          jq -e '.productionMode=="scene_intelligence_experiment"' /tmp/stop-created.json >/dev/null
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json'             -d '{}' "$base/v1/projects/$project_id/pause" | jq -e '.paused==true and .status=="processing"' >/dev/null
+          curl -fsS -H "Authorization: Bearer $worker_token" "$base/w/$worker_id/agent/next" | jq -e '.task==null' >/dev/null
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json'             -d '{}' "$base/v1/projects/$project_id/resume" | jq -e '.paused==false' >/dev/null
+          curl -fsS -H "Authorization: Bearer $worker_token" "$base/w/$worker_id/agent/next" > /tmp/stop-claimed.json
+          jq -e '.task.stepId=="digest"' /tmp/stop-claimed.json >/dev/null
+          task_id=$(jq -r '.task.id' /tmp/stop-claimed.json)
+          lease=$(jq -r '.task.lease' /tmp/stop-claimed.json)
+          curl -fsS -X POST -H "Authorization: Bearer $admin" -H 'Content-Type: application/json'             -d '{}' "$base/v1/projects/$project_id/stop" | jq -e '.status=="stopped" and .revoked==true' >/dev/null
+          code=$(curl -sS -o /tmp/stop-revoked-result.json -w '%{http_code}' -X POST             -H "Authorization: Bearer $worker_token" -H 'Content-Type: application/json'             -d "{\"lease\":\"$lease\",\"output\":\"Ignored because stopped\"}"             "$base/w/$worker_id/tasks/$task_id/result")
+          test "$code" = "410"
+          curl -fsS -H "Authorization: Bearer $admin" "$base/v1/projects/$project_id" | jq -e '.project.status=="stopped" and .project.stopped==true' >/dev/null
+          curl -fsS -H "Authorization: Bearer $worker_token" "$base/w/$worker_id/agent/next" | jq -e '.task==null' >/dev/null
+          curl -fsS -X DELETE -H "Authorization: Bearer $admin"             "$base/v1/projects/$project_id" | jq -e '.deleted==true' >/dev/null
+          project_id=''
+          echo 'MOVIE_PAUSE_RESUME_STOP_LEASE_REVOKE_DELETE_PASSED'
+      - name: Verify stable Worker deployment ID unchanged
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ ! -s /tmp/production-version-id ]]; then exit 0; fi
+          curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/cinepulse-android-bridge/deployments" -o /tmp/live-after.json
+          after=$(jq -r '[.result.deployments[]?.versions[]? | select(.percentage==100) | .version_id][0] // empty' /tmp/live-after.json)
+          test "$after" = "$(cat /tmp/production-version-id)"
+          echo 'PRODUCTION_WORKER_VERSION_UNCHANGED'

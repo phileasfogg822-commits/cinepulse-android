@@ -1,0 +1,48 @@
+name: CinePulse v3.8.28 Android experimental APK (NO RELEASE)
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - '.github/workflows/cinepulse-v3828-android-experiment.yml'
+      - 'app/src/main/java/com/cinepulse/mobile/**'
+      - 'app/src/test/**'
+  workflow_dispatch:
+concurrency:
+  group: v3828-apk-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  debug-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Prepare Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
+          SDKMANAGER="$(find "${ANDROID_SDK_ROOT}/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)"
+          test -n "$SDKMANAGER"
+          "$SDKMANAGER" --install 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Security source checks and Android build
+        run: |
+          python3 tools/verify_source.py
+          gradle --no-daemon --stacktrace -PcinepulsePreview=true lintDebug testDebugUnitTest assembleDebug
+      - name: Upload isolated experimental debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CinePulse-v3828-EXPERIMENT-PREVIEW-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+          if-no-files-found: error

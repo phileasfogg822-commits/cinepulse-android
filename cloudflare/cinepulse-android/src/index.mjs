@@ -13,7 +13,7 @@ const STAGES = ['digest','narration_english','narration_urdu','viral_metadata','
 const LONGFORM_STAGES = ['digest','narration_english','narration_urdu','publishing_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
 const LONGFORM_STAGES_V3 = LONGFORM_STAGES.filter(step=>step!=='cut_plan');
 const LONGFORM_MARKER_V3='[CINEPULSE-LONGFORM-V3-SERVER-CUTS]';
-const LONGFORM_BUILD = 'android-cloud-backend-0.4.2-d1-windows-assets-recovery';
+const LONGFORM_BUILD = 'android-cloud-backend-0.4.3-v3828-cutplan-srt-diagnostics';
 async function projectPolicy(env,projectId){
   // No D1 migration: distinguish new and legacy projects by the durable digest job prompt.
   const row=await env.DB.prepare("SELECT prompt FROM jobs WHERE project_id=? AND step_id='digest' ORDER BY created_at ASC LIMIT 1").bind(projectId).first();

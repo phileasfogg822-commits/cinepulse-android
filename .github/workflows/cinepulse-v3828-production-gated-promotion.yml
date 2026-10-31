@@ -4,6 +4,8 @@ on:
     branches: [feature/scene-intelligence-v3828-staging]
     paths:
       - '.github/workflows/cinepulse-v3828-production-gated-promotion.yml'
+      - 'cloudflare/cinepulse-android/src/longform-policy.mjs'
+      - 'cloudflare/cinepulse-android/tests/cutplan-srt-diagnostics.test.mjs'
   workflow_dispatch:
 permissions:
   contents: read

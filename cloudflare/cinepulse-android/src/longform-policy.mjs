@@ -12,6 +12,18 @@ const stamp = v => Math.round(v * 1000) / 1000;
 const number = n => typeof n === 'number' && Number.isFinite(n);
 export function srtLastTimestamp(srt, artifactKind='srt') {
   if(typeof srt !== 'string' || srt.length > 2_500_000) throw new Error('A complete SRT is required');
+  // Completed Muse SRT jobs are stored as JSON envelopes. Never scan envelope
+  // metadata (firstSegment/lastSegment) as additional subtitle cues.
+  if(srt.trimStart().startsWith('{')){
+    let envelope;
+    try { envelope=JSON.parse(srt); }
+    catch { throw new Error('Malformed SRT JSON envelope: artifact='+artifactKind); }
+    if(!envelope || typeof envelope!=='object' || Array.isArray(envelope) ||
+       envelope.format!=='srt' || typeof envelope.text!=='string' ||
+       !envelope.text.trim() || envelope.text.length>2_500_000)
+      throw new Error('Invalid SRT JSON envelope: artifact='+artifactKind);
+    srt=envelope.text;
+  }
   const pattern = /(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/g;
   let m,end=0,count=0,oldStart=-1;
   const time = (h,min,s,ms) => Number(h)*3600+Number(min)*60+Number(s)+Number(ms)/1000;

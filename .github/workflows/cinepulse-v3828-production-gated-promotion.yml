@@ -6,6 +6,7 @@ on:
       - '.github/workflows/cinepulse-v3828-production-gated-promotion.yml'
       - 'cloudflare/cinepulse-android/src/index.mjs'
       - 'cloudflare/cinepulse-android/src/longform-policy.mjs'
+      - 'cloudflare/cinepulse-android/src/muse-production-contract.mjs'
       - 'cloudflare/cinepulse-android/tests/cutplan-srt-diagnostics.test.mjs'
   workflow_dispatch:
 permissions:

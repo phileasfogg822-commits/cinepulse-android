@@ -100,6 +100,15 @@ export function verifyMuseAnalysis(analysis,{narrations,digest}){
   return true;
 }
 
+function measuredSrtText(value,language){
+  if(typeof value!=='string')throw Error('Muse Windows '+language+' verified SRT is not text');
+  if(!value.trimStart().startsWith('{'))return value;
+  let parsed;
+  try{parsed=JSON.parse(value);}catch{throw Error('Muse Windows '+language+' stored SRT envelope malformed');}
+  if(!parsed||Array.isArray(parsed)||parsed.format!=='srt'||typeof parsed.text!=='string'||!parsed.text.trim())
+    throw Error('Muse Windows '+language+' stored SRT envelope missing text');
+  return parsed.text;
+}
 export function verifyMuseWindowsProject(candidate,{
   projectId,title,sourceSrt,narrations,narrationSrts,
   digest,cutPlan,metadata,mp3Manifest,experimentalReview=false
@@ -128,12 +137,13 @@ export function verifyMuseWindowsProject(candidate,{
   if(!c.tracks||typeof c.tracks!=='object')throw Error('Muse Windows tracks missing');
   const reconstructedCuts=[];
   for(const [language,field,mp3,srt,script] of [
-    ['english','english',WINDOWS_FILE_NAMES.english_mp3,narrationSrts.english,narrations.english],
-    ['urdu','hindiUrdu',WINDOWS_FILE_NAMES.urdu_mp3,narrationSrts.urdu,narrations.urdu]
+    ['english','english',WINDOWS_FILE_NAMES.english_mp3,measuredSrtText(narrationSrts.english,'english'),narrations.english],
+    ['urdu','hindiUrdu',WINDOWS_FILE_NAMES.urdu_mp3,measuredSrtText(narrationSrts.urdu,'urdu'),narrations.urdu]
   ]){
     const lane=c.tracks[field];
-    if(!lane||lane.mp3Path!==mp3||lane.narrationSrt!==srt)
-      throw Error('Muse Windows '+language+' MP3 path or SRT is not the verified asset');
+    if(!lane)throw Error('Muse Windows tracks.'+field+' missing');
+    if(lane.mp3Path!==mp3)throw Error('Muse Windows tracks.'+field+'.mp3Path mismatch: expected '+mp3);
+    if(lane.narrationSrt!==srt)throw Error('Muse Windows tracks.'+field+'.narrationSrt mismatch against verified SRT text');
     const target=srtLastTimestamp(srt);
     if(!n(lane.audioDurationSeconds)||Math.abs(lane.audioDurationSeconds-target)>.15)
       throw Error('Muse Windows '+language+' audio duration not aligned to measured narration SRT');
@@ -163,7 +173,7 @@ export function verifyMuseWindowsProject(candidate,{
     reconstructedCuts.push(...numericCuts);
   }
   validateFinalCutPlan(reconstructedCuts,{
-    sourceSrt,englishSrt:narrationSrts.english,urduSrt:narrationSrts.urdu,
+    sourceSrt,englishSrt:measuredSrtText(narrationSrts.english,'english'),urduSrt:measuredSrtText(narrationSrts.urdu,'urdu'),
     experimentalReview
   });
   if(c.cloudImport?.sourceVideoFrameInspectionRequired!==false||

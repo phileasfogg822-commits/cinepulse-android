@@ -6,6 +6,8 @@ on:
     paths:
       - 'cloudflare/cinepulse-android/src/scene-lab.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab.test.mjs'
+      - 'cloudflare/cinepulse-android/src/scene-lab-package.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab-package.test.mjs'
       - '.github/workflows/cinepulse-scene-lab-validation.yml'
   workflow_dispatch:
 permissions:
@@ -24,4 +26,6 @@ jobs:
       - name: Run backend regression suite
         run: npm test
       - name: Verify experimental modules syntax
-        run: node --check src/scene-lab.mjs
+        run: |
+          node --check src/scene-lab.mjs
+          node --check src/scene-lab-package.mjs

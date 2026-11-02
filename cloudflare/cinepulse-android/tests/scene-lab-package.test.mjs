@@ -33,6 +33,7 @@ test('Muse subtitle parser supports CRLF, multiline subtitles, and decimal separ
  assert.equal(cues[1].endSeconds,6);
 });
 test('Muse subtitle parser rejects malformed envelopes and empty cue streams',()=>{
- assert.throws(()=>parseMeasuredCues(JSON.stringify({format:'srt',text:'invalid'})),/No measured subtitle cues found/);
+ assert.throws(()=>parseMeasuredCues(JSON.stringify({format:'srt',text:'invalid'})),/SRT envelope missing measured text/);
+ assert.throws(()=>parseMeasuredCues('not an srt'),/No measured subtitle cues found/);
  assert.throws(()=>parseMeasuredCues(JSON.stringify({format:'not-srt',text:'1 --> 2'})),/SRT envelope missing measured text/);
 });

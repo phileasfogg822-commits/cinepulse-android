@@ -81,7 +81,7 @@ function allocateFromCues(cues,used,target,clip,limit,region){
   }
   return -1;
 }
-function trackCuts({sourceSrt,cues,movieEnd,narrationSrt,sceneMatches,proposedCuts,language}){
+function trackCuts({sourceSrt,cues,movieEnd,narrationSrt,sceneMatches,proposedCuts,language,allowGlobalFallback=false}){
   const target=srtLastTimestamp(narrationSrt);
   if(target<clipMin||target>3600*2)throw Error(language+': invalid narration SRT duration');
   if(movieEnd<target)throw Error(language+': movie SRT is shorter than the narration');
@@ -104,7 +104,7 @@ function trackCuts({sourceSrt,cues,movieEnd,narrationSrt,sceneMatches,proposedCu
       const found=allocateFromCues(cues,used,targetStart,clip,movieEnd,[anchor.ss,anchor.se]);
       if(found>=0){sourceStart=found;match=anchor;mode=anchor.from;break;}
     }
-    if(sourceStart<0){
+    if(sourceStart<0&&allowGlobalFallback){
       // Global fallback remains in Cloudflare, never in the APK. Every interval
       // must still start near an actual source-SRT cue and remain non-overlapping.
       const desired=ordered.length?ordered[0].ss+(mid-ordered[0].as)/
@@ -112,7 +112,7 @@ function trackCuts({sourceSrt,cues,movieEnd,narrationSrt,sceneMatches,proposedCu
       const targetStart=Math.max(0,Math.min(movieEnd-clip,desired));
       sourceStart=allocateFromCues(cues,used,targetStart,clip,movieEnd,null);
     }
-    if(sourceStart<0)throw Error(language+': no unused source subtitle interval near narration '+mid.toFixed(3)+'s; Muse must improve source matching');
+    if(sourceStart<0)throw Error(language+': MUSE_SCENE_UNRESOLVED at narration '+mid.toFixed(3)+'s; no evidence-backed unused source interval; retry targeted Muse matching');
     sourceStart=round(sourceStart);
     const sourceEnd=round(sourceStart+clip);
     cuts.push({language,sourceStartSeconds:sourceStart,sourceEndSeconds:sourceEnd,
@@ -123,11 +123,11 @@ function trackCuts({sourceSrt,cues,movieEnd,narrationSrt,sceneMatches,proposedCu
   }
   return {cuts,metrics:{anchors:anchors.length,anchoredCuts,fallbackCuts,audioSeconds:target,videoSeconds:round(cuts.reduce((a,c)=>a+c.sourceEndSeconds-c.sourceStartSeconds,0))}};
 }
-export function allocateFinalLongFormCuts({sourceSrt,englishSrt,urduSrt,sceneMatches=[],proposedCuts=[]}){
+export function allocateFinalLongFormCuts({sourceSrt,englishSrt,urduSrt,sceneMatches=[],proposedCuts=[],allowGlobalFallback=false}){
   const movieEnd=srtLastTimestamp(sourceSrt),cues=movieSubtitleCues(sourceSrt);
-  const en=trackCuts({sourceSrt,cues,movieEnd,narrationSrt:englishSrt,sceneMatches,proposedCuts,language:'english'});
-  const ur=trackCuts({sourceSrt,cues,movieEnd,narrationSrt:urduSrt,sceneMatches,proposedCuts,language:'urdu'});
+  const en=trackCuts({sourceSrt,cues,movieEnd,narrationSrt:englishSrt,sceneMatches,proposedCuts,language:'english',allowGlobalFallback});
+  const ur=trackCuts({sourceSrt,cues,movieEnd,narrationSrt:urduSrt,sceneMatches,proposedCuts,language:'urdu',allowGlobalFallback});
   const cuts=[...en.cuts,...ur.cuts];
   const validated=validateFinalCutPlan(cuts,{sourceSrt,englishSrt,urduSrt});
-  return {cuts,metrics:{english:{...en.metrics,...validated.english},urdu:{...ur.metrics,...validated.urdu},method:'server_subtitle_timestamps',frameInspectionRequired:false}};
+  return {cuts,metrics:{english:{...en.metrics,...validated.english},urdu:{...ur.metrics,...validated.urdu},method:'server_subtitle_timestamps',frameInspectionRequired:false,allowGlobalFallback}};
 }

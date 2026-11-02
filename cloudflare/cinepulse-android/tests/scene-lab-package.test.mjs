@@ -1,0 +1,6 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {experimentPlan,planAudioExtraction,renderMeasuredSrt,buildSceneLabPackage} from '../src/scene-lab-package.mjs';
+test('ten experiment manifests reuse four excerpts',()=>{const p=experimentPlan('12345678-1234-1234-1234-123456789abc',[0,1,2,3].map(i=>({startSeconds:i*90,endSeconds:i*90+75})));assert.equal(p.length,10);assert.equal(new Set(p.map(x=>x.strategy)).size,10);});
+test('audio extraction offsets maintain concatenation',()=>{const x=planAudioExtraction([{startSeconds:12,endSeconds:72},{startSeconds:92,endSeconds:152}]);assert.equal(x[1].outputStartSeconds,60);assert.equal(x[1].outputEndSeconds,120)});
+test('rebased SRT uses proper subrip timing',()=>assert.match(renderMeasuredSrt([{startSeconds:1.2,endSeconds:3.3,text:'Peter'}]),/00:00:01,200 --> 00:00:03,300/));
+test('package rejects missing MP3 and incomplete cut plans',()=>{const m=experimentPlan('12345678-1234-1234-1234-123456789abc',[0,1,2,3].map(i=>({startSeconds:i*90,endSeconds:i*90+75})))[0];assert.throws(()=>buildSceneLabPackage({manifest:m,englishCues:[{startSeconds:0,endSeconds:75,text:'Peter'}],englishAudio:{bytes:0,durationSeconds:300},urduAudio:{bytes:1,durationSeconds:30},englishCuts:[],urduCuts:[]}),/Missing or incorrect measured MP3 duration/);});

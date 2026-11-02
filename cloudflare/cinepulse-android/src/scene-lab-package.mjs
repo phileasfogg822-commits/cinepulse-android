@@ -25,7 +25,9 @@ export function buildSceneLabPackage({manifest,sourceSrt,digest,narrations,engli
  if(!(urduDuration>=29.5&&urduDuration<=30.5))throw Error('Urdu control track must be approximately 30 seconds');
  validateLanguageAssets(englishAudio,englishSrt,englishCuts,total);
  validateLanguageAssets(urduAudio,urduSrt,urduCuts,urduDuration);
- if(Math.abs(rebasedEnglish.at(-1).endSeconds-total)>.25)throw Error('English measured SRT does not reach experiment end');
+ if(typeof sourceSrt!=='string'||!sourceSrt.includes('-->'))throw Error('Original source SRT is required');
+ if(!narrations||!String(narrations.english||'').trim()||!String(narrations.urdu||'').trim())throw Error('Both narration texts required');
+ if(!rebasedEnglish.length||Math.abs(rebasedEnglish.at(-1).endSeconds-total)>.25)throw Error('English measured SRT does not reach experiment end');
  const id=validated.experimentId;
  const combinedCuts=[...englishCuts.map(c=>({...c,language:'english'})),...urduCuts.map(c=>({...c,language:'urdu'}))];
  const result=buildWindowsProject({

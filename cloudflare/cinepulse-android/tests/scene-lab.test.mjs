@@ -1,0 +1,9 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {STRATEGIES,scoreCandidate,validateExperimentManifest,rebaseCues,validateCompleteCutPlan} from '../src/scene-lab.mjs';
+test('ten distinct profiles',()=>assert.equal(new Set(STRATEGIES).size,10));
+test('unsupported footage rejected despite strong lexical evidence',()=>assert.equal(scoreCandidate('dialogue_first',{character:1,dialogue:1,event:1,chronology:1,context:1,contradiction:true}).accepted,false));
+test('all strategies return finite scores',()=>{for(const s of STRATEGIES)assert.equal(scoreCandidate(s,{character:1,dialogue:1,event:1,chronology:1,context:1}).score,1)});
+test('manifest enforces four non-overlapping excerpts',()=>{const m={mode:'scene_matching_lab',language:'english',strategy:STRATEGIES[0],parentProjectId:'project123',excerpts:[0,1,2,3].map(i=>({startSeconds:i*90,endSeconds:i*90+75}))};assert.equal(validateExperimentManifest(m).totalSeconds,300);assert.throws(()=>validateExperimentManifest({...m,excerpts:m.excerpts.slice(1)}));});
+test('cue rebase preserves text and shifts time',()=>{const cues=[{startSeconds:10,endSeconds:12,text:'Peter'},{startSeconds:100,endSeconds:102,text:'garden'}];assert.deepEqual(rebaseCues(cues,[{startSeconds:0,endSeconds:60},{startSeconds:90,endSeconds:150}]).map(x=>x.startSeconds),[10,70]);});
+test('partial cue clipping rejected',()=>assert.throws(()=>rebaseCues([{startSeconds:59,endSeconds:61}],[{startSeconds:0,endSeconds:60}])));
+test('cut plan requires complete duration and no source reuse',()=>{const c=[{narrationStartSeconds:0,narrationEndSeconds:3,sourceStartSeconds:10,sourceEndSeconds:13},{narrationStartSeconds:3,narrationEndSeconds:6,sourceStartSeconds:20,sourceEndSeconds:23}];assert.equal(validateCompleteCutPlan(c,6),true);assert.throws(()=>validateCompleteCutPlan(c,9));assert.throws(()=>validateCompleteCutPlan([{...c[0]},{...c[1],sourceStartSeconds:11,sourceEndSeconds:14}],6));});

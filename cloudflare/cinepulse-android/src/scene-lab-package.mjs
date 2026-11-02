@@ -16,10 +16,20 @@ export function unwrapMeasuredSrt(value){
  return parsed.text;
 }
 export function parseMeasuredCues(value){
- const raw=unwrapMeasuredSrt(value);
- const re=/(?:^|\\n)\\s*(?:\\d+\\s*\\n)?(\\d{2}:\\d{2}:\\d{2}[,.]\\d{3})\\s*-->\\s*(\\d{2}:\\d{2}:\\d{2}[,.]\\d{3})\\s*\\n([\\s\\S]*?)(?=\\n\\s*\\n|$)/g;
- const seconds=x=>{const m=/^(\\d{2}):(\\d{2}):(\\d{2})[,.](\\d{3})$/.exec(x);return +m[1]*3600 + +m[2]*60 + +m[3] + +m[4]/1000};
- const cues=[];let m;while((m=re.exec(raw.replace(/\\r/g,'')))){const text=m[3].trim();if(text)cues.push({startSeconds:seconds(m[1]),endSeconds:seconds(m[2]),text});}
+ const raw=unwrapMeasuredSrt(value).replace(/\r\n?/g,'\n');
+ const seconds=x=>{const m=/^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$/.exec(x);if(!m)throw Error('Invalid SRT timestamp');return +m[1]*3600 + +m[2]*60 + +m[3] + +m[4]/1000};
+ const cues=[];
+ for(const block of raw.trim().split(/\n\s*\n/)){
+  const lines=block.trim().split('\n');
+  if(/^\d+$/.test(lines[0]?.trim()))lines.shift();
+  const match=/^(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})(?:\s+.*)?$/.exec(lines.shift()?.trim()||'');
+  if(!match)continue;
+  const text=lines.join('\n').trim();
+  if(!text)throw Error('Empty measured subtitle cue');
+  const startSeconds=seconds(match[1]),endSeconds=seconds(match[2]);
+  if(endSeconds<=startSeconds)throw Error('Invalid measured subtitle duration');
+  cues.push({startSeconds,endSeconds,text});
+ }
  if(!cues.length)throw Error('No measured subtitle cues found');
  return cues;
 }

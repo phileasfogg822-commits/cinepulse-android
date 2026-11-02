@@ -8,6 +8,9 @@ on:
       - 'cloudflare/cinepulse-android/src/longform-policy.mjs'
       - 'cloudflare/cinepulse-android/src/muse-production-contract.mjs'
       - 'cloudflare/cinepulse-android/tests/cutplan-srt-diagnostics.test.mjs'
+      - 'cloudflare/cinepulse-android/src/server-cut-planner.mjs'
+      - 'cloudflare/cinepulse-android/tests/server-export.test.mjs'
+      - 'cloudflare/cinepulse-android/src/experimental-muse-instructions.mjs'
   workflow_dispatch:
 permissions:
   contents: read

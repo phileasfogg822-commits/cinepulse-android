@@ -1,0 +1,27 @@
+name: CinePulse Scene Lab Validation
+on:
+  push:
+    branches:
+      - feature/scene-lab-ten-strategies
+    paths:
+      - 'cloudflare/cinepulse-android/src/scene-lab.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab.test.mjs'
+      - '.github/workflows/cinepulse-scene-lab-validation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run backend regression suite
+        run: npm test
+      - name: Verify experimental modules syntax
+        run: node --check src/scene-lab.mjs

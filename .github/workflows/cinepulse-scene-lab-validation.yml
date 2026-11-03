@@ -8,6 +8,11 @@ on:
       - 'cloudflare/cinepulse-android/tests/scene-lab.test.mjs'
       - 'cloudflare/cinepulse-android/src/scene-lab-package.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab-package.test.mjs'
+      - 'cloudflare/cinepulse-android/src/scene-lab-runtime.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab-runtime.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab-v4.test.mjs'
+      - 'cloudflare/cinepulse-android/src/index.mjs'
+      - 'cloudflare/cinepulse-android/tools/scene_lab_extract.py'
       - '.github/workflows/cinepulse-scene-lab-validation.yml'
   workflow_dispatch:
 permissions:
@@ -25,7 +30,10 @@ jobs:
           node-version: '22'
       - name: Run backend regression suite
         run: npm test
-      - name: Verify experimental modules syntax
+      - name: Verify backend and FFmpeg extraction module syntax
         run: |
           node --check src/scene-lab.mjs
           node --check src/scene-lab-package.mjs
+          node --check src/scene-lab-runtime.mjs
+          node --check src/index.mjs
+          python3 -m py_compile tools/scene_lab_extract.py

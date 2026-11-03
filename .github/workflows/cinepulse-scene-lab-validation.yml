@@ -1,0 +1,45 @@
+name: CinePulse Scene Lab Validation
+on:
+  push:
+    branches:
+      - feature/scene-lab-ten-strategies
+    paths:
+      - 'cloudflare/cinepulse-android/src/scene-lab.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab.test.mjs'
+      - 'cloudflare/cinepulse-android/src/scene-lab-package.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab-package.test.mjs'
+      - 'cloudflare/cinepulse-android/src/scene-lab-runtime.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab-runtime.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab-v4.test.mjs'
+      - 'cloudflare/cinepulse-android/src/index.mjs'
+      - 'cloudflare/cinepulse-android/tools/scene_lab_extract.py'
+      - 'cloudflare/cinepulse-android/tests/test_scene_lab_extract.py'
+      - '.github/workflows/cinepulse-scene-lab-validation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run backend regression suite
+        run: npm test
+      - name: Install FFmpeg for mandatory real-audio extraction test
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+      - name: Verify backend and FFmpeg extraction module syntax
+        run: |
+          node --check src/scene-lab.mjs
+          node --check src/scene-lab-package.mjs
+          node --check src/scene-lab-runtime.mjs
+          node --check src/index.mjs
+          python3 -m py_compile tools/scene_lab_extract.py
+          python3 -m unittest discover -s tests -p 'test_scene_lab_extract.py' -v

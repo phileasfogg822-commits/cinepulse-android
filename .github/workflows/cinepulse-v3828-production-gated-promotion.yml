@@ -11,6 +11,12 @@ on:
       - 'cloudflare/cinepulse-android/src/server-cut-planner.mjs'
       - 'cloudflare/cinepulse-android/tests/server-export.test.mjs'
       - 'cloudflare/cinepulse-android/src/experimental-muse-instructions.mjs'
+      - 'cloudflare/cinepulse-android/src/scene-lab.mjs'
+      - 'cloudflare/cinepulse-android/src/scene-lab-runtime.mjs'
+      - 'cloudflare/cinepulse-android/src/scene-lab-package.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab*.test.mjs'
+      - 'cloudflare/cinepulse-android/tools/scene_lab_extract.py'
+      - 'cloudflare/cinepulse-android/tests/test_scene_lab_extract.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -55,12 +61,20 @@ jobs:
           jq -r '[.result.deployments[]?.versions[]? | select(.percentage==100) | .version_id][0] // empty' /tmp/cp-before-deployments.json > /tmp/cp-previous-id
           [[ "$(cat /tmp/cp-previous-id)" =~ ^[a-fA-F0-9-]{36}$ ]]
           echo 'BASELINE_PRODUCTION_VERSION_CAPTURED'
+      - name: Install FFmpeg for mandatory real-audio extraction test
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
       - name: Run all Cloudflare regressions and portable SQLite builder tests
         shell: bash
         run: |
           set -euo pipefail
           npm install --no-audit --no-fund
           node --check src/index.mjs
+          node --check src/scene-lab-runtime.mjs
+          node --check src/scene-lab-package.mjs
+          python3 -m py_compile tools/scene_lab_extract.py
+          python3 -m unittest discover -s tests -p 'test_scene_lab_extract.py' -v
           node --test tests/*.test.mjs
           python3 -m unittest discover -s tests -p 'test_scene_sqlite.py' -v
           npx wrangler deploy --dry-run --config wrangler.json
@@ -85,13 +99,16 @@ jobs:
           sleep 3
           for attempt in $(seq 1 12); do
             status=$(curl -sS --connect-timeout 10 --max-time 20 -o /tmp/cp-after-health.json -w '%{http_code}' "$PROD_ORIGIN/health") || status=000
-            if [[ "$status" == "200" ]] && jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.museOwnsCuts==true' /tmp/cp-after-health.json >/dev/null; then break; fi
+            if [[ "$status" == "200" ]] && jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.museOwnsCuts==true and .policy.sceneLabIsolatedQueue==true and .policy.sceneLabMuseV4Export==true and .policy.sceneLabBuild=="cinepulse-scene-lab-v1"' /tmp/cp-after-health.json >/dev/null; then break; fi
             sleep 3
           done
           [[ "$status" == "200" ]]
           jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.windowsAssetCount==8 and .build=="android-cloud-backend-0.4.3-v3828-cutplan-srt-diagnostics"' /tmp/cp-after-health.json >/dev/null
           no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects")
           test "$no_auth" = "401"
+          lab_no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/scene-lab")
+          test "$lab_no_auth" = "401"
+          echo 'SCENE_LAB_V4_INT_QUEUE_ENDPOINT_AUTH_PROTECTED_AND_LIVE'
           echo 'PRODUCTION_EXPERIMENT_OPT_IN_AND_MOVIE_PAUSE_STOP_DELETE_AVAILABLE_STABLE_ENDPOINT_ALIVE_AND_AUTH_LOCKED'
           trap - EXIT
       - name: Report active version on success

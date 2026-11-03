@@ -1,0 +1,6 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {SCENE_LAB_STAGE,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata} from '../src/scene-lab-runtime.mjs';
+const id='81febfe9-bcf4-4a96-ab4c-2a9226503ea1',wid='a4350f48-2f4d-4c76-bb9e-e554e1ac00eb';
+const manifest={workerId:wid,parentProjectId:id,strategy:'classic_reconstruction',sourceSrt:'1\n00:00:01,000 --> 00:00:04,000\nPeter\n'.repeat(8),excerpts:[0,1,2,3].map(i=>({startSeconds:i*90,endSeconds:i*90+75}))};
+test('Scene Lab creation validates isolated worker and full SRT',()=>{const m=normalizeSceneLabCreate(manifest);assert.equal(m.totalSeconds,300);assert.equal(m.manifest.parentProjectId,id);assert.throws(()=>normalizeSceneLabCreate({...manifest,strategy:'invented'}));assert.throws(()=>normalizeSceneLabCreate({...manifest,workerId:'INT'}));});
+test('Scene Lab worker task contains immutable parent and upload paths',()=>{const row={project_id:wid,parent_project_id:id,strategy:'classic_reconstruction',manifest_json:JSON.stringify(normalizeSceneLabCreate(manifest).manifest)};const job={id:wid};const m=sceneLabTaskMetadata(row,job);assert.equal(m.originalProjectId,id);assert.equal(m.uploadMp3Endpoints.urdu,'/tasks/'+wid+'/asset/urdu_mp3');assert.match(sceneLabInstructions(row),/cinepulse.windows-muse.v4/);assert.equal(SCENE_LAB_STAGE,'scene_lab_v1');});

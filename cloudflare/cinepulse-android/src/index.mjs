@@ -1,3 +1,5 @@
+import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
+import { buildSceneLabV4Package } from './scene-lab-package.mjs';
 import { API_BUILD, HttpError, json, nowSeconds, dayUTC, newId, isUuid, sha256, hashWorkerToken, requireString, normalizeSrt, validateManifest, randomToken, secureEqual, signDownload, verifyDownload, fileNames, isProbablyMp3 } from './helpers.mjs';
 import { LONGFORM_MODE, LONGFORM_MARKER, isLongFormCreateRequest, normalizePublishingMetadata, validateFinalCutPlan } from './longform-policy.mjs';
 import { allocateFinalLongFormCuts } from './server-cut-planner.mjs';
@@ -108,6 +110,16 @@ async function priorOutputs(env,projectId) {
   return Object.fromEntries((result.results||[]).map(v=>[v.step_id,v.output]));
 }
 async function taskDetail(env,job) {
+  if(job.step_id===SCENE_LAB_STAGE){
+    const row=await sceneLabRow(env,job.project_id);
+    if(!row||row.job_id!==job.id)fail(409,'Scene Lab task registration missing');
+    const lab=sceneLabTaskMetadata(row,job);
+    return {...publicJob(job),lease:job.lease,prompt:sceneLabInstructions(row),
+      productionMode:'scene_matching_lab',sceneLab:lab,
+      movie:{id:job.project_id,workerId:job.worker_id,title:'Scene Lab — '+row.strategy},
+      sourceSrtAsset:lab.sourceSrtAsset,inputAsset:lab.sourceSrtAsset,
+      notice:'Isolated Scene Lab: upload two extracted real MP3s, then submit V4 package fields. Original movie unchanged.'};
+  }
   const outputs=await priorOutputs(env,job.project_id);
   // Context only for the current project and its own worker. Never mixes movies.
   const policy=await projectPolicy(env,job.project_id);
@@ -496,11 +508,58 @@ async function scheduledCleanup(env){
   for(const p of rows.results||[]){try{await removeProject(env,p.id);count++;}catch(error){console.error('cleanup skipped',p.id,error.message);}}
   return count;
 }
+/** Atomic-on-success Scene Lab finalization with independent V4 package assets. */
+async function acceptSceneLabResult(env,job,output){
+ const lab=await sceneLabRow(env,job.project_id);
+ if(!lab||lab.job_id!==job.id)fail(409,'Scene Lab registration missing');
+ if(typeof output==='string'){try{output=JSON.parse(output)}catch{fail(422,'Scene Lab result output must be valid JSON');}}
+ if(!output||typeof output!=='object')fail(422,'Scene Lab output must be an object');
+ const [english,urdu,src]=await Promise.all([
+   assetByKind(env,job.project_id,'english_mp3'),
+   assetByKind(env,job.project_id,'urdu_mp3'),
+   env.FILES.get((await getProject(env,job.project_id)).source_srt_key)
+ ]);
+ if(!english||!urdu||!src)fail(409,'Both uploaded physical MP3s and original source SRT required');
+ const mp3s={
+  english:{bytes:english.bytes,sha256:english.sha256,filename:'CinePulse_English.mp3'},
+  urdu:{bytes:urdu.bytes,sha256:urdu.sha256,filename:'CinePulse_Urdu.mp3'}
+ };
+ let result;
+ try{
+   result=buildSceneLabV4Package({...output,manifest:JSON.parse(lab.manifest_json),
+    sourceSrt:await src.text(),mp3s,projectId:job.project_id,workerId:job.worker_id});
+ }catch(error){fail(422,'Scene Lab V4 package rejected: '+error.message);}
+ const assetData=[
+  ['windows_project_json','CinePulse_Project.json'],
+  ['english_srt','CinePulse_English.srt'],
+  ['urdu_srt','CinePulse_Urdu.srt'],
+  ['english_narration','CinePulse_English_Narration.txt'],
+  ['urdu_narration','CinePulse_Urdu_Narration.txt']
+ ];
+ // Staging keys are stable and isolated per experiment; failed attempts may be repaired in-place.
+ for(const [kind,name] of assetData){
+  const payload=new TextEncoder().encode(result.files[name]);
+  const key=objectKey(job.project_id,kind);
+  await env.FILES.put(key,payload,{httpMetadata:{contentType:ASSET_TYPES[kind]}});
+  await registerAsset(env,{projectId:job.project_id,kind,key,bytes:payload.byteLength,hash:await sha256(payload),time:nowSeconds()});
+ }
+ const time=nowSeconds();
+ const update=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+   .bind(JSON.stringify({strategy:lab.strategy,experimentId:result.experimentId,files:assetData.map(x=>x[1]),englishSeconds:output.englishAudio?.durationSeconds,urduSeconds:output.urduAudio?.durationSeconds}),time,job.id,job.lease).first();
+ if(!update)fail(409,'Scene Lab task lease changed while exporting');
+ await env.DB.batch([
+  env.DB.prepare("UPDATE projects SET status='ready',updated_at=? WHERE id=?").bind(time,job.project_id),
+  env.DB.prepare("UPDATE cinepulse_scene_lab SET status='ready',updated_at=? WHERE project_id=?").bind(time,job.project_id)
+ ]);
+ await logDaily(env,{jobs_completed:1});
+ return {id:job.id,status:'done',projectId:job.project_id,strategy:lab.strategy,sceneLab:'ready',downloadEndpoint:'/v1/scene-lab/'+job.project_id+'/downloads',nextEndpoint:'/agent/next'};
+}
+
 async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -562,7 +621,7 @@ async function route(request,env){
         }
         if(!['english_mp3','urdu_mp3'].includes(kind))fail(400,'Only MP3 and authorized scene SQLite uploads supported');
         if((job.step_id==='mp3_english'&&kind!=='english_mp3')||(job.step_id==='mp3_urdu'&&kind!=='urdu_mp3'))fail(403,'Audio asset does not match this stage');
-        if(!['mp3_english','mp3_urdu'].includes(job.step_id))fail(403,'Only MP3 stage may upload audio');
+        if(!['mp3_english','mp3_urdu',SCENE_LAB_STAGE].includes(job.step_id))fail(403,'Only audio or isolated Scene Lab stage may upload MP3');
         return json(await uploadAudio(request,env,job.project_id,kind),201);
       }
       if(method==='POST'&&action==='heartbeat'){
@@ -572,6 +631,18 @@ async function route(request,env){
         return json({ok:true,leaseUntil:nowSeconds()+LEASE_SECONDS});
       }
       if(method==='POST'&&action==='result'){
+        if(job.step_id===SCENE_LAB_STAGE){
+          const body=await getJson(request,MAX_MUSE_WINDOWS_RESULT);
+          if(job.status!=='working'||job.lease_until<=nowSeconds()||!secureEqual(body.lease||'',job.lease||''))fail(409,'Scene Lab lease expired or changed');
+          if(body.error){
+            const why=requireString(String(body.error),'Scene Lab error',1200);
+            await env.DB.prepare("UPDATE jobs SET status='error',error=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working'").bind(why,nowSeconds(),jid,job.lease).run();
+            await env.DB.prepare("UPDATE cinepulse_scene_lab SET status='needs_review',updated_at=? WHERE project_id=?").bind(nowSeconds(),job.project_id).run();
+            await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?").bind(nowSeconds(),job.project_id).run();
+            return json({id:jid,status:'error',reason:why});
+          }
+          return json(await acceptSceneLabResult(env,job,body.output),201);
+        }
         const policy=await projectPolicy(env,job.project_id);
         const limit=policy.museOwnsCuts&&job.step_id==='windows_project'?MAX_MUSE_WINDOWS_RESULT:MAX_JSON;
         const body=await getJson(request,limit);
@@ -690,6 +761,45 @@ async function route(request,env){
   }
   if(!url.pathname.startsWith('/v1/'))fail(404,'Route not found');
   await administrator(request,env);
+
+  if(method==='GET'&&url.pathname==='/v1/scene-lab'){
+    await ensureSceneLab(env);
+    const result=await env.DB.prepare('SELECT project_id,parent_project_id,worker_id,strategy,status,created_at,updated_at FROM cinepulse_scene_lab ORDER BY created_at DESC LIMIT 100').all();
+    return json({sceneLabBuild:SCENE_LAB_BUILD,experiments:result.results||[]});
+  }
+  if(method==='POST'&&url.pathname==='/v1/scene-lab'){
+    const raw=await getJson(request);
+    let lab;try{lab=normalizeSceneLabCreate(raw);}catch(error){fail(422,error.message);}
+    const worker=await env.DB.prepare('SELECT id FROM workers WHERE id=? AND enabled=1').bind(raw.workerId).first();
+    if(!worker)fail(404,'INT worker not found or disabled');
+    const id=newId(),jid=newId(),time=nowSeconds();
+    const key=objectKey(id,'source_srt'),bytes=new TextEncoder().encode(lab.sourceSrt),hash=await sha256(bytes);
+    const title='Scene Lab — '+lab.manifest.strategy+' — '+raw.parentProjectId.slice(0,8);
+    await ensureSceneLab(env);
+    await env.FILES.put(key,bytes,{httpMetadata:{contentType:'application/x-subrip'}});
+    try{
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO projects(id,worker_id,title,status,created_at,updated_at,retention_hours,source_srt_key) VALUES(?,?,?,'processing',?,?,?,?)").bind(id,raw.workerId,title,time,time,48,key),
+        env.DB.prepare("INSERT INTO assets(project_id,kind,r2_key,bytes,sha256,created_at) VALUES(?,'source_srt',?,?,?,?)").bind(id,key,bytes.byteLength,hash,time),
+        env.DB.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,prompt,created_at) VALUES(?,?,?,?,'queued',?,?)").bind(jid,id,raw.workerId,SCENE_LAB_STAGE,'[SCENE-LAB-ISOLATED-V1] '+JSON.stringify(lab.manifest),time),
+        env.DB.prepare("INSERT INTO cinepulse_scene_lab(project_id,parent_project_id,worker_id,strategy,manifest_json,job_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',?,?)").bind(id,raw.parentProjectId,raw.workerId,raw.strategy,JSON.stringify(lab.manifest),jid,time,time)
+      ]);
+    }catch(error){await env.FILES.delete(key);throw error;}
+    await logDaily(env,{projects_created:1,jobs_created:1,uploaded_bytes:bytes.byteLength});
+    return json({sceneLabBuild:SCENE_LAB_BUILD,projectId:id,jobId:jid,workerId:raw.workerId,parentProjectId:raw.parentProjectId,strategy:raw.strategy,status:'queued',notice:'Isolated Scene Lab task queued; original project has not been changed.'},201);
+  }
+  let labMatch=/^\/v1\/scene-lab\/([a-f0-9-]{36})(?:\/(downloads))?$/.exec(url.pathname);
+  if(labMatch&&method==='GET'){
+    const row=await sceneLabRow(env,requireUUID(labMatch[1]));
+    if(!row)fail(404,'Scene Lab experiment not found');
+    const project=await getProject(env,row.project_id);
+    if(labMatch[2]==='downloads'){
+      const downloadUrl=new URL(request.url);
+      downloadUrl.searchParams.set('format','windows');
+      return json(await signedLinks(env,{url:downloadUrl.toString()},project));
+    }
+    return json({sceneLabBuild:SCENE_LAB_BUILD,projectId:row.project_id,parentProjectId:row.parent_project_id,strategy:row.strategy,status:row.status,manifest:JSON.parse(row.manifest_json)});
+  }
   if(method==='GET'&&url.pathname==='/v1/workers'){
     const rows=await env.DB.prepare('SELECT * FROM workers ORDER BY created_at DESC LIMIT 250').all();
     return json({workers:(rows.results||[]).map(publicWorker)});

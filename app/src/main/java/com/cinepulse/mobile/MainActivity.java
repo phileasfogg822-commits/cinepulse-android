@@ -863,9 +863,12 @@ public final class MainActivity extends Activity {
         task("Downloading and verifying complete ZIP",()->{
             JSONObject detail=api.project(id);
             boolean experiment="scene_intelligence_experiment".equals(detail.getJSONObject("project").optString("productionMode"));
-            JSONObject links=experiment?api.experimentalDownloads(id):api.downloads(id);
+            boolean sceneLab="scene_matching_lab".equals(detail.getJSONObject("project").optString("productionMode"));
+            JSONObject links=sceneLab?api.sceneLabDownloads(id):experiment?api.experimentalDownloads(id):api.downloads(id);
             VerifiedDownloads manager=new VerifiedDownloads(getContentResolver(),getCacheDir());
-            return experiment?manager.createExperimentalZip(id,detail,links,
+            return sceneLab?manager.createSceneLabZip(id,detail,links,
+                step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
+                experiment?manager.createExperimentalZip(id,detail,links,
                 step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
                 manager.createVerifiedZip(id,detail,links,
                 step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
@@ -910,9 +913,12 @@ public final class MainActivity extends Activity {
             // Fresh signed links on every click; verify all files before publishing any.
             JSONObject detail=api.project(id);
             boolean experiment="scene_intelligence_experiment".equals(detail.getJSONObject("project").optString("productionMode"));
-            JSONObject urls=experiment?api.experimentalDownloads(id):api.downloads(id);
+            boolean sceneLab="scene_matching_lab".equals(detail.getJSONObject("project").optString("productionMode"));
+            JSONObject urls=sceneLab?api.sceneLabDownloads(id):experiment?api.experimentalDownloads(id):api.downloads(id);
             VerifiedDownloads manager=new VerifiedDownloads(getContentResolver(),getCacheDir());
-            return experiment?manager.downloadExperimentalToDownloads(
+            return sceneLab?manager.downloadSceneLabToDownloads(
+                id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
+                experiment?manager.downloadExperimentalToDownloads(
                 id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
                 manager.downloadToDownloads(
                 id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));

@@ -16,6 +16,7 @@ on:
       - 'cloudflare/cinepulse-android/src/scene-lab-package.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab*.test.mjs'
       - 'cloudflare/cinepulse-android/tools/scene_lab_extract.py'
+      - 'cloudflare/cinepulse-android/tests/test_scene_lab_extract.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -69,6 +70,7 @@ jobs:
           node --check src/scene-lab-runtime.mjs
           node --check src/scene-lab-package.mjs
           python3 -m py_compile tools/scene_lab_extract.py
+          python3 -m unittest discover -s tests -p 'test_scene_lab_extract.py' -v
           node --test tests/*.test.mjs
           python3 -m unittest discover -s tests -p 'test_scene_sqlite.py' -v
           npx wrangler deploy --dry-run --config wrangler.json

@@ -103,7 +103,8 @@ export function buildSceneLabV4Package({manifest,baselineProject,sourceSrt,narra
  if(!(urduAudio?.durationSeconds>=29.5&&urduAudio?.durationSeconds<=30.5))throw Error('Urdu control MP3 duration outside 29.5–30.5 seconds');
  if(Math.abs(urduCues.at(-1).endSeconds-urduAudio.durationSeconds)>.25)throw Error('Urdu SRT duration disagrees with MP3');
  validateLanguageAssets(englishAudio,englishSrt,englishCuts,totalSeconds);
- validateLanguageAssets(urduAudio,plainUrduSrt,urduCuts,urduAudio.durationSeconds);
+ const urduCutDuration=urduCues.at(-1).endSeconds;
+ validateLanguageAssets(urduAudio,plainUrduSrt,urduCuts,urduCutDuration);
  for(const [lang,asset] of [['english',englishAudio],['urdu',urduAudio]]){
   const receipt=mp3s?.[lang];
   if(!receipt||receipt.bytes!==asset.bytes||!(/^[a-f0-9]{64}$/i.test(receipt.sha256||'')))throw Error(lang+' physical MP3 upload receipt mismatch');
@@ -122,7 +123,7 @@ export function buildSceneLabV4Package({manifest,baselineProject,sourceSrt,narra
  clone.pipeline={...clone.pipeline,progress:100,currentStep:'Scene Lab experimental cuts ready for unchanged Windows Offline Editor'};
  clone.cloudImport={...clone.cloudImport,schema:'cinepulse.windows-muse.v4',cloudProjectId:projectId,outputMode:'long_form_only',
   mp3s,sceneLab:{parentProjectId:manifest.parentProjectId,experimentId,strategy:manifest.strategy,excerpts:manifest.excerpts,
-   englishDurationSeconds:totalSeconds,urduDurationSeconds:urduAudio.durationSeconds,
+   englishDurationSeconds:totalSeconds,urduDurationSeconds:urduCutDuration,
    evidenceType:'original_source_srt_only',visualVerified:false},
   longVideoCount:2,optionalShortsGenerated:false,optionalViralsGenerated:false,importedFilePathsAreRelative:true};
  function updateTrack(name,lang,cues,srt,cuts,duration){
@@ -144,7 +145,7 @@ export function buildSceneLabV4Package({manifest,baselineProject,sourceSrt,narra
   old.status='ready';
  }
  updateTrack('english','english',rebasedEnglish,englishSrt,englishCuts,totalSeconds);
- updateTrack('hindiUrdu','urdu',urduCues,plainUrduSrt,urduCuts,urduAudio.durationSeconds);
+ updateTrack('hindiUrdu','urdu',urduCues,plainUrduSrt,urduCuts,urduCutDuration);
  clone.cutPlans={english:englishCuts.map(c=>({...c,language:'english'})),urdu:urduCuts.map(c=>({...c,language:'urdu'}))};
  clone.qualityWarnings=[...(clone.qualityWarnings||[]),
   'Scene Lab: experimental source-SRT-only match, not visually verified',

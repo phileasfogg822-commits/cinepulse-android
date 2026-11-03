@@ -440,7 +440,10 @@ async function signedLinks(env,request,project){
   const now=nowSeconds();
   const expiry=Math.min(now+DOWNLOAD_LINK_SECONDS,project.expires_at||now+DOWNLOAD_LINK_SECONDS);
   const files={};
-  const format=new URL(request.url).searchParams.get('format');
+  const requestedFormat=new URL(request.url).searchParams.get('format');
+  // Scene Lab is a native server-authored 8-file V4 project; the legacy APK
+  // requests /downloads without ?format. Do not claim export_json exists.
+  const format=requestedFormat||((await sceneLabRow(env,project.id))?'windows':null);
   const policy=await projectPolicy(env,project.id);
   if(format && format!=='windows' && format!=='windows_experiment')fail(400,'Unknown download format');
   if(format==='windows_experiment'&&!policy.experiment)fail(409,'Experimental package is only available for experimental projects');
@@ -898,7 +901,7 @@ async function route(request,env){
       const updated=recovery.attempted?await getProject(env,pid):project;
       const rows=await env.DB.prepare('SELECT * FROM jobs WHERE project_id=? ORDER BY created_at').bind(pid).all();
       const assetRows=await allAssetMetadata(env,pid);
-      return json({project:{...publicProject(updated),productionMode:(await projectPolicy(env,pid)).experiment?'scene_intelligence_experiment':'stable'},jobs:(rows.results||[]).map(publicJob),
+      return json({project:{...publicProject(updated),productionMode:(await sceneLabRow(env,pid))?'scene_matching_lab':(await projectPolicy(env,pid)).experiment?'scene_intelligence_experiment':'stable'},jobs:(rows.results||[]).map(publicJob),
         assets:assetRows,...(recovery.attempted?{finalizationRecovery:recovery}:{})});
     }
     if(method==='POST'&&['pause','resume','stop'].includes(action)){

@@ -512,6 +512,7 @@ async function scheduledCleanup(env){
 async function acceptSceneLabResult(env,job,output){
  const lab=await sceneLabRow(env,job.project_id);
  if(!lab||lab.job_id!==job.id)fail(409,'Scene Lab registration missing');
+ if(typeof output==='string'){try{output=JSON.parse(output)}catch{fail(422,'Scene Lab result output must be valid JSON');}}
  if(!output||typeof output!=='object')fail(422,'Scene Lab output must be an object');
  const [english,urdu,src]=await Promise.all([
    assetByKind(env,job.project_id,'english_mp3'),
@@ -792,7 +793,11 @@ async function route(request,env){
     const row=await sceneLabRow(env,requireUUID(labMatch[1]));
     if(!row)fail(404,'Scene Lab experiment not found');
     const project=await getProject(env,row.project_id);
-    if(labMatch[2]==='downloads')return json(await signedLinks(env,request,project));
+    if(labMatch[2]==='downloads'){
+      const downloadUrl=new URL(request.url);
+      downloadUrl.searchParams.set('format','windows');
+      return json(await signedLinks(env,{url:downloadUrl.toString()},project));
+    }
     return json({sceneLabBuild:SCENE_LAB_BUILD,projectId:row.project_id,parentProjectId:row.parent_project_id,strategy:row.strategy,status:row.status,manifest:JSON.parse(row.manifest_json)});
   }
   if(method==='GET'&&url.pathname==='/v1/workers'){

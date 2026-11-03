@@ -26,7 +26,7 @@ final class CloudApi {
         }
     }
     JSONObject call(String method,String route,JSONObject body) throws Exception {
-        if(!route.startsWith("/v1/") || route.contains("..") || route.contains("?") && !route.startsWith("/v1/jobs?") && !route.matches("^/v1/projects/[0-9a-f-]{36}/downloads[?]format=windows_experiment$"))
+        if(!route.startsWith("/v1/") || route.contains("..") || route.contains("?") && !route.startsWith("/v1/jobs?") && !route.matches("^/v1/projects/[0-9a-f-]{36}/downloads[?]format=windows(_experiment)?$"))
             throw new SecurityException("Unexpected API route");
         URL url=new URL(SecurityRules.BASE + route);
         HttpURLConnection conn=(HttpURLConnection)url.openConnection();
@@ -58,6 +58,7 @@ final class CloudApi {
     JSONObject project(String id) throws Exception {return call("GET","/v1/projects/"+checked(id),null);}
     JSONObject downloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads",null);}
     JSONObject experimentalDownloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads?format=windows_experiment",null);}
+    JSONObject sceneLabDownloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads?format=windows",null);}
     JSONObject jobs() throws Exception {return call("GET","/v1/jobs",null);}
     JSONObject nudge(String jobId) throws Exception {return call("POST","/v1/jobs/"+checked(jobId)+"/nudge",new JSONObject());}
     JSONObject recovery(String projectId) throws Exception {return call("GET","/v1/projects/"+checked(projectId)+"/recovery",null);}

@@ -1,9 +1,9 @@
 name: CinePulse Android APK
 on:
   push:
-    branches: [main, 'feature/subtitle-browser-v024']
+    branches: [main, 'feature/subtitle-browser-v024', 'fix/scene-lab-apk-download-409', 'feature/scene-intelligence-v3828-staging']
   pull_request:
-    branches: [main]
+    branches: [main, 'feature/scene-intelligence-v3828-staging']
   workflow_dispatch:
 permissions:
   contents: read

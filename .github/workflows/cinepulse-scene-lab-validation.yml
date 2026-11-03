@@ -13,6 +13,7 @@ on:
       - 'cloudflare/cinepulse-android/tests/scene-lab-v4.test.mjs'
       - 'cloudflare/cinepulse-android/src/index.mjs'
       - 'cloudflare/cinepulse-android/tools/scene_lab_extract.py'
+      - 'cloudflare/cinepulse-android/tests/test_scene_lab_extract.py'
       - '.github/workflows/cinepulse-scene-lab-validation.yml'
   workflow_dispatch:
 permissions:
@@ -37,3 +38,4 @@ jobs:
           node --check src/scene-lab-runtime.mjs
           node --check src/index.mjs
           python3 -m py_compile tools/scene_lab_extract.py
+          python3 -m unittest discover -s tests -p 'test_scene_lab_extract.py' -v

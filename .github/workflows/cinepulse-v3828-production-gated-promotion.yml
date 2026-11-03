@@ -61,6 +61,10 @@ jobs:
           jq -r '[.result.deployments[]?.versions[]? | select(.percentage==100) | .version_id][0] // empty' /tmp/cp-before-deployments.json > /tmp/cp-previous-id
           [[ "$(cat /tmp/cp-previous-id)" =~ ^[a-fA-F0-9-]{36}$ ]]
           echo 'BASELINE_PRODUCTION_VERSION_CAPTURED'
+      - name: Install FFmpeg for mandatory real-audio extraction test
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
       - name: Run all Cloudflare regressions and portable SQLite builder tests
         shell: bash
         run: |

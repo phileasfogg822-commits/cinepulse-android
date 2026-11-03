@@ -84,3 +84,82 @@ export function buildSceneLabPackage({manifest,sourceSrt,digest,narrations,engli
 export function experimentPlan(parentProjectId,excerpts){
  return STRATEGIES.map(strategy=>({mode:'scene_matching_lab',language:'english',parentProjectId,strategy,excerpts}));
 }
+
+/**
+ * V4 preservation path: clone the user's accepted Muse ProjectState instead of
+ * introducing a V3 schema. This is the ONLY exporter used by live Scene Lab.
+ */
+export function buildSceneLabV4Package({manifest,baselineProject,sourceSrt,narrations,englishCues,urduSrt,englishAudio,urduAudio,englishCuts,urduCuts,mp3s,projectId,workerId}){
+ const {totalSeconds,experimentId}=validateExperimentManifest(manifest);
+ if(!baselineProject||baselineProject.cloudImport?.schema!=='cinepulse.windows-muse.v4')throw Error('Original Muse V4 ProjectState is required');
+ if(baselineProject.cloudImport?.cloudProjectId!==manifest.parentProjectId)throw Error('Original project ID mismatch');
+ if(!Array.isArray(baselineProject.sourceFiles)||baselineProject.sourceFiles[0]?.text!==sourceSrt)throw Error('Original movie source SRT mismatch');
+ if(!Array.isArray(englishCues)||!englishCues.length)throw Error('Original measured English cues required');
+ if(!narrations||!String(narrations.english||'').trim()||!String(narrations.urdu||'').trim())throw Error('Both excerpt narration texts required');
+ const rebasedEnglish=rebaseCues(englishCues,manifest.excerpts);
+ if(!rebasedEnglish.length||Math.abs(rebasedEnglish.at(-1).endSeconds-totalSeconds)>.25)throw Error('English SRT does not reach excerpted audio end');
+ const englishSrt=renderMeasuredSrt(rebasedEnglish),plainUrduSrt=unwrapMeasuredSrt(urduSrt);
+ const urduCues=parseMeasuredCues(plainUrduSrt);
+ if(!(urduAudio?.durationSeconds>=29.5&&urduAudio?.durationSeconds<=30.5))throw Error('Urdu control MP3 duration outside 29.5–30.5 seconds');
+ if(Math.abs(urduCues.at(-1).endSeconds-urduAudio.durationSeconds)>.25)throw Error('Urdu SRT duration disagrees with MP3');
+ validateLanguageAssets(englishAudio,englishSrt,englishCuts,totalSeconds);
+ validateLanguageAssets(urduAudio,plainUrduSrt,urduCuts,urduAudio.durationSeconds);
+ for(const [lang,asset] of [['english',englishAudio],['urdu',urduAudio]]){
+  const receipt=mp3s?.[lang];
+  if(!receipt||receipt.bytes!==asset.bytes||!(/^[a-f0-9]{64}$/i.test(receipt.sha256||'')))throw Error(lang+' physical MP3 upload receipt mismatch');
+ }
+ const clone=JSON.parse(JSON.stringify(baselineProject));
+ clone.id=projectId;
+ clone.projectId=projectId;
+ clone.workerId=workerId;
+ clone.title=(baselineProject.title||'Peter Rabbit (2018)')+' — Scene Lab — '+manifest.strategy;
+ clone.movieTitle=clone.title;
+ clone.mode='scene_matching_lab';
+ clone.productionMode='scene_matching_lab';
+ clone.config={...clone.config,maxMovieClipSeconds:6,shortsCount:0};
+ clone.analysis.narrations={...clone.analysis.narrations,english:narrations.english,hindiUrdu:narrations.urdu};
+ clone.analysis.shorts=[];clone.analysis.viralClips=[];clone.analysis.viralMoments=[];
+ clone.pipeline={...clone.pipeline,progress:100,currentStep:'Scene Lab experimental cuts ready for unchanged Windows Offline Editor'};
+ clone.cloudImport={...clone.cloudImport,schema:'cinepulse.windows-muse.v4',cloudProjectId:projectId,outputMode:'long_form_only',
+  mp3s,sceneLab:{parentProjectId:manifest.parentProjectId,experimentId,strategy:manifest.strategy,excerpts:manifest.excerpts,
+   englishDurationSeconds:totalSeconds,urduDurationSeconds:urduAudio.durationSeconds,
+   evidenceType:'original_source_srt_only',visualVerified:false},
+  longVideoCount:2,optionalShortsGenerated:false,optionalViralsGenerated:false,importedFilePathsAreRelative:true};
+ function updateTrack(name,lang,cues,srt,cuts,duration){
+  const old=clone.tracks?.[name];if(!old)throw Error('Original V4 '+name+' track missing');
+  old.narrationSrt=srt;old.audioDurationSeconds=duration;
+  old.mp3Bytes=mp3s[lang].bytes;old.mp3Sha256=mp3s[lang].sha256;
+  old.mp3Path=lang==='english'?'CinePulse_English.mp3':'CinePulse_Urdu.mp3';
+  old.segments=cues.map((cue,i)=>({index:i+1,start:cue.startSeconds,end:cue.endSeconds,text:cue.text}));
+  old.cuts=cuts.map(c=>({
+   movieFile:'CinePulse_Source.srt',movieStart:stamp(c.sourceStartSeconds).replace(',', '.'),
+   movieEnd:stamp(c.sourceEndSeconds).replace(',', '.'),
+   audioStart:stamp(c.narrationStartSeconds).replace(',', '.'),
+   audioEnd:stamp(c.narrationEndSeconds).replace(',', '.'),
+   language:lang,confidence:c.confidence??0.2,
+   sourceEvidence:c.sourceEvidence||'original_srt_cues'
+  }));
+  old.sceneMatch={...(old.sceneMatch||{}),status:'complete',completedSegments:cues.length,
+   signature:'cinepulse-scene-lab-v1-'+manifest.strategy,visualVerified:false};
+  old.status='ready';
+ }
+ updateTrack('english','english',rebasedEnglish,englishSrt,englishCuts,totalSeconds);
+ updateTrack('hindiUrdu','urdu',urduCues,plainUrduSrt,urduCuts,urduAudio.durationSeconds);
+ clone.cutPlans={english:englishCuts.map(c=>({...c,language:'english'})),urdu:urduCuts.map(c=>({...c,language:'urdu'}))};
+ clone.qualityWarnings=[...(clone.qualityWarnings||[]),
+  'Scene Lab: experimental source-SRT-only match, not visually verified',
+  'Identical English narration excerpt audio across ten strategies; Urdu fixed 30-second control'];
+ return {
+  experimentId,project:clone,requiredMp3Files:['CinePulse_English.mp3','CinePulse_Urdu.mp3'],
+  renderedOutputs:{english:'SceneLab_'+manifest.strategy+'_English.mp4',urdu:'SceneLab_'+manifest.strategy+'_Urdu_Control.mp4'},
+  files:{
+   CinePulse_Project:JSON.stringify(clone),
+   'CinePulse_Project.json':JSON.stringify(clone,null,2),
+   'CinePulse_Source.srt':sourceSrt,
+   'CinePulse_English.srt':englishSrt,
+   'CinePulse_Urdu.srt':plainUrduSrt,
+   'CinePulse_English_Narration.txt':narrations.english,
+   'CinePulse_Urdu_Narration.txt':narrations.urdu
+  }
+ };
+}

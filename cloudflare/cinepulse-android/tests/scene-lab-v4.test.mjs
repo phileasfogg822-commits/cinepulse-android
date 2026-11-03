@@ -41,6 +41,6 @@ test('V4 exporter refuses altered original source and wrong baseline parent',()=
 });
 test('V4 exporter refuses unverified incomplete or overlapping cuts',()=>{
  assert.throws(()=>buildSceneLabV4Package({...args,englishCuts:cuts(59)}),/Narration not fully covered/);
- const bad=cuts(60);bad[5].sourceStartSeconds=bad[4].sourceStartSeconds;
+ const bad=cuts(60);bad[5].sourceStartSeconds=bad[4].sourceStartSeconds;bad[5].sourceEndSeconds=bad[4].sourceEndSeconds;
  assert.throws(()=>buildSceneLabV4Package({...args,englishCuts:bad}),/Reused or overlapping source footage/);
 });

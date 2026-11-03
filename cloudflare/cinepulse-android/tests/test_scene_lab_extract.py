@@ -18,9 +18,11 @@ def timestamp(seconds):
 def srt(interval,total):
     return "\n\n".join(f"{i+1}\n{timestamp(i*interval)} --> {timestamp((i+1)*interval)}\nPeter Rabbit and friends {i}" for i in range(int(total/interval)))+"\n"
 
-@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),"FFmpeg tools unavailable")
+
 class SceneLabExtractorIntegration(unittest.TestCase):
     def test_actual_ffmpeg_audio_and_zip_preparation(self):
+        self.assertTrue(shutil.which('ffmpeg'), 'FFmpeg must be installed in CI')
+        self.assertTrue(shutil.which('ffprobe'), 'FFprobe must be installed in CI')
         with tempfile.TemporaryDirectory() as work:
             root=Path(work)
             audio=root/"original.mp3"

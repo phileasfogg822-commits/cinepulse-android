@@ -1,9 +1,5 @@
 name: CinePulse V5.1 scoped guarded promotion (prequalified audio tests)
 on:
-  push:
-    branches: [feature/scene-intelligence-v3828-staging]
-    paths:
-      - '.github/workflows/cinepulse-v51-scoped-promote.yml'
   workflow_dispatch:
 permissions:
   contents: read

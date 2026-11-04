@@ -52,6 +52,7 @@ export function normalizeDeepCreate(body){
  const manifest={mode:'scene_matching_lab',language:'english',parentProjectId:body.parentProjectId,strategy:body.strategy,excerpts:body.excerpts};
  const checked=validateExperimentManifest(manifest);
  if(typeof body.sourceSrt!=='string'||body.sourceSrt.length<100||body.sourceSrt.length>2000000)throw Error('Full original source movie SRT required');
+ if(!HASH.test(body.sourceSrtSha256||''))throw Error('Exact original source SRT SHA256 required');
  const sourceCues=parseMeasuredCues(body.sourceSrt);
  if(sourceCues.length<100)throw Error('Original source movie SRT must include the whole movie');
  const baseline=body.baselineProject;

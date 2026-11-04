@@ -917,6 +917,83 @@ async function route(request,env){
   if(!url.pathname.startsWith('/v1/'))fail(404,'Route not found');
   await administrator(request,env);
 
+  if(method==='GET'&&url.pathname==='/v1/scene-lab/deep'){
+    await ensureDeepTables(env);
+    const rows=await env.DB.prepare("SELECT project_id,parent_project_id,worker_id,strategy,status,segment_count,batch_count,current_batch,created_at FROM cinepulse_scene_lab_deep ORDER BY created_at DESC LIMIT 100").all();
+    return json({deepMuseBuild:DEEP_BUILD,projects:rows.results||[]});
+  }
+  if(method==='POST'&&url.pathname==='/v1/scene-lab/deep'){
+    const body=await getJson(request,MAX_MUSE_WINDOWS_RESULT);
+    let parsed;try{parsed=normalizeDeepCreate(body);}catch(error){fail(422,'Deep Muse creation refused: '+error.message);}
+    const worker=await env.DB.prepare('SELECT id,label,enabled,paused FROM workers WHERE id=? AND enabled=1').bind(parsed.workerId).first();
+    if(!worker||String(worker.label||'').toLowerCase()!=='int')fail(403,'Deep Muse mode is restricted to the existing enabled INT worker');
+    await ensureDeepTables(env);
+    const previous=await env.DB.prepare('SELECT project_id,status FROM cinepulse_scene_lab_deep WHERE request_id=?').bind(parsed.requestId).first();
+    if(previous)return json({deepMuseBuild:DEEP_BUILD,projectId:previous.project_id,status:previous.status,
+      alreadyExists:true,notice:'Idempotent request: original experiment preserved; no duplicate queued.'});
+    const src=new TextEncoder().encode(parsed.sourceSrt),hash=await sha256(src);
+    if(hash.toLowerCase()!==String(body.sourceSrtSha256).toLowerCase())fail(422,'Original movie source SRT SHA256 mismatch');
+    const id=newId(),jid=newId(),time=nowSeconds(),key=objectKey(id,'source_srt');
+    const title='Scene Lab Deep Muse — '+parsed.manifest.strategy+' — '+parsed.parentProjectId.slice(0,8);
+    await ensureSceneLab(env);
+    await env.FILES.put(key,src,{httpMetadata:{contentType:'application/x-subrip'}});
+    try{
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO projects(id,worker_id,title,status,created_at,updated_at,retention_hours,source_srt_key) VALUES(?,?,?,'processing',?,?,?,?)")
+          .bind(id,parsed.workerId,title,time,time,48,key),
+        env.DB.prepare("INSERT INTO assets(project_id,kind,r2_key,bytes,sha256,created_at) VALUES(?,'source_srt',?,?,?,?)")
+          .bind(id,key,src.byteLength,hash,time),
+        env.DB.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,prompt,created_at) VALUES(?,?,?,?,'queued',?,?)")
+          .bind(jid,id,parsed.workerId,DEEP_PREPARE,'[DEEP-MUSE-ASSET-PREPARE]',time),
+        env.DB.prepare("INSERT INTO cinepulse_scene_lab(project_id,parent_project_id,worker_id,strategy,manifest_json,job_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',?,?)")
+          .bind(id,parsed.parentProjectId,parsed.workerId,parsed.manifest.strategy,JSON.stringify(parsed.manifest),jid,time,time),
+        env.DB.prepare("INSERT INTO cinepulse_scene_lab_deep(project_id,request_id,parent_project_id,worker_id,strategy,manifest_json,english_cues_json,urdu_srt,urdu_cuts_json,narrations_json,baseline_project_json,expected_mp3s_json,segment_count,batch_count,current_batch,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'preparing',?,?)")
+          .bind(id,parsed.requestId,parsed.parentProjectId,parsed.workerId,parsed.manifest.strategy,
+             JSON.stringify(parsed.manifest),JSON.stringify(parsed.englishCues),
+             parsed.urduSrt,JSON.stringify(parsed.urduCuts),JSON.stringify(parsed.narrations),
+             JSON.stringify(parsed.baselineProject),JSON.stringify(parsed.expectedMp3s),
+             parsed.segmentCount,parsed.batchCount,time,time)
+      ]);
+    }catch(error){await env.FILES.delete(key);throw error;}
+    await logDaily(env,{projects_created:1,jobs_created:1,uploaded_bytes:src.byteLength});
+    return json({deepMuseBuild:DEEP_BUILD,projectId:id,prepareJobId:jid,workerId:parsed.workerId,
+     parentProjectId:parsed.parentProjectId,segmentCount:parsed.segmentCount,
+     batchCount:parsed.batchCount,status:'preparing',queued:true,visualVerified:false,
+     notice:'Muse will first verify reused MP3s, then execute independent five-segment semantic batches.'},201);
+  }
+  const deepMatch=/^\/v1\/scene-lab\/deep\/([a-f0-9-]{36})(?:\/(resume))?$/.exec(url.pathname);
+  if(deepMatch){
+    const pid=requireUUID(deepMatch[1]),run=await deepRow(env,pid);
+    if(!run)fail(404,'Deep Muse experiment not found');
+    if(method==='GET'&&!deepMatch[2])return json(await deepProgressSnapshot(env,run));
+    if(method==='POST'&&deepMatch[2]==='resume'){
+      if(run.status==='ready')return json({projectId:pid,status:'ready',message:'Already completed; no retry necessary'});
+      if(controlIsStopped(await getProject(env,pid)))fail(410,'Stopped Deep Muse project cannot resume');
+      // Expired active leases are the existing worker protocol's responsibility.
+      const busy=await env.DB.prepare("SELECT id,step_id,status,lease_until FROM jobs WHERE project_id=? AND step_id IN (?,?,?) AND status IN ('queued','working') ORDER BY created_at DESC LIMIT 1")
+        .bind(pid,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT).first();
+      if(busy)return json({projectId:pid,status:'processing',jobId:busy.id,
+        notice:'Existing queued or leased Muse job preserved; no duplicate submitted'});
+      const prep=await env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND step_id=? AND status='done' LIMIT 1")
+        .bind(pid,DEEP_PREPARE).first();
+      await env.DB.prepare("UPDATE projects SET status='processing',updated_at=? WHERE id=?")
+        .bind(nowSeconds(),pid).run();
+      let nextId,nextStep;
+      if(!prep){
+        nextStep=DEEP_PREPARE;
+        nextId=await queueTask(env,await getProject(env,pid),DEEP_PREPARE,'[DEEP-MUSE-RETRY-PREPARE]');
+      }else{
+        const accepted=await deepOutputs(env,pid);
+        const index=accepted.length;
+        if(index<run.batch_count){nextStep=DEEP_MATCH;nextId=await queueDeepMuseBatch(env,run,index);}
+        else{nextStep=DEEP_EXPORT;nextId=await queueDeepMuseExport(env,run);}
+      }
+      await env.DB.prepare("UPDATE cinepulse_scene_lab_deep SET status=?,updated_at=? WHERE project_id=?")
+        .bind(nextStep===DEEP_PREPARE?'preparing':'matching',nowSeconds(),pid).run();
+      return json({projectId:pid,status:'processing',nextStep,nextJobId:nextId,
+        recoveredCheckpoints:true,notice:'Resume queued only the missing or failed stage.'},201);
+    }
+  }
   if(method==='GET'&&url.pathname==='/v1/scene-lab'){
     await ensureSceneLab(env);
     const result=await env.DB.prepare('SELECT project_id,parent_project_id,worker_id,strategy,status,created_at,updated_at FROM cinepulse_scene_lab ORDER BY created_at DESC LIMIT 100').all();

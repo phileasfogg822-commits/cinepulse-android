@@ -4,6 +4,7 @@ on:
     branches:
       - feature/scene-lab-ten-strategies
       - feature/scene-lab-muse-deep-batches
+      - feature/cinepulse-permanent-deep-muse-v5
     paths:
       - 'cloudflare/cinepulse-android/src/scene-lab.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab.test.mjs'
@@ -12,6 +13,11 @@ on:
       - 'cloudflare/cinepulse-android/src/scene-lab-runtime.mjs'
       - 'cloudflare/cinepulse-android/src/scene-lab-deep.mjs'
       - 'cloudflare/cinepulse-android/src/scene-lab-deep-candidates.mjs'
+      - 'cloudflare/cinepulse-android/src/permanent-deep-muse.mjs'
+      - 'cloudflare/cinepulse-android/tests/permanent-deep-muse.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/permanent-deep-wiring.test.mjs'
+      - 'app/src/main/java/com/cinepulse/mobile/MainActivity.java'
+      - 'app/build.gradle'
       - 'cloudflare/cinepulse-android/tests/scene-lab-deep-candidates.test.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab-deep.test.mjs'
       - 'cloudflare/cinepulse-android/tools/scene_lab_deep_payload.py'
@@ -48,6 +54,7 @@ jobs:
           node --check src/scene-lab-runtime.mjs
           node --check src/scene-lab-deep.mjs
           node --check src/scene-lab-deep-candidates.mjs
+          node --check src/permanent-deep-muse.mjs
           node --check src/index.mjs
           python3 -m py_compile tools/scene_lab_extract.py
           python3 -m py_compile tools/scene_lab_deep_payload.py

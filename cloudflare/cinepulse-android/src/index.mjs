@@ -1,3 +1,4 @@
+import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
@@ -23,12 +24,13 @@ async function projectPolicy(env,projectId){
   const row=await env.DB.prepare("SELECT prompt FROM jobs WHERE project_id=? AND step_id='digest' ORDER BY created_at ASC LIMIT 1").bind(projectId).first();
   const prompt=String(row?.prompt||'');
   const experiment=prompt.startsWith(EXPERIMENT_JOB_MARKER);
-  const museOwnsCuts=experiment||prompt.startsWith(MUSE_V4_MARKER);
+  const permanentDeep=prompt.startsWith(PERMANENT_DEEP_MARKER);
+  const museOwnsCuts=permanentDeep||experiment||prompt.startsWith(MUSE_V4_MARKER);
   const serverCuts=prompt.startsWith(LONGFORM_MARKER_V3);
   const longForm=museOwnsCuts||serverCuts||prompt.startsWith(LONGFORM_MARKER);
   const targetMinutes=longForm ? Number(/targetMinutes=(\d+)/.exec(prompt)?.[1]||10) : null;
-  return {longForm,serverCuts,museOwnsCuts,experiment,targetMinutes,
-    stages:experiment?EXPERIMENT_JOB_STAGES:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
+  return {longForm,serverCuts,museOwnsCuts,permanentDeep,experiment,targetMinutes,
+    stages:permanentDeep?PERMANENT_DEEP_STEPS:experiment?EXPERIMENT_JOB_STAGES:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
 }
 
 const ASSET_TYPES = {
@@ -107,9 +109,32 @@ async function queueTask(env,project,step,requestedPrompt){
   await env.DB.prepare('UPDATE projects SET updated_at=? WHERE id=?').bind(nowSeconds(),project.id).run();
   return id;
 }
+async function acceptedPermanentDeepBatches(env,projectId,stage){
+ const result=await env.DB.prepare("SELECT output FROM jobs WHERE project_id=? AND step_id=? AND status='done' ORDER BY created_at ASC,rowid ASC")
+  .bind(projectId,stage).all();
+ return (result.results||[]).map(j=>{
+  const parsed=JSON.parse(j.output||'null');
+  if(!parsed||!Array.isArray(parsed.decisions))throw Error('Deep Muse checkpoint output is corrupt');
+  return parsed;
+ });
+}
 async function priorOutputs(env,projectId) {
-  const result=await env.DB.prepare("SELECT step_id,output FROM jobs WHERE project_id=? AND status='done' ORDER BY created_at ASC").bind(projectId).all();
-  return Object.fromEntries((result.results||[]).map(v=>[v.step_id,v.output]));
+ const result=await env.DB.prepare("SELECT step_id,output FROM jobs WHERE project_id=? AND status='done' ORDER BY created_at ASC,rowid ASC").bind(projectId).all();
+ const outputs=Object.fromEntries((result.results||[]).map(v=>[v.step_id,v.output]));
+ // Muse V4 finalization contract remains the byte-preserving format for
+ // permanent V5 movies. Derive read-only aliases from validated Deep cut output.
+ if(outputs[PERMANENT_DEEP_CUTS]){
+  const result=JSON.parse(outputs[PERMANENT_DEEP_CUTS]);
+  if(!Array.isArray(result.cuts)||!result.provenance)
+   throw Error('Permanent Muse cut checkpoint has invalid output');
+  outputs.cut_plan=JSON.stringify(result.cuts);
+  const [english,urdu]=await Promise.all([
+   acceptedPermanentDeepBatches(env,projectId,PERMANENT_DEEP_MATCH_EN),
+   acceptedPermanentDeepBatches(env,projectId,PERMANENT_DEEP_MATCH_UR)
+  ]);
+  outputs.scene_matching=JSON.stringify({matches:summariseProductionDeepMatches(english,urdu)});
+ }
+ return outputs;
 }
 async function taskDetail(env,job) {
   if(DEEP_STAGES.includes(job.step_id)){
@@ -161,11 +186,66 @@ async function taskDetail(env,job) {
       sourceSrtAsset:lab.sourceSrtAsset,inputAsset:lab.sourceSrtAsset,
       notice:'Isolated Scene Lab: upload two extracted real MP3s, then submit V4 package fields. Original movie unchanged.'};
   }
+  const policyForDeep=await projectPolicy(env,job.project_id);
+  if(policyForDeep.permanentDeep && isProductionDeepStage(job.step_id)){
+    const movie=await getProject(env,job.project_id);
+    const outputs=await priorOutputs(env,job.project_id);
+    const readOnlyAsset={path:'/tasks/'+job.id+'/asset/source_srt',name:'CinePulse_Source.srt',
+      mime:'application/x-subrip'};
+    if(PERMANENT_DEEP_MATCH_STEPS.includes(job.step_id)){
+      const language=deepLanguage(job.step_id);
+      const measured=outputs[language==='english'?'srt_english':'srt_urdu'];
+      const cues=loadProductionCues(measured);
+      const accepted=await acceptedPermanentDeepBatches(env,movie.id,job.step_id);
+      const file=await env.FILES.get(movie.source_srt_key);
+      if(!file)fail(409,'Original source SRT unavailable for full-movie Muse matching');
+      const evidence=productionDeepPrompt(language,null,cues,await file.text(),accepted);
+      return {...publicJob(job),lease:job.lease,prompt:evidence.prompt+
+        (job.prompt?.startsWith('RETRY REQUIRED:')?'\n'+job.prompt:''),
+       movie:{id:movie.id,title:movie.title,workerId:movie.worker_id},
+       productionMode:'stable',sceneMatchingMode:PERMANENT_DEEP_BUILD,
+       sourceSrtAsset:readOnlyAsset,inputAsset:readOnlyAsset,
+       deepMuse:{language,batchIndex:evidence.progress.batchIndex,
+        batchCount:evidence.progress.batchCount,reviewedSegments:evidence.progress.reviewedSegments,
+        totalSegments:cues.length,segments:evidence.segments,rankedSourceCandidates:evidence.ranked.candidates,
+        maxSourceEvidenceCharacters:evidence.ranked.budget,priorAcceptedDecisions:accepted.flatMap(x=>x.decisions),
+        visualVerified:false},
+       notice:'This is live FULL-MOVIE Muse matching, not fast scoring. Each measured narration cue requires a separate Muse semantic decision.'};
+    }
+    const [english,urdu]=await Promise.all([
+      acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_EN),
+      acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_UR)
+    ]);
+    const enCues=loadProductionCues(outputs.srt_english),urCues=loadProductionCues(outputs.srt_urdu);
+    if(!deepProductionProgress(enCues,english).complete||!deepProductionProgress(urCues,urdu).complete)
+      fail(409,'All original full-movie narration segments must be Muse-reviewed before cut generation');
+    return {...publicJob(job),lease:job.lease,productionMode:'stable',
+      sceneMatchingMode:PERMANENT_DEEP_BUILD,
+      movie:{id:movie.id,title:movie.title,workerId:movie.worker_id},
+      sourceSrtAsset:readOnlyAsset,inputAsset:readOnlyAsset,
+      deepMuse:{englishCues:enCues,urduCues:urCues,acceptedDecisions:{
+       english:english.flatMap(x=>x.decisions),urdu:urdu.flatMap(x=>x.decisions)},
+       visualVerified:false},
+      prompt:'CINEPULSE PERMANENT DEEP MUSE: FINAL FULL-MOVIE CUT PLAN. '+
+       'All English '+enCues.length+' and Urdu '+urCues.length+' cues have individually accepted Muse source decisions. '+
+       'Generate a SEPARATE complete 3–6 second cut plan for each language using ONLY those accepted source anchors. '+
+       'Each clip must contain matchSegmentIndices linking to accepted Muse decisions in THAT language. '+
+       'Respect 100% measured narration coverage, source duration equal to narration duration, nonoverlap of movie footage WITHIN EACH LANGUAGE, and original movie SRT time bounds. '+
+       'If unsupported, report an unresolved stage error rather than inserting arbitrary footage. '+
+       'Return JSON {"englishCuts":[{"narrationStartSeconds":0,"narrationEndSeconds":5,"sourceStartSeconds":100,"sourceEndSeconds":105,"matchSegmentIndices":[1]}],'+
+       '"urduCuts":[...]} with full continuous lists. NO Shorts or virals. NO visual-verification claims.'+
+       (job.prompt?.startsWith('RETRY REQUIRED:')?'\n'+job.prompt:''),
+      notice:'Muse is responsible for final cut decisions; Cloudflare only validates and stores.'};
+  }
   const outputs=await priorOutputs(env,job.project_id);
   // Context only for the current project and its own worker. Never mixes movies.
   const policy=await projectPolicy(env,job.project_id);
   const stages=policy.stages;
   const context=Object.fromEntries(Object.entries(outputs).filter(([key])=>stages.indexOf(key)>=0&&stages.indexOf(key)<stages.indexOf(job.step_id)));
+  if(policy.permanentDeep&&job.step_id==='windows_project'){
+    context.cut_plan=outputs.cut_plan;
+    context.scene_matching=outputs.scene_matching;
+  }
   const movie=await getProject(env,job.project_id);
   const audioRows=policy.museOwnsCuts?await Promise.all(['english_mp3','urdu_mp3'].map(k=>assetByKind(env,job.project_id,k))):[];
   const audioManifest=policy.museOwnsCuts?Object.fromEntries(['english','urdu'].map((lang,i)=>[lang,audioRows[i]?{bytes:audioRows[i].bytes,sha256:audioRows[i].sha256,filename:lang==='english'?'CinePulse_English.mp3':'CinePulse_Urdu.mp3'}:null])):null;
@@ -181,7 +261,7 @@ async function taskDetail(env,job) {
   const experimentSource=policy.experiment?await experimentalSourceInfo(env,job.project_id):null;
   const experimentPrompt=policy.experiment?experimentalQueuePrompt(job.step_id,{projectId:job.project_id,sourceSrtSha256:experimentSource.sourceSrtSha256}):'';
   return {...publicJob(job),lease:job.lease,
-    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
+    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(policy.permanentDeep&&job.step_id==='windows_project'?'\nPERMANENT DEEP MUSE V5: use priorOutputs.cut_plan derived from the validated 5-cue semantic batches for BOTH languages; preserve all cut values and sourceEvidence; do not repeat matching or alter narration/audio. Include method/provenance in cloudImport if supported.':'')+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
       policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
     movie:policy.museOwnsCuts?{id:movie.id,title:movie.title,targetMinutes:policy.targetMinutes,workerId:movie.worker_id}:undefined,
     sourceSrtAsset:policy.museOwnsCuts?{path:assetPath+'/source_srt',mime:ASSET_TYPES.source_srt,name:'CinePulse_Source.srt'}:undefined,
@@ -697,11 +777,62 @@ async function acceptDeepMuseResult(env,job,output){
  fail(400,'Invalid Deep Muse stage');
 }
 
+async function acceptPermanentDeepStage(env,job,output){
+ if(!output||typeof output!=='object'||Array.isArray(output))
+   throw Error('A JSON object with Muse source evidence is required');
+ const outputs=await priorOutputs(env,job.project_id),movie=await getProject(env,job.project_id);
+ if(PERMANENT_DEEP_MATCH_STEPS.includes(job.step_id)){
+   const language=deepLanguage(job.step_id);
+   const cues=loadProductionCues(outputs[language==='english'?'srt_english':'srt_urdu']);
+   const accepted=await acceptedPermanentDeepBatches(env,job.project_id,job.step_id);
+   const source=await env.FILES.get(movie.source_srt_key);
+   if(!source)throw Error('Original movie subtitles missing');
+   const verified=validateProductionDeepBatch(language,cues,await source.text(),accepted,output);
+   const now=nowSeconds();
+   const updated=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+     .bind(JSON.stringify(verified),now,job.id,job.lease).first();
+   if(!updated)fail(409,'Muse checkpoint was already accepted or re-leased');
+   await logDaily(env,{jobs_completed:1});
+   const progress=deepProductionProgress(cues,[...accepted,verified]);
+   const next=progress.complete?(language==='english'?PERMANENT_DEEP_MATCH_UR:PERMANENT_DEEP_CUTS):job.step_id;
+   const nextId=await queueTask(env,movie,next,'[PERMANENT-DEEP-MUSE] '+language+' accepted '+progress.reviewedSegments+'/'+progress.totalSegments);
+   return {id:job.id,status:'done',language,acceptedSegments:verified.decisions.length,
+     reviewedSegments:progress.reviewedSegments,totalSegments:progress.totalSegments,
+     completedBatches:progress.batchIndex,batchCount:progress.batchCount,
+     nextStep:next,nextJobId:nextId,visualVerified:false,
+     pipeline:{status:'processing',nextStep:next},nextEndpoint:'/agent/next'};
+ }
+ if(job.step_id!==PERMANENT_DEEP_CUTS)throw Error('Unrecognized permanent Muse stage');
+ const [en,ur]=await Promise.all([
+  acceptedPermanentDeepBatches(env,job.project_id,PERMANENT_DEEP_MATCH_EN),
+  acceptedPermanentDeepBatches(env,job.project_id,PERMANENT_DEEP_MATCH_UR)
+ ]);
+ const enCues=loadProductionCues(outputs.srt_english),urCues=loadProductionCues(outputs.srt_urdu);
+ const checked=combineProductionDeepCuts(output.englishCuts,output.urduCuts,enCues,urCues,en,ur);
+ const src=await env.FILES.get(movie.source_srt_key);
+ if(!src)throw Error('Original movie subtitle asset missing');
+ validateFinalCutPlan(checked.cuts,{
+  sourceSrt:await src.text(),englishSrt:outputs.srt_english,
+  urduSrt:outputs.srt_urdu,experimentalReview:false
+ });
+ const now=nowSeconds();
+ const updated=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+   .bind(JSON.stringify(checked),now,job.id,job.lease).first();
+ if(!updated)fail(409,'Muse final cuts already accepted or re-leased');
+ await logDaily(env,{jobs_completed:1});
+ const nextId=await queueTask(env,movie,'windows_project','[PERMANENT-DEEP-MUSE] Accepted bilingual verified cut plan; preserve values in CinePulse V4 JSON');
+ return {id:job.id,status:'done',nextStep:'windows_project',nextJobId:nextId,
+  englishCuts:checked.cuts.filter(c=>c.language==='english').length,
+  urduCuts:checked.cuts.filter(c=>c.language==='urdu').length,
+  evidenceProvenance:checked.provenance,visualVerified:false,
+  pipeline:{status:'processing',nextStep:'windows_project'},nextEndpoint:'/agent/next'};
+}
+
 async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,productionDeepMuseBatchSize:5,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -773,6 +904,30 @@ async function route(request,env){
         return json({ok:true,leaseUntil:nowSeconds()+LEASE_SECONDS});
       }
       if(method==='POST'&&action==='result'){
+        if(isProductionDeepStage(job.step_id)){
+          const policy=await projectPolicy(env,job.project_id);
+          if(!policy.permanentDeep)fail(403,'Not a permanent Muse Deep movie');
+          const body=await getJson(request,MAX_JSON);
+          if(job.status!=='working'||job.lease_until<=nowSeconds()||!secureEqual(body.lease||'',job.lease||''))fail(409,'Muse lease changed');
+          if(body.error){
+            const reason=requireString(String(body.error),'Muse unresolved scene',1200);
+            const ended=await env.DB.prepare("UPDATE jobs SET status='error',error=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+              .bind(reason,nowSeconds(),jid,job.lease).first();
+            if(!ended)fail(409,'Muse task already completed');
+            await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?").bind(nowSeconds(),job.project_id).run();
+            return json({id:jid,status:'needs_review',reason,preservedCheckpoints:true});
+          }
+          let output=body.output;
+          if(typeof output==='string'){try{output=JSON.parse(output);}catch{fail(422,'Muse deep JSON required');}}
+          try{return json(await acceptPermanentDeepStage(env,job,output),201);}
+          catch(error){
+            if(error instanceof HttpError)throw error;
+            const reason=String(error.message||error).slice(0,1100);
+            await env.DB.prepare("UPDATE jobs SET prompt=? WHERE id=? AND lease=? AND status='working'")
+              .bind('RETRY REQUIRED: '+reason,job.id,job.lease).run();
+            fail(422,'Muse Deep production stage rejected; retry same lease: '+reason);
+          }
+        }
         if(DEEP_STAGES.includes(job.step_id)){
           const body=await getJson(request,MAX_MUSE_WINDOWS_RESULT);
           if(job.status!=='working'||job.lease_until<=nowSeconds()||!secureEqual(body.lease||'',job.lease||''))fail(409,'Deep Muse lease expired or changed');
@@ -935,6 +1090,7 @@ async function route(request,env){
     return json({deepMuseBuild:DEEP_BUILD,projects:rows.results||[]});
   }
   if(method==='POST'&&url.pathname==='/v1/scene-lab/deep'){
+    fail(410,'Deep Scene Lab pilot creation retired: new films now use the permanent bilingual Muse V5 pipeline. Existing pilot remains downloadable.');
     const body=await getJson(request,MAX_MUSE_WINDOWS_RESULT);
     let parsed;try{parsed=normalizeDeepCreate(body);}catch(error){fail(422,'Deep Muse creation refused: '+error.message);}
     const worker=await env.DB.prepare('SELECT id,label,enabled,paused FROM workers WHERE id=? AND enabled=1').bind(parsed.workerId).first();
@@ -1012,6 +1168,7 @@ async function route(request,env){
     return json({sceneLabBuild:SCENE_LAB_BUILD,experiments:result.results||[]});
   }
   if(method==='POST'&&url.pathname==='/v1/scene-lab'){
+    fail(410,'Fast Scene Lab experiments retired for new submissions. Use the permanent Muse V5 movie pipeline. Existing experiments remain downloadable.');
     const raw=await getJson(request);
     let lab;try{lab=normalizeSceneLabCreate(raw);}catch(error){fail(422,error.message);}
     const worker=await env.DB.prepare('SELECT id FROM workers WHERE id=? AND enabled=1').bind(raw.workerId).first();
@@ -1092,6 +1249,7 @@ async function route(request,env){
   if(method==='POST'&&url.pathname==='/v1/projects'){
     const body=await getJson(request);
     const experiment=body.productionMode==='scene_intelligence_experiment';
+    if(experiment)fail(410,'Experimental scene intelligence is retired for NEW movies; permanent Muse Deep V5 is now the standard. Existing projects remain downloadable.');
     if(body.productionMode && body.productionMode!=='stable' && !experiment)fail(422,'Unknown CinePulse production mode');
     let requested;try{requested=isLongFormCreateRequest(body);}catch(error){fail(422,error.message);}
     const title=requireString(body.title,'movie title'),workerId=requireUUID(body.workerId),worker=await env.DB.prepare('SELECT * FROM workers WHERE id=? AND enabled=1').bind(workerId).first();
@@ -1116,13 +1274,13 @@ async function route(request,env){
     }
     await logDaily(env,{projects_created:1,uploaded_bytes:bytes.byteLength});
     // Durable project-level policy stored in the first digest job prompt: no schema migration.
-    const policyPrompt=`${experiment?EXPERIMENT_JOB_MARKER:MUSE_V4_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=${experiment?11:8}\n${promptFor('digest')}`;
+    const policyPrompt=`${experiment?EXPERIMENT_JOB_MARKER:PERMANENT_DEEP_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=${experiment?11:8}\n${promptFor('digest')}`;
     const taskId=await queueTask(env,{id:pid,worker_id:workerId},'digest',policyPrompt);
     return json({projectId:pid,workerId,title,firstTaskId:taskId,stage:'digest',status:'processing',retentionHours:hours,
       productionMode:experiment?'scene_intelligence_experiment':'stable',
       targetMinutes:requested.targetMinutes,outputMode:requested.outputMode,
       modules:{digest:true,englishNarration:true,urduNarration:true,metadata:true,englishMp3:true,urduMp3:true,
-        englishMeasuredSrt:true,urduMeasuredSrt:true,sceneMatching:true,finalCuts:true,
+        englishMeasuredSrt:true,urduMeasuredSrt:true,sceneMatching:true,finalCuts:true,sceneMatchingMethod:'muse_semantic_batches',batchSize:5,eachLanguageIndependent:true,
         finalCutOwner:'muse',windowsProjectOwner:'muse',windowsAssets:experiment?11:8,shorts:false,virals:false}},201);
   }
   if(method==='GET'&&url.pathname==='/v1/projects'){
@@ -1136,6 +1294,52 @@ async function route(request,env){
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
+    if(action==='deep-muse'&&method==='GET'){
+      const policy=await projectPolicy(env,pid);
+      if(!policy.permanentDeep)fail(404,'This movie predates permanent Muse Deep V5');
+      const outputs=await priorOutputs(env,pid);
+      const state={projectId:pid,mode:PERMANENT_DEEP_BUILD,status:project.status,
+       lastProjectUpdateAt:project.updated_at,visualVerified:false,langs:{}};
+      for(const [lang,stage] of [['english',PERMANENT_DEEP_MATCH_EN],['urdu',PERMANENT_DEEP_MATCH_UR]]){
+        const raw=outputs[lang==='english'?'srt_english':'srt_urdu'];
+        if(raw){
+          const cues=loadProductionCues(raw),done=await acceptedPermanentDeepBatches(env,pid,stage);
+          const progress=deepProductionProgress(cues,done);
+          state.langs[lang]={reviewedSegments:progress.reviewedSegments,totalSegments:progress.totalSegments,
+            acceptedBatches:progress.batchIndex,batchCount:progress.batchCount,complete:progress.complete};
+        }else state.langs[lang]={status:'waiting_for_measured_mp3_srt'};
+      }
+      state.cutPlanValidated=!!outputs[PERMANENT_DEEP_CUTS];
+      state.windowsExportValidated=!!outputs.windows_project;
+      return json(state);
+    }
+    if(action==='deep-muse/resume'&&method==='POST'){
+      const policy=await projectPolicy(env,pid);
+      if(!policy.permanentDeep)fail(404,'Only permanent V5 movies can resume Deep Muse');
+      if(controlIsStopped(project))fail(410,'Stopped movie cannot resume');
+      if(project.status==='ready')return json({projectId:pid,status:'ready',notice:'The complete Windows project is already ready'});
+      const active=await env.DB.prepare("SELECT id,step_id,status,lease_until FROM jobs WHERE project_id=? AND status IN ('queued','working') ORDER BY created_at DESC LIMIT 1")
+        .bind(pid).first();
+      if(active)return json({projectId:pid,jobId:active.id,step:active.step_id,
+        status:'processing',notice:'Existing Muse task retained, no duplicate queued'});
+      const outputs=await priorOutputs(env,pid);
+      if(!outputs.srt_english||!outputs.srt_urdu)
+       fail(409,'Measured English and Urdu SRTs are required before resuming Deep Muse');
+      let step=PERMANENT_DEEP_CUTS;
+      for(const [lang,name] of [['english',PERMANENT_DEEP_MATCH_EN],['urdu',PERMANENT_DEEP_MATCH_UR]]){
+       const cues=loadProductionCues(outputs[lang==='english'?'srt_english':'srt_urdu']);
+       const accepted=await acceptedPermanentDeepBatches(env,pid,name);
+       if(!deepProductionProgress(cues,accepted).complete){step=name;break;}
+      }
+      if(outputs[PERMANENT_DEEP_CUTS])step='windows_project';
+      if(outputs.windows_project)
+       fail(409,'Muse Windows project is accepted; use the existing finalization recovery endpoint');
+      await env.DB.prepare("UPDATE projects SET status='processing',updated_at=? WHERE id=?")
+       .bind(nowSeconds(),pid).run();
+      const nextId=await queueTask(env,project,step,'[PERMANENT-DEEP-MUSE] Resume only unfinished stage; preserve prior 5-cue checkpoints');
+      return json({projectId:pid,nextStep:step,nextJobId:nextId,status:'processing',
+        checkpointed:true,notice:'Only the pending Muse stage has been requeued'},201);
+    }
     if(method==='GET'&&!action){
       const recovery=!controlIsStopped(project)&&project.status==='needs_review'&&project.updated_at<nowSeconds()-30?
         await recoverAcceptedFinalization(env,project):{attempted:false};

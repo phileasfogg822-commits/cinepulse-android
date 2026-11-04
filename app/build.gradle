@@ -11,8 +11,8 @@ android {
         manifestPlaceholders = [cinepulseAppLabel: project.hasProperty('cinepulsePreview') ? 'CinePulse Preview' : 'CinePulse']
         minSdk 26
         targetSdk 35
-        versionCode 20
-        versionName '0.3.4-scene-lab'
+        versionCode 21
+        versionName '0.3.5-deep-muse'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 

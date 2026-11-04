@@ -1,3 +1,4 @@
+import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
@@ -111,14 +112,21 @@ async function queueTask(env,project,step,requestedPrompt){
   await env.DB.prepare('UPDATE projects SET updated_at=? WHERE id=?').bind(nowSeconds(),project.id).run();
   return id;
 }
+async function acceptedUrduRepairOutputs(env,projectId){
+ const result=await env.DB.prepare("SELECT output FROM jobs WHERE project_id=? AND step_id=? AND status='done' ORDER BY created_at ASC,rowid ASC")
+   .bind(projectId,URDU_REPAIR_STAGE).all();
+ return (result.results||[]).map(j=>JSON.parse(j.output||'null'));
+}
 async function acceptedPermanentDeepBatches(env,projectId,stage){
  const result=await env.DB.prepare("SELECT output FROM jobs WHERE project_id=? AND step_id=? AND status='done' ORDER BY created_at ASC,rowid ASC")
   .bind(projectId,stage).all();
- return (result.results||[]).map(j=>{
+ const original=(result.results||[]).map(j=>{
   const parsed=JSON.parse(j.output||'null');
   if(!parsed||!Array.isArray(parsed.decisions))throw Error('Deep Muse checkpoint output is corrupt');
   return parsed;
  });
+ return stage===PERMANENT_DEEP_MATCH_UR?
+   applyAcceptedUrduRepairs(original,await acceptedUrduRepairOutputs(env,projectId)):original;
 }
 async function priorOutputs(env,projectId) {
  const result=await env.DB.prepare("SELECT step_id,output FROM jobs WHERE project_id=? AND status='done' ORDER BY created_at ASC,rowid ASC").bind(projectId).all();
@@ -139,6 +147,32 @@ async function priorOutputs(env,projectId) {
  return outputs;
 }
 async function taskDetail(env,job) {
+  if(job.step_id===URDU_REPAIR_STAGE){
+    const policy=await projectPolicy(env,job.project_id);
+    if(!policy.permanentDeep)fail(403,'Targeted repair not authorized for older movie');
+    const project=await getProject(env,job.project_id);
+    const plan=parseUrduRepairPrompt(job.prompt);
+    const outputs=await priorOutputs(env,job.project_id);
+    const original=await env.FILES.get(project.source_srt_key);
+    if(!original)fail(409,'Original movie SRT unavailable');
+    const cues=loadProductionCues(outputs.srt_urdu);
+    const effective=await acceptedPermanentDeepBatches(env,job.project_id,PERMANENT_DEEP_MATCH_UR);
+    const task=UrduRepairTaskEvidence({
+      sourceSrt:await original.text(),urduCues:cues,acceptedBatches:effective,prompt:job.prompt
+    });
+    return {...publicJob(job),lease:job.lease,productionMode:'stable',
+      sceneMatchingMode:URDU_REPAIR_BUILD,
+      movie:{id:project.id,title:project.title,workerId:project.worker_id},
+      sourceSrtAsset:{path:'/tasks/'+job.id+'/asset/source_srt',mime:'application/x-subrip',name:'CinePulse_Source.srt'},
+      inputAsset:{path:'/tasks/'+job.id+'/asset/source_srt',mime:'application/x-subrip',name:'CinePulse_Source.srt'},
+      prompt:task.instructions,
+      deepMuse:{mode:'targeted_urdu_rematch',originalAcceptedSegments:cues.length,
+        repairIndices:plan.indices,repairBatchIndices:task.taskSegments.map(x=>x.segmentIndex),
+        repairOffset:plan.offset,originalCutPlanJobId:plan.sourceCutJobId,
+        segments:task.taskSegments,visualVerified:false,
+        candidateEvidenceBudget:4000,requiredSourceEvidence:true},
+      notice:'Re-match only the listed Urdu segments with REAL Muse decisions; preserve all original jobs, English cuts, narrations, MP3s, SRTs and source movie.'};
+  }
   if(DEEP_STAGES.includes(job.step_id)){
     const run=await deepRow(env,job.project_id);
     if(!run)fail(409,'Deep Muse job not registered');
@@ -835,7 +869,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,productionDeepMuseBatchSize:5,narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);

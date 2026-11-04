@@ -1,0 +1,81 @@
+name: CinePulse V5 measured narration duration audit (READ ONLY)
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - '.github/workflows/cinepulse-current-deep-duration-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  durations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Read only V5 project target, measured English/Urdu SRT, and cut stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
+          npm install --no-audit --no-fund >/dev/null
+          sql="SELECT p.id AS project_id,p.created_at,p.status,p.worker_id,
+          (SELECT prompt FROM jobs d WHERE d.project_id=p.id AND d.step_id='digest' ORDER BY d.created_at ASC LIMIT 1) AS digest_prompt,
+          (SELECT output FROM jobs j WHERE j.project_id=p.id AND j.step_id='srt_english' AND j.status='done' ORDER BY j.created_at DESC LIMIT 1) AS english_srt,
+          (SELECT output FROM jobs j WHERE j.project_id=p.id AND j.step_id='srt_urdu' AND j.status='done' ORDER BY j.created_at DESC LIMIT 1) AS urdu_srt,
+          (SELECT step_id FROM jobs j WHERE j.project_id=p.id ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1) AS latest_step,
+          (SELECT status FROM jobs j WHERE j.project_id=p.id ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1) AS latest_step_status,
+          (SELECT COUNT(*) FROM jobs j WHERE j.project_id=p.id AND j.step_id='deep_match_english' AND j.status='done') AS english_matched_batches,
+          (SELECT COUNT(*) FROM jobs j WHERE j.project_id=p.id AND j.step_id='deep_match_urdu' AND j.status='done') AS urdu_matched_batches,
+          (SELECT bytes FROM assets a WHERE a.project_id=p.id AND a.kind='english_mp3' LIMIT 1) AS english_mp3_bytes,
+          (SELECT bytes FROM assets a WHERE a.project_id=p.id AND a.kind='urdu_mp3' LIMIT 1) AS urdu_mp3_bytes
+          FROM projects p WHERE EXISTS (
+          SELECT 1 FROM jobs d WHERE d.project_id=p.id AND d.step_id='digest'
+          AND instr(d.prompt,'[CINEPULSE-V5-PERMANENT-DEEP-MUSE]')=1)
+          ORDER BY p.created_at DESC,p.rowid DESC LIMIT 8"
+          npx wrangler d1 execute cinepulse-android-db --remote --json --command "$sql" > /tmp/cp-v5-duration-raw.json
+          node --input-type=module - <<'NODE'
+          import {readFileSync} from 'node:fs';
+          const raw=JSON.parse(readFileSync('/tmp/cp-v5-duration-raw.json','utf8'));
+          const rows=(Array.isArray(raw)?raw:[raw]).flatMap(v=>v.results||[]);
+          const endSeconds=(value)=>{
+            if(!value)return null;
+            let text=value;
+            if(typeof text==='string'&&text.trimStart().startsWith('{')){
+              try{const x=JSON.parse(text);if(x.format==='srt'&&typeof x.text==='string')text=x.text;}catch{}
+            }
+            const re=/(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/g;
+            let m,max=0,cues=0;
+            while((m=re.exec(text))!==null){
+              const v=Number(m[5])*3600+Number(m[6])*60+Number(m[7])+Number(m[8])/1000;
+              max=Math.max(max,v);cues++;
+            }
+            return cues?Math.round(max*1000)/1000:null;
+          };
+          console.log('V5_READ_ONLY_DURATION_AUDIT_COUNT='+rows.length);
+          for(const [i,p] of rows.entries()){
+            const en=endSeconds(p.english_srt),ur=endSeconds(p.urdu_srt);
+            const target=Number(/targetMinutes=(\d+)/.exec(p.digest_prompt||'')?.[1]||0);
+            console.log('PROJECT_DURATION_AUDIT_'+(i+1)+'='+JSON.stringify({
+              projectIdPrefix:String(p.project_id).slice(0,12),
+              createdAtUtc:new Date(Number(p.created_at)*1000).toISOString(),
+              status:p.status,workerPrefix:String(p.worker_id).slice(0,8),
+              requestedTargetMinutes:target,
+              englishMeasuredSeconds:en,englishMeasuredMinutes:en===null?null:Math.round(en/60*100)/100,
+              urduMeasuredSeconds:ur,urduMeasuredMinutes:ur===null?null:Math.round(ur/60*100)/100,
+              englishMp3Bytes:p.english_mp3_bytes,urduMp3Bytes:p.urdu_mp3_bytes,
+              newestStage:p.latest_step,newestStageStatus:p.latest_step_status,
+              englishMatchingBatchesDone:p.english_matched_batches,urduMatchingBatchesDone:p.urdu_matched_batches,
+              narrationTextsRead:false,sourceSrtNotExposed:true
+            }));
+          }
+          console.log('READ_ONLY_D1_DURATION_AUDIT_COMPLETE');
+          NODE

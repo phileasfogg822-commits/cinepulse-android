@@ -62,7 +62,7 @@ test('measured MP3-backed narration SRT must end at or before chosen maximum',()
  const srt=t=>'1\n00:00:00,000 --> '+stamp(t)+'\nActual measured words\n';
  assert.equal(validateMeasuredDurationCap(srt(599.9),'english',10).measuredSeconds,599.9);
  assert.throws(()=>validateMeasuredDurationCap(srt(1440),'urdu',10),/1440.000s > 600.000s/);
- assert.throws(()=>validateMeasuredDurationCap(JSON.stringify({format:'srt',text:srt(601)}),'urdu',10),/measured audio duration/i);
+ assert.throws(()=>validateMeasuredDurationCap(JSON.stringify({format:'srt',text:srt(601)}),'urdu',10),/MP3-backed SRT duration/i);
 });
 test('55 seconds cannot fit in a 14 second anchor footprint plus 12-second shoulders',()=>{
  const required=55,original=14,oldWindow=original+2*12,newWindow=original+2*25;

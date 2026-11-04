@@ -1,3 +1,4 @@
+import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
 import { buildSceneLabV4Package } from './scene-lab-package.mjs';
 import { API_BUILD, HttpError, json, nowSeconds, dayUTC, newId, isUuid, sha256, hashWorkerToken, requireString, normalizeSrt, validateManifest, randomToken, secureEqual, signDownload, verifyDownload, fileNames, isProbablyMp3 } from './helpers.mjs';
@@ -110,6 +111,34 @@ async function priorOutputs(env,projectId) {
   return Object.fromEntries((result.results||[]).map(v=>[v.step_id,v.output]));
 }
 async function taskDetail(env,job) {
+  if(DEEP_STAGES.includes(job.step_id)){
+    const run=await deepRow(env,job.project_id);
+    if(!run)fail(409,'Deep Muse job not registered');
+    const batch=job.step_id===DEEP_MATCH?await deepBatch(env,job.id):null;
+    if(job.step_id===DEEP_MATCH&&!batch)fail(409,'Deep Muse batch checkpoint missing');
+    const accepted=job.step_id===DEEP_PREPARE?[]:await deepOutputs(env,job.project_id);
+    const sourcePath='/tasks/'+job.id+'/asset/source_srt';
+    const instructions=job.step_id===DEEP_PREPARE?preparePrompt(run):
+      job.step_id===DEEP_MATCH?matchPrompt(run,batch.batch_index):exportPrompt(run);
+    const manifest=JSON.parse(run.manifest_json);
+    const deep={mode:'muse_deep_batch_v1',stage:job.step_id,backendBuild:DEEP_BUILD,
+      originalProjectId:run.parent_project_id,experimentProjectId:run.project_id,
+      strategy:run.strategy,manifest,segmentCount:run.segment_count,
+      batchCount:run.batch_count,currentBatch:run.current_batch,
+      visualVerified:false,
+      sourceSrtAsset:{path:sourcePath,name:'CinePulse_Source.srt',mime:'application/x-subrip'},
+      acceptedDecisions:accepted,
+      ...(batch?{batchIndex:batch.batch_index,segments:segmentBatch(run,batch.batch_index)}:{}),
+      ...(job.step_id===DEEP_PREPARE?{expectedMp3s:JSON.parse(run.expected_mp3s_json),
+         uploadMp3Endpoints:{english:'/tasks/'+job.id+'/asset/english_mp3',
+           urdu:'/tasks/'+job.id+'/asset/urdu_mp3'}}:{})};
+    return {...publicJob(job),lease:job.lease,productionMode:'scene_lab_deep_muse',
+      prompt:instructions+(job.prompt?.startsWith('RETRY REQUIRED:')?'\n'+job.prompt:''),
+      sceneLabDeep:deep,movie:{id:job.project_id,title:'Muse Deep Scene Lab — '+run.strategy,
+        workerId:job.worker_id},sourceSrtAsset:deep.sourceSrtAsset,
+      inputAsset:deep.sourceSrtAsset,previousOutputs:{},
+      notice:'Deep Muse decisions are accepted in independent checkpointed batches; do not submit fast-scoring cut plans.'};
+  }
   if(job.step_id===SCENE_LAB_STAGE){
     const row=await sceneLabRow(env,job.project_id);
     if(!row||row.job_id!==job.id)fail(409,'Scene Lab task registration missing');
@@ -562,7 +591,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -624,7 +653,7 @@ async function route(request,env){
         }
         if(!['english_mp3','urdu_mp3'].includes(kind))fail(400,'Only MP3 and authorized scene SQLite uploads supported');
         if((job.step_id==='mp3_english'&&kind!=='english_mp3')||(job.step_id==='mp3_urdu'&&kind!=='urdu_mp3'))fail(403,'Audio asset does not match this stage');
-        if(!['mp3_english','mp3_urdu',SCENE_LAB_STAGE].includes(job.step_id))fail(403,'Only audio or isolated Scene Lab stage may upload MP3');
+        if(!['mp3_english','mp3_urdu',SCENE_LAB_STAGE,DEEP_PREPARE].includes(job.step_id))fail(403,'Only authorized audio-preparation stages may upload MP3');
         return json(await uploadAudio(request,env,job.project_id,kind),201);
       }
       if(method==='POST'&&action==='heartbeat'){
@@ -634,6 +663,31 @@ async function route(request,env){
         return json({ok:true,leaseUntil:nowSeconds()+LEASE_SECONDS});
       }
       if(method==='POST'&&action==='result'){
+        if(DEEP_STAGES.includes(job.step_id)){
+          const body=await getJson(request,MAX_MUSE_WINDOWS_RESULT);
+          if(job.status!=='working'||job.lease_until<=nowSeconds()||!secureEqual(body.lease||'',job.lease||''))fail(409,'Deep Muse lease expired or changed');
+          if(body.error){
+            const reason=requireString(String(body.error),'Deep Muse task error',1200);
+            const ended=await env.DB.prepare("UPDATE jobs SET status='error',error=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+              .bind(reason,nowSeconds(),jid,job.lease).first();
+            if(!ended)fail(409,'Deep Muse task was re-claimed');
+            await env.DB.batch([
+              env.DB.prepare("UPDATE cinepulse_scene_lab_deep SET status='needs_review',updated_at=? WHERE project_id=?").bind(nowSeconds(),job.project_id),
+              env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?").bind(nowSeconds(),job.project_id)
+            ]);
+            return json({id:jid,status:'needs_review',reason,notice:'Accepted checkpoints preserved; administrator can resume this experiment.'});
+          }
+          let output=body.output;
+          if(typeof output==='string'){try{output=JSON.parse(output);}catch{fail(422,'Deep Muse result must contain a JSON object');}}
+          try{return json(await acceptDeepMuseResult(env,job,output),201);}
+          catch(error){
+            if(error instanceof HttpError)throw error;
+            const detail=String(error.message||error).slice(0,1100);
+            await env.DB.prepare("UPDATE jobs SET prompt=? WHERE id=? AND lease=? AND status='working'")
+              .bind('RETRY REQUIRED: '+detail,job.id,job.lease).run();
+            fail(422,'Deep Muse checkpoint rejected; repair and resubmit: '+detail);
+          }
+        }
         if(job.step_id===SCENE_LAB_STAGE){
           const body=await getJson(request,MAX_MUSE_WINDOWS_RESULT);
           if(job.status!=='working'||job.lease_until<=nowSeconds()||!secureEqual(body.lease||'',job.lease||''))fail(409,'Scene Lab lease expired or changed');

@@ -252,6 +252,8 @@ async function taskDetail(env,job) {
       acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_EN),
       acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_UR)
     ]);
+    const acceptedRematches=await acceptedUrduRepairOutputs(env,movie.id);
+    const revisedUrduIndices=acceptedRematches.flatMap(b=>b.decisions.map(d=>d.segmentIndex));
     const enCues=loadProductionCues(outputs.srt_english),urCues=loadProductionCues(outputs.srt_urdu);
     if(!deepProductionProgress(enCues,english).complete||!deepProductionProgress(urCues,urdu).complete)
       fail(409,'All original full-movie narration segments must be Muse-reviewed before cut generation');
@@ -261,8 +263,11 @@ async function taskDetail(env,job) {
       sourceSrtAsset:readOnlyAsset,inputAsset:readOnlyAsset,
       deepMuse:{englishCues:enCues,urduCues:urCues,acceptedDecisions:{
        english:english.flatMap(x=>x.decisions),urdu:urdu.flatMap(x=>x.decisions)},
-       visualVerified:false},
+       targetedUrduRepair:{repairedIndices:revisedUrduIndices,acceptedReplacementCount:revisedUrduIndices.length,
+         useOriginalCompletedCandidateCutsWhereStillValid:true},visualVerified:false},
       prompt:'CINEPULSE PERMANENT DEEP MUSE: FINAL FULL-MOVIE CUT PLAN. '+
+       (revisedUrduIndices.length?'V5.2 TARGETED URDU REPAIRS HAVE BEEN ACCEPTED for segment indices '+revisedUrduIndices.join(',')+
+        '. Muse must reuse its existing verified Candidate 5 cut plan wherever it remains valid, then modify ONLY the affected Urdu windows/links to the NEW accepted source anchors. Do not regenerate original audio/SRT, do not alter any of the 209 accepted English cuts; exactly 369/369 original Urdu narration segments must be represented. ':'')+
        'All English '+enCues.length+' and Urdu '+urCues.length+' cues have individually accepted Muse source decisions. '+
        'Generate a SEPARATE complete 3–6 second cut plan for each language using ONLY those accepted source anchors. '+
        'Each clip must contain matchSegmentIndices linking to accepted Muse decisions in THAT language. '+

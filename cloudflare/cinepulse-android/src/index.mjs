@@ -853,6 +853,30 @@ async function route(request,env){
         return json({ok:true,leaseUntil:nowSeconds()+LEASE_SECONDS});
       }
       if(method==='POST'&&action==='result'){
+        if(isProductionDeepStage(job.step_id)){
+          const policy=await projectPolicy(env,job.project_id);
+          if(!policy.permanentDeep)fail(403,'Not a permanent Muse Deep movie');
+          const body=await getJson(request,MAX_JSON);
+          if(job.status!=='working'||job.lease_until<=nowSeconds()||!secureEqual(body.lease||'',job.lease||''))fail(409,'Muse lease changed');
+          if(body.error){
+            const reason=requireString(String(body.error),'Muse unresolved scene',1200);
+            const ended=await env.DB.prepare("UPDATE jobs SET status='error',error=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+              .bind(reason,nowSeconds(),jid,job.lease).first();
+            if(!ended)fail(409,'Muse task already completed');
+            await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?").bind(nowSeconds(),job.project_id).run();
+            return json({id:jid,status:'needs_review',reason,preservedCheckpoints:true});
+          }
+          let output=body.output;
+          if(typeof output==='string'){try{output=JSON.parse(output);}catch{fail(422,'Muse deep JSON required');}}
+          try{return json(await acceptPermanentDeepStage(env,job,output),201);}
+          catch(error){
+            if(error instanceof HttpError)throw error;
+            const reason=String(error.message||error).slice(0,1100);
+            await env.DB.prepare("UPDATE jobs SET prompt=? WHERE id=? AND lease=? AND status='working'")
+              .bind('RETRY REQUIRED: '+reason,job.id,job.lease).run();
+            fail(422,'Muse Deep production stage rejected; retry same lease: '+reason);
+          }
+        }
         if(DEEP_STAGES.includes(job.step_id)){
           const body=await getJson(request,MAX_MUSE_WINDOWS_RESULT);
           if(job.status!=='working'||job.lease_until<=nowSeconds()||!secureEqual(body.lease||'',job.lease||''))fail(409,'Deep Muse lease expired or changed');

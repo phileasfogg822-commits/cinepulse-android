@@ -55,7 +55,10 @@ jobs:
             try{
               const data=JSON.parse(stdout);
               const arr=Array.isArray(data)?data:[data];
-              console.log('D1_ERROR='+JSON.stringify(arr.map(o=>({success:o.success,code:o.code,
+              console.log('D1_ERROR_DETAILS='+JSON.stringify(arr.map(o=>({nestedErrorKeys:o.error&&typeof o.error==='object'?Object.keys(o.error).slice(0,15):[],
+                nestedErrorCode:o.error?.code||o.error?.error_code||null,
+                nestedErrorMessage:redact(o.error?.message||o.error?.text||o.error?.error||''),
+                success:o.success,code:o.code,
                 keys:Object.keys(o).slice(0,15),message:redact(o.message||o.error||''),
                 errors:(o.errors||[]).map(e=>({code:e.code,message:redact(e.message)}))}))));
             }catch{console.log('D1_OUTPUT_FORMAT_UNEXPECTED');}

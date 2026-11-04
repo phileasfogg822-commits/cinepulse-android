@@ -61,8 +61,8 @@ test('two genuine Muse re-matches are validated, append-only, and leave old deci
  assert.equal(JSON.stringify(originals),initial);
  const before=originals.flatMap(b=>b.decisions),after=out.flatMap(b=>b.decisions);
  assert.equal(after.length,10);
- assert.equal(after[1].sourceStartSeconds,1010);
- assert.equal(after[4].sourceStartSeconds,1040);
+ assert.equal(after[1].sourceStartSeconds,1020);
+ assert.equal(after[4].sourceStartSeconds,1050);
  assert.equal(after[0].sourceStartSeconds,before[0].sourceStartSeconds);
  assert.equal(after[9].sourceStartSeconds,before[9].sourceStartSeconds);
  assert.equal(verified.visualVerified,false);

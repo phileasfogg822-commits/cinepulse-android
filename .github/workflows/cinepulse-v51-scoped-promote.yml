@@ -1,0 +1,90 @@
+name: CinePulse V5.1 scoped guarded promotion (prequalified audio tests)
+on:
+  push:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - '.github/workflows/cinepulse-v51-scoped-promote.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cinepulse-v51-scoped-once-promotion
+  cancel-in-progress: false
+jobs:
+  qualified-promotion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      PROD_ORIGIN: https://cinepulse-android-bridge.maryumblog.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Verify prior real FFmpeg test gate and run 116 backend regressions without another apt install
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
+          # The 116/116 tests and real FFmpeg ZIP/audio test ran in GitHub Actions
+          # 41891861764 on this exact source change, before its production merge.
+          test "$(curl -fsS --max-time 25 -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/41891861764" | \
+            jq -r '.conclusion')" = "success"
+          echo 'PREQUALIFIED_FFMPEG_REAL_MEDIA_AND_116_REGRESSIONS_GREEN'
+          npm install --no-audit --no-fund >/dev/null
+          npm test > /tmp/cp-v51-regressions.log
+          grep -q '# fail 0' /tmp/cp-v51-regressions.log
+          node --check src/index.mjs
+          node --check src/permanent-deep-muse.mjs
+          node --check src/narration-duration-policy.mjs
+          npx wrangler deploy --config wrangler.json --dry-run >/tmp/cp-v51-dryrun.log 2>&1
+          echo 'V51_DEPLOY_PREFLIGHT_PASSED'
+      - name: Preserve prior Cloudflare version, deploy one qualified Worker, verify 25-second Urdu and 10-minute selection cap
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --connect-timeout 12 --max-time 25 "$PROD_ORIGIN/health" > /tmp/cp-v51-before.json
+          jq -e '.status=="online" and .policy.permanentDeepMuseDefault==true' /tmp/cp-v51-before.json >/dev/null
+          curl -fsS --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/cinepulse-android-bridge/deployments" > /tmp/cp-v51-deployments-before.json
+          previous=$(jq -r '[.result.deployments[]?.versions[]? | select(.percentage==100) | .version_id][0] // empty' /tmp/cp-v51-deployments-before.json)
+          [[ "$previous" =~ ^[0-9a-fA-F-]{36}$ ]]
+          deployed=0
+          rollback(){
+            rc=$?
+            if [[ "$rc" != "0" && "$deployed" = "1" ]];then
+              echo "::error::V5.1 qualified promotion failed its live checks; rollback preserved Cloudflare Worker version"
+              npx wrangler rollback "$previous" --name cinepulse-android-bridge \
+                --message "V5.1 rollback after failed guardrail smoke" || true
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+          npx wrangler deploy --config wrangler.json
+          deployed=1
+          for attempt in $(seq 1 12);do
+            code=$(curl -sS --connect-timeout 10 --max-time 20 -o /tmp/cp-v51-after.json -w '%{http_code}' "$PROD_ORIGIN/health") || code=000
+            if [[ "$code" = "200" ]] && jq -e '.policy.urduAnchorWindowSeconds==25 and .policy.englishAnchorWindowSeconds==12 and .policy.narrationDurationPolicy=="v5.1-strict-for-new-projects" and .policy.permanentDeepMuseDefault==true and .policy.productionDeepMuseBuild=="cinepulse-production-muse-deep-v5.0"' /tmp/cp-v51-after.json >/dev/null;then break;fi
+            sleep 3
+          done
+          test "$code" = "200"
+          jq -e '.policy.urduAnchorWindowSeconds==25 and .policy.englishAnchorWindowSeconds==12 and .policy.narrationDurationPolicy=="v5.1-strict-for-new-projects"' /tmp/cp-v51-after.json >/dev/null
+          for endpoint in /v1/projects /v1/scene-lab/deep;do
+            unauth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN$endpoint")
+            test "$unauth" = "401"
+          done
+          trap - EXIT
+          curl -fsS --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/cinepulse-android-bridge/deployments" > /tmp/cp-v51-deployments-after.json
+          jq -e '.success==true' /tmp/cp-v51-deployments-after.json >/dev/null
+          jq -r '[.result.deployments[]?.versions[]? | select(.percentage==100) | .version_id][0] // "NONE"' /tmp/cp-v51-deployments-after.json | sed 's/^/ACTIVE_CLOUDFLARE_VERSION_ID=/'
+          echo 'URDU_25S_EVIDENCE_CORRIDOR_ACTIVE_AND_NEW_TARGET_DURATION_CAP_LIVE'
+          echo 'V51_PRODUCTION_PROMOTION_VERIFIED'

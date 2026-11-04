@@ -72,8 +72,14 @@ jobs:
           echo 'BASELINE_PRODUCTION_VERSION_CAPTURED'
       - name: Install FFmpeg for mandatory real-audio extraction test
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            echo "FFMPEG_AND_FFPROBE_ALREADY_PRESENT"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
       - name: Run all Cloudflare regressions and portable SQLite builder tests
         shell: bash
         run: |

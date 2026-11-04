@@ -3,6 +3,9 @@ package com.cinepulse.mobile;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.SharedPreferences;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import androidx.core.content.FileProvider;
 import android.Manifest;
 import android.content.pm.PackageManager;
@@ -274,6 +277,7 @@ public final class MainActivity extends Activity {
             boolean paused=w.optBoolean("paused");
             c.addView(text(paused?"Paused":"Available" ,12,paused?MUTED:GREEN,false));space(c,9);
             String id=w.optString("id");c.addView(action(paused?"Resume worker":"Pause worker",()->toggleWorker(id,!paused),false));
+            space(c,6);c.addView(action("Manage / pairing details",()->manageWorker(w),false));
         }
         content.addView(action("+ Create isolated Muse worker",this::createWorkerDialog,false),fullWithBottom(15));
         content.addView(text("Designed for Android 8+ including Galaxy S9+. No background video rendering, continuous sync service or phone-wide file permissions.",12,MUTED,false));
@@ -286,6 +290,42 @@ public final class MainActivity extends Activity {
             .setMessage("This pauses/resumes the assigned Cloudflare worker, including any OTHER movie jobs assigned to that same worker. It does not pause or erase unrelated workers or completed outputs.")
             .setNegativeButton("Cancel",null)
             .setPositiveButton(pause?"Pause":"Resume",(d,w)->task("Updating worker",()->api.toggleWorker(id,pause),r->refresh())).show();
+    }
+    private void copyWorkerInfo(String label,String value){
+        ClipboardManager clipboard=(ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE);
+        if(clipboard==null){showError("Clipboard unavailable");return;}
+        clipboard.setPrimaryClip(ClipData.newPlainText(label,value));
+        Toast.makeText(this,label+" copied",Toast.LENGTH_SHORT).show();
+    }
+    private void manageWorker(JSONObject worker){
+        String id=worker.optString("id","");
+        String name=worker.optString("label","Worker");
+        if(!SecurityRules.validUuid(id)){showError("Worker record has no valid ID");return;}
+        String mailbox=SecurityRules.BASE+"/w/"+id;
+        LinearLayout panel=new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(32,20,32,12);
+        TextView details=new TextView(this);
+        details.setText("Worker: "+name+"\\nID: "+id+"\\n\\nCloudflare backend: "+SecurityRules.BASE+
+            "\\n\\nExpected private mailbox: "+mailbox+
+            "\\n\\nThis mailbox address must be confirmed with the backend before pairing. Copying it does not connect Muse. Do not paste worker secrets in chat.");
+        details.setTextIsSelectable(true);
+        panel.addView(details);
+        Button copyId=new Button(this);
+        copyId.setText("Copy worker ID");
+        copyId.setOnClickListener(v->copyWorkerInfo("CinePulse worker ID",id));
+        panel.addView(copyId);
+        Button copyMailbox=new Button(this);
+        copyMailbox.setText("Copy expected mailbox URL");
+        copyMailbox.setOnClickListener(v->copyWorkerInfo("CinePulse worker mailbox",mailbox));
+        panel.addView(copyMailbox);
+        new AlertDialog.Builder(this).setTitle("Manage Muse worker")
+            .setView(panel)
+            .setNeutralButton("Removal information",(d,w)->new AlertDialog.Builder(this)
+                .setTitle("Disconnect or remove worker")
+                .setMessage("Pausing the worker stops new claims but does not revoke its secret or delete its Cloudflare registration. This APK/backend contract does not yet expose a verified revoke/delete-worker endpoint. Do not mistake local hiding for server deletion. A backend-supported revocation flow is required.")
+                .setPositiveButton("OK",null).show())
+            .setPositiveButton("Done",null).show();
     }
     private void createWorkerDialog(){
         EditText name=new EditText(this);name.setSingleLine(true);name.setHint("Movie worker name");

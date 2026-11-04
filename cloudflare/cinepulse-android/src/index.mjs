@@ -109,9 +109,32 @@ async function queueTask(env,project,step,requestedPrompt){
   await env.DB.prepare('UPDATE projects SET updated_at=? WHERE id=?').bind(nowSeconds(),project.id).run();
   return id;
 }
+async function acceptedPermanentDeepBatches(env,projectId,stage){
+ const result=await env.DB.prepare("SELECT output FROM jobs WHERE project_id=? AND step_id=? AND status='done' ORDER BY created_at ASC,rowid ASC")
+  .bind(projectId,stage).all();
+ return (result.results||[]).map(j=>{
+  const parsed=JSON.parse(j.output||'null');
+  if(!parsed||!Array.isArray(parsed.decisions))throw Error('Deep Muse checkpoint output is corrupt');
+  return parsed;
+ });
+}
 async function priorOutputs(env,projectId) {
-  const result=await env.DB.prepare("SELECT step_id,output FROM jobs WHERE project_id=? AND status='done' ORDER BY created_at ASC").bind(projectId).all();
-  return Object.fromEntries((result.results||[]).map(v=>[v.step_id,v.output]));
+ const result=await env.DB.prepare("SELECT step_id,output FROM jobs WHERE project_id=? AND status='done' ORDER BY created_at ASC,rowid ASC").bind(projectId).all();
+ const outputs=Object.fromEntries((result.results||[]).map(v=>[v.step_id,v.output]));
+ // Muse V4 finalization contract remains the byte-preserving format for
+ // permanent V5 movies. Derive read-only aliases from validated Deep cut output.
+ if(outputs[PERMANENT_DEEP_CUTS]){
+  const result=JSON.parse(outputs[PERMANENT_DEEP_CUTS]);
+  if(!Array.isArray(result.cuts)||!result.provenance)
+   throw Error('Permanent Muse cut checkpoint has invalid output');
+  outputs.cut_plan=JSON.stringify(result.cuts);
+  const [english,urdu]=await Promise.all([
+   acceptedPermanentDeepBatches(env,projectId,PERMANENT_DEEP_MATCH_EN),
+   acceptedPermanentDeepBatches(env,projectId,PERMANENT_DEEP_MATCH_UR)
+  ]);
+  outputs.scene_matching=JSON.stringify({matches:summariseProductionDeepMatches(english,urdu)});
+ }
+ return outputs;
 }
 async function taskDetail(env,job) {
   if(DEEP_STAGES.includes(job.step_id)){
@@ -163,11 +186,66 @@ async function taskDetail(env,job) {
       sourceSrtAsset:lab.sourceSrtAsset,inputAsset:lab.sourceSrtAsset,
       notice:'Isolated Scene Lab: upload two extracted real MP3s, then submit V4 package fields. Original movie unchanged.'};
   }
+  const policyForDeep=await projectPolicy(env,job.project_id);
+  if(policyForDeep.permanentDeep && isProductionDeepStage(job.step_id)){
+    const movie=await getProject(env,job.project_id);
+    const outputs=await priorOutputs(env,job.project_id);
+    const readOnlyAsset={path:'/tasks/'+job.id+'/asset/source_srt',name:'CinePulse_Source.srt',
+      mime:'application/x-subrip'};
+    if(PERMANENT_DEEP_MATCH_STEPS.includes(job.step_id)){
+      const language=deepLanguage(job.step_id);
+      const measured=outputs[language==='english'?'srt_english':'srt_urdu'];
+      const cues=loadProductionCues(measured);
+      const accepted=await acceptedPermanentDeepBatches(env,movie.id,job.step_id);
+      const file=await env.FILES.get(movie.source_srt_key);
+      if(!file)fail(409,'Original source SRT unavailable for full-movie Muse matching');
+      const evidence=productionDeepPrompt(language,null,cues,await file.text(),accepted);
+      return {...publicJob(job),lease:job.lease,prompt:evidence.prompt+
+        (job.prompt?.startsWith('RETRY REQUIRED:')?'\n'+job.prompt:''),
+       movie:{id:movie.id,title:movie.title,workerId:movie.worker_id},
+       productionMode:'stable',sceneMatchingMode:PERMANENT_DEEP_BUILD,
+       sourceSrtAsset:readOnlyAsset,inputAsset:readOnlyAsset,
+       deepMuse:{language,batchIndex:evidence.progress.batchIndex,
+        batchCount:evidence.progress.batchCount,reviewedSegments:evidence.progress.reviewedSegments,
+        totalSegments:cues.length,segments:evidence.segments,rankedSourceCandidates:evidence.ranked.candidates,
+        maxSourceEvidenceCharacters:evidence.ranked.budget,priorAcceptedDecisions:accepted.flatMap(x=>x.decisions),
+        visualVerified:false},
+       notice:'This is live FULL-MOVIE Muse matching, not fast scoring. Each measured narration cue requires a separate Muse semantic decision.'};
+    }
+    const [english,urdu]=await Promise.all([
+      acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_EN),
+      acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_UR)
+    ]);
+    const enCues=loadProductionCues(outputs.srt_english),urCues=loadProductionCues(outputs.srt_urdu);
+    if(!deepProductionProgress(enCues,english).complete||!deepProductionProgress(urCues,urdu).complete)
+      fail(409,'All original full-movie narration segments must be Muse-reviewed before cut generation');
+    return {...publicJob(job),lease:job.lease,productionMode:'stable',
+      sceneMatchingMode:PERMANENT_DEEP_BUILD,
+      movie:{id:movie.id,title:movie.title,workerId:movie.worker_id},
+      sourceSrtAsset:readOnlyAsset,inputAsset:readOnlyAsset,
+      deepMuse:{englishCues:enCues,urduCues:urCues,acceptedDecisions:{
+       english:english.flatMap(x=>x.decisions),urdu:urdu.flatMap(x=>x.decisions)},
+       visualVerified:false},
+      prompt:'CINEPULSE PERMANENT DEEP MUSE: FINAL FULL-MOVIE CUT PLAN. '+
+       'All English '+enCues.length+' and Urdu '+urCues.length+' cues have individually accepted Muse source decisions. '+
+       'Generate a SEPARATE complete 3–6 second cut plan for each language using ONLY those accepted source anchors. '+
+       'Each clip must contain matchSegmentIndices linking to accepted Muse decisions in THAT language. '+
+       'Respect 100% measured narration coverage, source duration equal to narration duration, nonoverlap of movie footage WITHIN EACH LANGUAGE, and original movie SRT time bounds. '+
+       'If unsupported, report an unresolved stage error rather than inserting arbitrary footage. '+
+       'Return JSON {"englishCuts":[{"narrationStartSeconds":0,"narrationEndSeconds":5,"sourceStartSeconds":100,"sourceEndSeconds":105,"matchSegmentIndices":[1]}],'+
+       '"urduCuts":[...]} with full continuous lists. NO Shorts or virals. NO visual-verification claims.'+
+       (job.prompt?.startsWith('RETRY REQUIRED:')?'\n'+job.prompt:''),
+      notice:'Muse is responsible for final cut decisions; Cloudflare only validates and stores.'};
+  }
   const outputs=await priorOutputs(env,job.project_id);
   // Context only for the current project and its own worker. Never mixes movies.
   const policy=await projectPolicy(env,job.project_id);
   const stages=policy.stages;
   const context=Object.fromEntries(Object.entries(outputs).filter(([key])=>stages.indexOf(key)>=0&&stages.indexOf(key)<stages.indexOf(job.step_id)));
+  if(policy.permanentDeep&&job.step_id==='windows_project'){
+    context.cut_plan=outputs.cut_plan;
+    context.scene_matching=outputs.scene_matching;
+  }
   const movie=await getProject(env,job.project_id);
   const audioRows=policy.museOwnsCuts?await Promise.all(['english_mp3','urdu_mp3'].map(k=>assetByKind(env,job.project_id,k))):[];
   const audioManifest=policy.museOwnsCuts?Object.fromEntries(['english','urdu'].map((lang,i)=>[lang,audioRows[i]?{bytes:audioRows[i].bytes,sha256:audioRows[i].sha256,filename:lang==='english'?'CinePulse_English.mp3':'CinePulse_Urdu.mp3'}:null])):null;
@@ -183,7 +261,7 @@ async function taskDetail(env,job) {
   const experimentSource=policy.experiment?await experimentalSourceInfo(env,job.project_id):null;
   const experimentPrompt=policy.experiment?experimentalQueuePrompt(job.step_id,{projectId:job.project_id,sourceSrtSha256:experimentSource.sourceSrtSha256}):'';
   return {...publicJob(job),lease:job.lease,
-    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
+    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(policy.permanentDeep&&job.step_id==='windows_project'?'\nPERMANENT DEEP MUSE V5: use priorOutputs.cut_plan derived from the validated 5-cue semantic batches for BOTH languages; preserve all cut values and sourceEvidence; do not repeat matching or alter narration/audio. Include method/provenance in cloudImport if supported.':'')+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
       policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
     movie:policy.museOwnsCuts?{id:movie.id,title:movie.title,targetMinutes:policy.targetMinutes,workerId:movie.worker_id}:undefined,
     sourceSrtAsset:policy.museOwnsCuts?{path:assetPath+'/source_srt',mime:ASSET_TYPES.source_srt,name:'CinePulse_Source.srt'}:undefined,

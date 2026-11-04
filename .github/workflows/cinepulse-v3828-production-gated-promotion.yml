@@ -14,6 +14,8 @@ on:
       - 'cloudflare/cinepulse-android/src/scene-lab.mjs'
       - 'cloudflare/cinepulse-android/src/scene-lab-runtime.mjs'
       - 'cloudflare/cinepulse-android/src/scene-lab-deep.mjs'
+      - 'cloudflare/cinepulse-android/src/scene-lab-deep-candidates.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab-deep-candidates.test.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab-deep.test.mjs'
       - 'cloudflare/cinepulse-android/tools/scene_lab_deep_payload.py'
       - 'cloudflare/cinepulse-android/src/scene-lab-package.mjs'
@@ -76,6 +78,7 @@ jobs:
           node --check src/index.mjs
           node --check src/scene-lab-runtime.mjs
           node --check src/scene-lab-deep.mjs
+          node --check src/scene-lab-deep-candidates.mjs
           node --check src/scene-lab-package.mjs
           python3 -m py_compile tools/scene_lab_extract.py
           python3 -m py_compile tools/scene_lab_deep_payload.py
@@ -104,7 +107,7 @@ jobs:
           sleep 3
           for attempt in $(seq 1 12); do
             status=$(curl -sS --connect-timeout 10 --max-time 20 -o /tmp/cp-after-health.json -w '%{http_code}' "$PROD_ORIGIN/health") || status=000
-            if [[ "$status" == "200" ]] && jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.museOwnsCuts==true and .policy.sceneLabIsolatedQueue==true and .policy.sceneLabMuseV4Export==true and .policy.sceneLabBuild=="cinepulse-scene-lab-v1" and .policy.deepMuseBatches==true and .policy.deepMuseSourceEvidence==true and .policy.deepMuseCheckpoints==true and .policy.deepMuseBuild=="cinepulse-scene-lab-deep-muse-v1"' /tmp/cp-after-health.json >/dev/null; then break; fi
+            if [[ "$status" == "200" ]] && jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.museOwnsCuts==true and .policy.sceneLabIsolatedQueue==true and .policy.sceneLabMuseV4Export==true and .policy.sceneLabBuild=="cinepulse-scene-lab-v1" and .policy.deepMuseBatches==true and .policy.deepMuseSourceEvidence==true and .policy.deepMuseCheckpoints==true and .policy.deepMuseBuild=="cinepulse-scene-lab-deep-muse-v1" and .policy.deepMuseWindowCandidateBudget==22000' /tmp/cp-after-health.json >/dev/null; then break; fi
             sleep 3
           done
           [[ "$status" == "200" ]]

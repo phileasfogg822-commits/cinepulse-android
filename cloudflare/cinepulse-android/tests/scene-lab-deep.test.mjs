@@ -72,7 +72,7 @@ test('deep task sequence explicitly names prepare, match, export',()=>{
  assert.equal(segmentBatch(row,0).length,5);
  assert.equal(segmentBatch(row,3).at(-1).segmentIndex,20);
  assert.match(matchPrompt(row,2),/MUSE FOR SEMANTIC REASONING/);
- assert.match(matchPrompt(row,2),/11/); // not decisive but strings must be informative
+ assert.match(matchPrompt(row,2),/BATCH 3\/4/);
  assert.match(preparePrompt(row),/Upload the exact SAME/);
  assert.match(exportPrompt(row),/all/i);
 });

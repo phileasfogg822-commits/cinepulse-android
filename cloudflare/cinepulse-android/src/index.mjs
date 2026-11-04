@@ -1,3 +1,4 @@
+import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
@@ -23,12 +24,13 @@ async function projectPolicy(env,projectId){
   const row=await env.DB.prepare("SELECT prompt FROM jobs WHERE project_id=? AND step_id='digest' ORDER BY created_at ASC LIMIT 1").bind(projectId).first();
   const prompt=String(row?.prompt||'');
   const experiment=prompt.startsWith(EXPERIMENT_JOB_MARKER);
-  const museOwnsCuts=experiment||prompt.startsWith(MUSE_V4_MARKER);
+  const permanentDeep=prompt.startsWith(PERMANENT_DEEP_MARKER);
+  const museOwnsCuts=permanentDeep||experiment||prompt.startsWith(MUSE_V4_MARKER);
   const serverCuts=prompt.startsWith(LONGFORM_MARKER_V3);
   const longForm=museOwnsCuts||serverCuts||prompt.startsWith(LONGFORM_MARKER);
   const targetMinutes=longForm ? Number(/targetMinutes=(\d+)/.exec(prompt)?.[1]||10) : null;
-  return {longForm,serverCuts,museOwnsCuts,experiment,targetMinutes,
-    stages:experiment?EXPERIMENT_JOB_STAGES:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
+  return {longForm,serverCuts,museOwnsCuts,permanentDeep,experiment,targetMinutes,
+    stages:permanentDeep?PERMANENT_DEEP_STEPS:experiment?EXPERIMENT_JOB_STAGES:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
 }
 
 const ASSET_TYPES = {
@@ -701,7 +703,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,productionDeepMuseBatchSize:5,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -935,6 +937,7 @@ async function route(request,env){
     return json({deepMuseBuild:DEEP_BUILD,projects:rows.results||[]});
   }
   if(method==='POST'&&url.pathname==='/v1/scene-lab/deep'){
+    fail(410,'Deep Scene Lab pilot creation retired: new films now use the permanent bilingual Muse V5 pipeline. Existing pilot remains downloadable.');
     const body=await getJson(request,MAX_MUSE_WINDOWS_RESULT);
     let parsed;try{parsed=normalizeDeepCreate(body);}catch(error){fail(422,'Deep Muse creation refused: '+error.message);}
     const worker=await env.DB.prepare('SELECT id,label,enabled,paused FROM workers WHERE id=? AND enabled=1').bind(parsed.workerId).first();
@@ -1012,6 +1015,7 @@ async function route(request,env){
     return json({sceneLabBuild:SCENE_LAB_BUILD,experiments:result.results||[]});
   }
   if(method==='POST'&&url.pathname==='/v1/scene-lab'){
+    fail(410,'Fast Scene Lab experiments retired for new submissions. Use the permanent Muse V5 movie pipeline. Existing experiments remain downloadable.');
     const raw=await getJson(request);
     let lab;try{lab=normalizeSceneLabCreate(raw);}catch(error){fail(422,error.message);}
     const worker=await env.DB.prepare('SELECT id FROM workers WHERE id=? AND enabled=1').bind(raw.workerId).first();
@@ -1092,6 +1096,7 @@ async function route(request,env){
   if(method==='POST'&&url.pathname==='/v1/projects'){
     const body=await getJson(request);
     const experiment=body.productionMode==='scene_intelligence_experiment';
+    if(experiment)fail(410,'Experimental scene intelligence is retired for NEW movies; permanent Muse Deep V5 is now the standard. Existing projects remain downloadable.');
     if(body.productionMode && body.productionMode!=='stable' && !experiment)fail(422,'Unknown CinePulse production mode');
     let requested;try{requested=isLongFormCreateRequest(body);}catch(error){fail(422,error.message);}
     const title=requireString(body.title,'movie title'),workerId=requireUUID(body.workerId),worker=await env.DB.prepare('SELECT * FROM workers WHERE id=? AND enabled=1').bind(workerId).first();
@@ -1116,13 +1121,13 @@ async function route(request,env){
     }
     await logDaily(env,{projects_created:1,uploaded_bytes:bytes.byteLength});
     // Durable project-level policy stored in the first digest job prompt: no schema migration.
-    const policyPrompt=`${experiment?EXPERIMENT_JOB_MARKER:MUSE_V4_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=${experiment?11:8}\n${promptFor('digest')}`;
+    const policyPrompt=`${experiment?EXPERIMENT_JOB_MARKER:PERMANENT_DEEP_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=${experiment?11:8}\n${promptFor('digest')}`;
     const taskId=await queueTask(env,{id:pid,worker_id:workerId},'digest',policyPrompt);
     return json({projectId:pid,workerId,title,firstTaskId:taskId,stage:'digest',status:'processing',retentionHours:hours,
       productionMode:experiment?'scene_intelligence_experiment':'stable',
       targetMinutes:requested.targetMinutes,outputMode:requested.outputMode,
       modules:{digest:true,englishNarration:true,urduNarration:true,metadata:true,englishMp3:true,urduMp3:true,
-        englishMeasuredSrt:true,urduMeasuredSrt:true,sceneMatching:true,finalCuts:true,
+        englishMeasuredSrt:true,urduMeasuredSrt:true,sceneMatching:true,finalCuts:true,sceneMatchingMethod:'muse_semantic_batches',batchSize:5,eachLanguageIndependent:true,
         finalCutOwner:'muse',windowsProjectOwner:'muse',windowsAssets:experiment?11:8,shorts:false,virals:false}},201);
   }
   if(method==='GET'&&url.pathname==='/v1/projects'){

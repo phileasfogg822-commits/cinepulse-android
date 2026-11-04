@@ -1011,7 +1011,37 @@ async function route(request,env){
         await env.DB.prepare("UPDATE jobs SET lease_until=? WHERE id=? AND lease=? AND status='working'").bind(nowSeconds()+LEASE_SECONDS,jid,job.lease).run();
         return json({ok:true,leaseUntil:nowSeconds()+LEASE_SECONDS});
       }
+      if(method==='POST'&&action==='request-urdu-rematch'){
+        const body=await getJson(request);
+        if(job.step_id!==PERMANENT_DEEP_CUTS||job.worker_id!==wid)
+          fail(403,'Only current assigned Muse cut-plan task may request targeted Urdu re-matching');
+        return json(await beginTargetedUrduRematch(env,job,body.indices,body.lease),201);
+      }
       if(method==='POST'&&action==='result'){
+        if(job.step_id===URDU_REPAIR_STAGE){
+          if(job.status!=='working'||job.lease_until<=nowSeconds())
+            fail(409,'Targeted Muse lease expired or not active');
+          const body=await getJson(request,MAX_JSON);
+          if(!secureEqual(body.lease||'',job.lease||''))
+            fail(409,'Targeted Urdu Muse lease mismatch');
+          if(body.error){
+            const reason=requireString(String(body.error),'Unresolved targeted Urdu source scene',1100);
+            const ended=await env.DB.prepare("UPDATE jobs SET status='error',error=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND status='working' AND lease=? RETURNING id")
+              .bind(reason,nowSeconds(),job.id,job.lease).first();
+            if(!ended)fail(409,'Targeted Muse task changed during failure report');
+            await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?")
+              .bind(nowSeconds(),job.project_id).run();
+            return json({id:job.id,status:'needs_review',reason,recoveryRoute:'/v1/projects/'+job.project_id+'/deep-muse/rematch-urdu/resume',
+              originalAcceptedResultsPreserved:true});
+          }
+          let output=body.output;
+          if(typeof output==='string'){try{output=JSON.parse(output);}catch{fail(422,'Targeted Muse output must be JSON');}}
+          try{return json(await acceptTargetedUrduRepair(env,job,output),201);}
+          catch(error){
+            if(error instanceof HttpError)throw error;
+            fail(422,'Targeted Urdu source decision rejected; repair same task: '+String(error.message||error).slice(0,1000));
+          }
+        }
         if(isProductionDeepStage(job.step_id)){
           const policy=await projectPolicy(env,job.project_id);
           if(!policy.permanentDeep)fail(403,'Not a permanent Muse Deep movie');
@@ -1418,6 +1448,40 @@ async function route(request,env){
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
+    if(action==='deep-muse/rematch-urdu'&&method==='POST'){
+      const body=await getJson(request);
+      const cutJobId=requireUUID(body.cutPlanJobId);
+      const task=await getJob(env,cutJobId);
+      if(task.project_id!==pid)fail(403,'The requested cut-plan job belongs to another movie');
+      return json(await beginTargetedUrduRematch(env,task,body.indices,task.lease),201);
+    }
+    if(action==='deep-muse/rematch-urdu/resume'&&method==='POST'){
+      const policy=await projectPolicy(env,pid);
+      if(!policy.permanentDeep||controlIsStopped(project)||project.status==='ready')
+        fail(409,'Only an active permanent Deep Muse project can resume a targeted repair');
+      const active=await env.DB.prepare("SELECT id,step_id FROM jobs WHERE project_id=? AND status IN ('queued','working') LIMIT 1")
+        .bind(pid).first();
+      if(active)return json({projectId:pid,status:'processing',activeJobId:active.id,
+        notice:'Existing Muse job preserved; no duplicate'});
+      const last=await env.DB.prepare("SELECT id,prompt,status FROM jobs WHERE project_id=? AND step_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1")
+        .bind(pid,URDU_REPAIR_STAGE).first();
+      if(!last)fail(404,'No targeted repair exists to resume');
+      const manifest=parseUrduRepairPrompt(last.prompt);
+      const completed=await acceptedUrduRepairOutputs(env,pid);
+      const repaired=completed.flatMap(b=>b.decisions.map(d=>d.segmentIndex));
+      const expected=manifest.indices.slice(0,repaired.length);
+      if(repaired.length!==expected.length||repaired.some((n,i)=>n!==expected[i]))
+        fail(409,'Targeted correction checkpoints are inconsistent; review before resuming');
+      const next=expected.length<manifest.indices.length?URDU_REPAIR_STAGE:PERMANENT_DEEP_CUTS;
+      const prompt=next===URDU_REPAIR_STAGE?
+        makeUrduRepairPrompt({indices:manifest.indices,offset:expected.length,sourceCutJobId:manifest.sourceCutJobId}):
+        '[PERMANENT-DEEP-MUSE] All targeted Urdu Muse repairs accepted. Rebuild final cut plan from patched source evidence, preserve original English and media.';
+      await env.DB.prepare("UPDATE projects SET status='processing',updated_at=? WHERE id=?")
+        .bind(nowSeconds(),pid).run();
+      const nextId=await queueTask(env,project,next,prompt);
+      return json({projectId:pid,nextJobId:nextId,nextStep:next,repairedCount:repaired.length,
+        targetCount:manifest.indices.length,originalCheckpointsPreserved:true},201);
+    }
     if(action==='deep-muse'&&method==='GET'){
       const policy=await projectPolicy(env,pid);
       if(!policy.permanentDeep)fail(404,'This movie predates permanent Muse Deep V5');
@@ -1433,11 +1497,17 @@ async function route(request,env){
             acceptedBatches:progress.batchIndex,batchCount:progress.batchCount,complete:progress.complete};
         }else state.langs[lang]={status:'waiting_for_measured_mp3_srt'};
       }
+      const repairs=await acceptedUrduRepairOutputs(env,pid);
+      state.urduTargetedRepairs={acceptedBatches:repairs.length,
+        repairedSegmentIndices:repairs.flatMap(b=>b.decisions.map(d=>d.segmentIndex))};
       state.cutPlanValidated=!!outputs[PERMANENT_DEEP_CUTS];
       state.windowsExportValidated=!!outputs.windows_project;
       return json(state);
     }
     if(action==='deep-muse/resume'&&method==='POST'){
+      const existingRepair=await env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND step_id=? LIMIT 1")
+        .bind(pid,URDU_REPAIR_STAGE).first();
+      if(existingRepair)fail(409,'Targeted Urdu correction is in progress; use /deep-muse/rematch-urdu/resume to preserve patches');
       const policy=await projectPolicy(env,pid);
       if(!policy.permanentDeep)fail(404,'Only permanent V5 movies can resume Deep Muse');
       if(controlIsStopped(project))fail(410,'Stopped movie cannot resume');

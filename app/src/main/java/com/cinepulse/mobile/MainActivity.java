@@ -324,12 +324,8 @@ public final class MainActivity extends Activity {
         if(ids.isEmpty()){showError("There are no active workers. Resume or create a worker first.");return;}
         LinearLayout form=vertical();pad(form,24,0,24,0);
         form.addView(text("Project title",13,Color.DKGRAY,true));form.addView(name);
-        form.addView(text("MODE: EXPERIMENTAL ONLY — 11-FILE SCENE INTELLIGENCE",15,0xFF00795E,true));
-        CheckBox experiment=new CheckBox(this);
-        experiment.setText("✓ Experimental Scene Intelligence (required)");
-        experiment.setChecked(true);
-        form.addView(experiment);
-        form.addView(text("This Preview build CANNOT submit a stable movie. It will use the same selected Muse worker and create a new isolated experimental project.",13,Color.DKGRAY,true));
+        form.addView(text("MODE: STANDARD — MUSE DEEP SCENE MATCHING",15,0xFF00795E,true));
+        form.addView(text("One production workflow. Muse reviews measured narration cues in English and Urdu batches, validates original movie evidence, and exports the Windows-ready project. No experimental-mode selection.",13,Color.DKGRAY,false));
         form.addView(text("Processing worker (existing Muse connection)",13,Color.DKGRAY,true));
         Spinner spinner=new Spinner(this);
         ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);
@@ -345,7 +341,7 @@ public final class MainActivity extends Activity {
         ScrollView submissionScroll=new ScrollView(this);
         submissionScroll.setFillViewport(false);
         submissionScroll.addView(form);
-        new AlertDialog.Builder(this).setTitle("EXPERIMENTAL MOVIE · Scene Intelligence")
+        new AlertDialog.Builder(this).setTitle("NEW MOVIE · Permanent Muse Deep Matching")
             .setView(submissionScroll).setNegativeButton("Cancel",null)
             .setPositiveButton("Submit",(d,w)->{
                 String title=name.getText().toString().trim();
@@ -354,28 +350,22 @@ public final class MainActivity extends Activity {
                 try{target=Integer.parseInt(minutes.getText().toString().trim());}
                 catch(NumberFormatException e){showError("Enter a narration duration from 3 to 60 minutes.");return;}
                 if(target<3||target>60){showError("Narration duration must be 3–60 minutes.");return;}
-                if(!experiment.isChecked()){
-                    showError("Experimental mode is required in this Preview app. Tick the Scene Intelligence checkbox before submitting.");
-                    return;
-                }
                 int chosenWorker=spinner.getSelectedItemPosition();
                 if(chosenWorker<0||chosenWorker>=ids.size()){showError("Select an existing Muse worker.");return;}
                 String worker=ids.get(chosenWorker);
-                task("Uploading EXPERIMENTAL movie subtitle",()->{
+                task("Uploading movie subtitle for Muse Deep matching",()->{
                     String srt=readSrt(uri);
-                    return api.createExperimentalProject(title,worker,srt,48,target);
+                    return api.createProject(title,worker,srt,48,target);
                 },r->{
                     int accepted=r.optInt("targetMinutes",-1);
-                    boolean confirmedExperiment="scene_intelligence_experiment".equals(r.optString("productionMode"));
-                    boolean expectedExperiment=true;
-                    new AlertDialog.Builder(this).setTitle(confirmedExperiment?"EXPERIMENTAL MOVIE QUEUED":"WARNING: MODE NOT CONFIRMED")
-                        .setMessage(expectedExperiment&&!confirmedExperiment?
-                            "Cloudflare did not confirm experimental mode. The server may have accepted this as a stable project; do not submit the same movie again automatically. Check the project timeline and update the backend first.":
-                            confirmedExperiment?
-                            "New isolated experimental movie queued on the same Muse worker. Digest will build reusable source scene evidence, and Muse must finalize both narrations and cut plans before the 11-file SQLite package becomes available.":
-                            accepted==target?
-                            "Cloudflare accepted the "+target+"-minute narration target. CinePulse requested only English and Urdu long-form processing; verify that your deployed worker supports long_form_only before assuming shorts are skipped.":
-                            "Movie submitted, but this backend has not confirmed the narration target or long_form_only processing policy. Update Cloudflare before relying on those controls.")
+                    JSONObject modules=r.optJSONObject("modules");
+                    boolean acceptedMode="stable".equals(r.optString("productionMode"));
+                    boolean acceptedDeep=modules!=null &&
+                        "muse_semantic_batches".equals(modules.optString("sceneMatchingMethod"));
+                    new AlertDialog.Builder(this).setTitle(acceptedMode&&acceptedDeep?"MUSE DEEP MOVIE QUEUED":"BACKEND MODE NOT CONFIRMED")
+                        .setMessage(acceptedMode&&acceptedDeep?
+                            "Cloudflare created one standard movie project with the permanent bilingual Muse Deep workflow. English and Urdu measured SRTs will be matched in batches of five before final 3–6-second cut plans and the eight-file Windows export. Your narration target is "+accepted+" minutes. Do not upload this movie again.":
+                            "Cloudflare accepted a response, but it did not confirm the permanent Muse Deep matching mode. Do not submit this movie again; inspect its project ID and backend status before continuing.")
                         .setPositiveButton("View projects",(innerDialog,innerWhich)->refresh()).show();
                 });
             }).show();
@@ -432,7 +422,7 @@ public final class MainActivity extends Activity {
         final boolean experimentalProject="scene_intelligence_experiment".equals(project.optString("productionMode"));
         summary.addView(text(experimentalProject?
             "MODE: EXPERIMENTAL · Same selected Muse worker · Scene Intelligence + 11 files":
-            "MODE: STABLE · No experimental scene-intelligence stage",13,
+            "MODE: STANDARD · Muse-owned long-form editing",13,
             experimentalProject?GREEN:0xFFFFC47E,true));
         space(summary,5);
         summary.addView(text(status.equals("ready")?(experimentalProject?"Experimental eleven-file package ready: includes reusable source scene SQLite, bilingual cuts, both MP3s and measured SRTs. Original movie video is linked locally in Windows.":"Long-form export ready for checks. The eight-file Windows package requires complete English/Urdu MP3s, measured SRTs, metadata, digest and non-overlapping final cuts. No shorts or viral files are included."):

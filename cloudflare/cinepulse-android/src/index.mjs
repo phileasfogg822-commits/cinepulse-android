@@ -865,6 +865,77 @@ async function acceptPermanentDeepStage(env,job,output){
   pipeline:{status:'processing',nextStep:'windows_project'},nextEndpoint:'/agent/next'};
 }
 
+async function beginTargetedUrduRematch(env,job,indices,lease){
+  if(job.step_id!==PERMANENT_DEEP_CUTS||job.status!=='working')fail(409,'An active unaccepted deep_cut_plan task is required');
+  if(job.lease_until<=nowSeconds()||!secureEqual(lease||'',job.lease||''))fail(409,'The current cut-plan task lease must be valid');
+  const movie=await getProject(env,job.project_id),policy=await projectPolicy(env,movie.id);
+  if(!policy.permanentDeep||controlIsStopped(movie)||movie.status==='ready')
+    fail(409,'Only an active permanent Deep Muse movie can request a repair');
+  if(!Array.isArray(indices)||indices.length<1||indices.length>16||
+     !indices.every((n,i)=>Number.isInteger(n)&&n>0&&(i===0||indices[i-1]<n)))
+    fail(422,'Repair indices must be 1–16 unique ascending Urdu narration segments');
+  const [existing,busy,outputs]=await Promise.all([
+    env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND step_id=? LIMIT 1").bind(movie.id,URDU_REPAIR_STAGE).first(),
+    env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND id<>? AND status IN ('working','queued') LIMIT 1").bind(movie.id,job.id).first(),
+    priorOutputs(env,movie.id)
+  ]);
+  if(existing||busy)fail(409,'A repair already exists, or another movie task is active');
+  if(!outputs.srt_urdu||!outputs.srt_english)fail(409,'Original bilingual measured SRTs are missing');
+  const cues=loadProductionCues(outputs.srt_urdu);
+  if(indices.at(-1)>cues.length)fail(422,'Repair segment index beyond actual Urdu SRT');
+  const accepted=await acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_UR);
+  if(!deepProductionProgress(cues,accepted).complete)
+    fail(409,'All original Urdu Muse decisions must be complete before targeted repair');
+  const prompt=makeUrduRepairPrompt({indices,offset:0,sourceCutJobId:job.id});
+  const updated=await env.DB.prepare("UPDATE jobs SET status='cancelled',error=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND step_id=? AND status='working' AND lease=? RETURNING id")
+    .bind('Superseded by targeted Urdu re-matching; saved outputs remain untouched',nowSeconds(),
+       job.id,PERMANENT_DEEP_CUTS,lease).first();
+  if(!updated)fail(409,'The original cut-plan lease was claimed or changed during repair setup');
+  let nextId;
+  try{nextId=await queueTask(env,movie,URDU_REPAIR_STAGE,prompt);}
+  catch(err){
+    await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?")
+      .bind(nowSeconds(),movie.id).run();
+    throw err;
+  }
+  return {projectId:movie.id,workerId:movie.worker_id,previousCutTaskId:job.id,
+    nextJobId:nextId,nextStep:URDU_REPAIR_STAGE,indices,
+    batches:Math.ceil(indices.length/URDU_REPAIR_BATCH_MAX),
+    preserved:{englishCuts:true,englishSrt:true,urduSrt:true,englishMp3:true,urduMp3:true,
+      originalMuseDecisions:true},visualVerified:false};
+}
+async function acceptTargetedUrduRepair(env,job,output){
+  const plan=parseUrduRepairPrompt(job.prompt),movie=await getProject(env,job.project_id);
+  if(!output||typeof output!=='object'||Array.isArray(output))throw Error('Muse targeted repair must return decisions JSON');
+  const source=await env.FILES.get(movie.source_srt_key);
+  if(!source)throw Error('Original movie source SRT missing');
+  const outputs=await priorOutputs(env,movie.id);
+  const cues=loadProductionCues(outputs.srt_urdu);
+  const [accepted,done]=await Promise.all([
+    acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_UR),
+    acceptedUrduRepairOutputs(env,movie.id)
+  ]);
+  const validated=validateTargetedUrduRematch({
+    sourceSrt:await source.text(),urduCues:cues,
+    acceptedBatches:accepted,completedRepairs:done,plan,payload:output
+  });
+  const now=nowSeconds();
+  const saved=await env.DB.prepare("UPDATE jobs SET status='done',output=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+    .bind(JSON.stringify(validated),now,job.id,job.lease).first();
+  if(!saved)fail(409,'Muse repair lease changed; no duplicate accepted');
+  await logDaily(env,{jobs_completed:1});
+  const nextOffset=plan.offset+validated.decisions.length;
+  const nextStage=nextOffset<plan.indices.length?URDU_REPAIR_STAGE:PERMANENT_DEEP_CUTS;
+  const prompt=nextStage===URDU_REPAIR_STAGE?
+    makeUrduRepairPrompt({...plan,offset:nextOffset}):
+    '[PERMANENT-DEEP-MUSE] Targeted Urdu repairs accepted; rebuild final cuts from ALL effective Muse anchors, preserve English 209 cuts and original audio, 3–6s, Urdu 25s, original cue evidence';
+  const nextId=await queueTask(env,movie,nextStage,prompt);
+  return {id:job.id,status:'done',repairedIndices:validated.decisions.map(d=>d.segmentIndex),
+    repairedCount:nextOffset,totalRepairs:plan.indices.length,
+    nextStep:nextStage,nextJobId:nextId,originalSourceCutTaskId:plan.sourceCutJobId,
+    allOriginalCheckpointsPreserved:true,visualVerified:false};
+}
+
 async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;

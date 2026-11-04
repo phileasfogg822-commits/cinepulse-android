@@ -777,6 +777,57 @@ async function acceptDeepMuseResult(env,job,output){
  fail(400,'Invalid Deep Muse stage');
 }
 
+async function acceptPermanentDeepStage(env,job,output){
+ if(!output||typeof output!=='object'||Array.isArray(output))
+   throw Error('A JSON object with Muse source evidence is required');
+ const outputs=await priorOutputs(env,job.project_id),movie=await getProject(env,job.project_id);
+ if(PERMANENT_DEEP_MATCH_STEPS.includes(job.step_id)){
+   const language=deepLanguage(job.step_id);
+   const cues=loadProductionCues(outputs[language==='english'?'srt_english':'srt_urdu']);
+   const accepted=await acceptedPermanentDeepBatches(env,job.project_id,job.step_id);
+   const source=await env.FILES.get(movie.source_srt_key);
+   if(!source)throw Error('Original movie subtitles missing');
+   const verified=validateProductionDeepBatch(language,cues,await source.text(),accepted,output);
+   const now=nowSeconds();
+   const updated=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+     .bind(JSON.stringify(verified),now,job.id,job.lease).first();
+   if(!updated)fail(409,'Muse checkpoint was already accepted or re-leased');
+   await logDaily(env,{jobs_completed:1});
+   const progress=deepProductionProgress(cues,[...accepted,verified]);
+   const next=progress.complete?(language==='english'?PERMANENT_DEEP_MATCH_UR:PERMANENT_DEEP_CUTS):job.step_id;
+   const nextId=await queueTask(env,movie,next,'[PERMANENT-DEEP-MUSE] '+language+' accepted '+progress.reviewedSegments+'/'+progress.totalSegments);
+   return {id:job.id,status:'done',language,acceptedSegments:verified.decisions.length,
+     reviewedSegments:progress.reviewedSegments,totalSegments:progress.totalSegments,
+     completedBatches:progress.batchIndex,batchCount:progress.batchCount,
+     nextStep:next,nextJobId:nextId,visualVerified:false,
+     pipeline:{status:'processing',nextStep:next},nextEndpoint:'/agent/next'};
+ }
+ if(job.step_id!==PERMANENT_DEEP_CUTS)throw Error('Unrecognized permanent Muse stage');
+ const [en,ur]=await Promise.all([
+  acceptedPermanentDeepBatches(env,job.project_id,PERMANENT_DEEP_MATCH_EN),
+  acceptedPermanentDeepBatches(env,job.project_id,PERMANENT_DEEP_MATCH_UR)
+ ]);
+ const enCues=loadProductionCues(outputs.srt_english),urCues=loadProductionCues(outputs.srt_urdu);
+ const checked=combineProductionDeepCuts(output.englishCuts,output.urduCuts,enCues,urCues,en,ur);
+ const src=await env.FILES.get(movie.source_srt_key);
+ if(!src)throw Error('Original movie subtitle asset missing');
+ validateFinalCutPlan(checked.cuts,{
+  sourceSrt:await src.text(),englishSrt:outputs.srt_english,
+  urduSrt:outputs.srt_urdu,experimentalReview:false
+ });
+ const now=nowSeconds();
+ const updated=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+   .bind(JSON.stringify(checked),now,job.id,job.lease).first();
+ if(!updated)fail(409,'Muse final cuts already accepted or re-leased');
+ await logDaily(env,{jobs_completed:1});
+ const nextId=await queueTask(env,movie,'windows_project','[PERMANENT-DEEP-MUSE] Accepted bilingual verified cut plan; preserve values in CinePulse V4 JSON');
+ return {id:job.id,status:'done',nextStep:'windows_project',nextJobId:nextId,
+  englishCuts:checked.cuts.filter(c=>c.language==='english').length,
+  urduCuts:checked.cuts.filter(c=>c.language==='urdu').length,
+  evidenceProvenance:checked.provenance,visualVerified:false,
+  pipeline:{status:'processing',nextStep:'windows_project'},nextEndpoint:'/agent/next'};
+}
+
 async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;

@@ -1294,6 +1294,52 @@ async function route(request,env){
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
+    if(action==='deep-muse'&&method==='GET'){
+      const policy=await projectPolicy(env,pid);
+      if(!policy.permanentDeep)fail(404,'This movie predates permanent Muse Deep V5');
+      const outputs=await priorOutputs(env,pid);
+      const state={projectId:pid,mode:PERMANENT_DEEP_BUILD,status:project.status,
+       lastProjectUpdateAt:project.updated_at,visualVerified:false,langs:{}};
+      for(const [lang,stage] of [['english',PERMANENT_DEEP_MATCH_EN],['urdu',PERMANENT_DEEP_MATCH_UR]]){
+        const raw=outputs[lang==='english'?'srt_english':'srt_urdu'];
+        if(raw){
+          const cues=loadProductionCues(raw),done=await acceptedPermanentDeepBatches(env,pid,stage);
+          const progress=deepProductionProgress(cues,done);
+          state.langs[lang]={reviewedSegments:progress.reviewedSegments,totalSegments:progress.totalSegments,
+            acceptedBatches:progress.batchIndex,batchCount:progress.batchCount,complete:progress.complete};
+        }else state.langs[lang]={status:'waiting_for_measured_mp3_srt'};
+      }
+      state.cutPlanValidated=!!outputs[PERMANENT_DEEP_CUTS];
+      state.windowsExportValidated=!!outputs.windows_project;
+      return json(state);
+    }
+    if(action==='deep-muse/resume'&&method==='POST'){
+      const policy=await projectPolicy(env,pid);
+      if(!policy.permanentDeep)fail(404,'Only permanent V5 movies can resume Deep Muse');
+      if(controlIsStopped(project))fail(410,'Stopped movie cannot resume');
+      if(project.status==='ready')return json({projectId:pid,status:'ready',notice:'The complete Windows project is already ready'});
+      const active=await env.DB.prepare("SELECT id,step_id,status,lease_until FROM jobs WHERE project_id=? AND status IN ('queued','working') ORDER BY created_at DESC LIMIT 1")
+        .bind(pid).first();
+      if(active)return json({projectId:pid,jobId:active.id,step:active.step_id,
+        status:'processing',notice:'Existing Muse task retained, no duplicate queued'});
+      const outputs=await priorOutputs(env,pid);
+      if(!outputs.srt_english||!outputs.srt_urdu)
+       fail(409,'Measured English and Urdu SRTs are required before resuming Deep Muse');
+      let step=PERMANENT_DEEP_CUTS;
+      for(const [lang,name] of [['english',PERMANENT_DEEP_MATCH_EN],['urdu',PERMANENT_DEEP_MATCH_UR]]){
+       const cues=loadProductionCues(outputs[lang==='english'?'srt_english':'srt_urdu']);
+       const accepted=await acceptedPermanentDeepBatches(env,pid,name);
+       if(!deepProductionProgress(cues,accepted).complete){step=name;break;}
+      }
+      if(outputs[PERMANENT_DEEP_CUTS])step='windows_project';
+      if(outputs.windows_project)
+       fail(409,'Muse Windows project is accepted; use the existing finalization recovery endpoint');
+      await env.DB.prepare("UPDATE projects SET status='processing',updated_at=? WHERE id=?")
+       .bind(nowSeconds(),pid).run();
+      const nextId=await queueTask(env,project,step,'[PERMANENT-DEEP-MUSE] Resume only unfinished stage; preserve prior 5-cue checkpoints');
+      return json({projectId:pid,nextStep:step,nextJobId:nextId,status:'processing',
+        checkpointed:true,notice:'Only the pending Muse stage has been requeued'},201);
+    }
     if(method==='GET'&&!action){
       const recovery=!controlIsStopped(project)&&project.status==='needs_review'&&project.updated_at<nowSeconds()-30?
         await recoverAcceptedFinalization(env,project):{attempted:false};

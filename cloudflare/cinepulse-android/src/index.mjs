@@ -4,7 +4,7 @@ import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANE
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
-import { buildSceneLabV4Package } from './scene-lab-package.mjs';
+import { buildSceneLabV4Package,unwrapMeasuredSrt } from './scene-lab-package.mjs';
 import { API_BUILD, HttpError, json, nowSeconds, dayUTC, newId, isUuid, sha256, hashWorkerToken, requireString, normalizeSrt, validateManifest, randomToken, secureEqual, signDownload, verifyDownload, fileNames, isProbablyMp3 } from './helpers.mjs';
 import { LONGFORM_MODE, LONGFORM_MARKER, isLongFormCreateRequest, normalizePublishingMetadata, validateFinalCutPlan } from './longform-policy.mjs';
 import { allocateFinalLongFormCuts } from './server-cut-planner.mjs';
@@ -444,7 +444,10 @@ async function finalizeProject(env,project,manifest,{generatedByCloudflare=false
     }
     const serverFiles={
       windows_project_json:JSON.stringify(projectJson),
-      english_srt:manifest.narrationSrts.english,urdu_srt:manifest.narrationSrts.urdu,
+      // Physically published .srt files MUST contain SRT timecodes, not the
+      // worker's JSON envelope. The verified native Windows project is unchanged.
+      english_srt:unwrapMeasuredSrt(manifest.narrationSrts.english),
+      urdu_srt:unwrapMeasuredSrt(manifest.narrationSrts.urdu),
       english_narration:manifest.narrations.english,urdu_narration:manifest.narrations.urdu
     };
     for(const [kind,content] of Object.entries(serverFiles)){

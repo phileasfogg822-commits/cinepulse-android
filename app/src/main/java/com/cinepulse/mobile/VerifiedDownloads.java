@@ -379,9 +379,9 @@ final class VerifiedDownloads {
             }
             JSONObject nativeProject=new JSONObject(new String(
                 java.nio.file.Files.readAllBytes(verified[0].toPath()),StandardCharsets.UTF_8));
-            JSONObject cloudImport=nativeProject.optJSONObject("cloudImport");
-            if(cloudImport==null||!projectId.equals(cloudImport.optString("cloudProjectId")))
-                throw new SecurityException("Windows project JSON does not match the experimental movie");
+            String enSrt=new String(java.nio.file.Files.readAllBytes(verified[4].toPath()),StandardCharsets.UTF_8);
+            String urSrt=new String(java.nio.file.Files.readAllBytes(verified[5].toPath()),StandardCharsets.UTF_8);
+            NativeWindowsAssets.verifyWindowsProject(nativeProject,projectId,enSrt,urSrt);
             return verified;
         }catch(Exception error){
             for(File file:verified)if(file!=null)file.delete();
@@ -452,7 +452,7 @@ final class VerifiedDownloads {
             try(ZipOutputStream out=new ZipOutputStream(new FileOutputStream(zip))){
                 for(int i=0;i<verified.length;i++)zipFile(out,EXPERIMENT_NAMES[i],verified[i]);
             }
-            if(zip.length()<100)throw new IOException("Experimental ZIP is empty");
+            if(zip.length()<100)throw new IOException("Verified Windows ZIP is empty");
             return new ZipResult(zip,
                 "CinePulse-"+SecurityRules.safeFolderName(detail.getJSONObject("project").optString("title"))+
                 "-"+SecurityRules.shortId(projectId)+"-EXPERIMENT.zip",
@@ -462,25 +462,16 @@ final class VerifiedDownloads {
     }
 
     // Scene Lab V4 has eight native files, not the 11-file scene-intelligence mode.
-    private static final String[] SCENE_LAB_KINDS={
-        "windows_project_json","source_srt","english_mp3","urdu_mp3",
-        "english_srt","urdu_srt","english_narration","urdu_narration"
-    };
-    private static final String[] SCENE_LAB_NAMES={
-        "CinePulse_Project.json","CinePulse_Source.srt","CinePulse_English.mp3","CinePulse_Urdu.mp3",
-        "CinePulse_English.srt","CinePulse_Urdu.srt",
-        "CinePulse_English_Narration.txt","CinePulse_Urdu_Narration.txt"
-    };
+    private static final String[] SCENE_LAB_KINDS=NativeWindowsAssets.KINDS;
+    private static final String[] SCENE_LAB_NAMES=NativeWindowsAssets.NAMES;
     private File[] verifySceneLabAssets(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
         JSONObject project=detail.getJSONObject("project");
-        if(!projectId.equals(project.optString("id")) || !"ready".equals(project.optString("status")) ||
-           !"scene_matching_lab".equals(project.optString("productionMode")))
-            throw new SecurityException("This is not a completed Scene Lab CinePulse project");
-        if(!"windows_eight_verified".equals(links.optString("format")))
-            throw new SecurityException("Cloudflare did not confirm the complete eight-file Scene Lab");
+        String mode=project.optString("productionMode");
+        if(!projectId.equals(project.optString("id"))||!"ready".equals(project.optString("status"))||
+           !("stable".equals(mode)||"scene_matching_lab".equals(mode)))
+            throw new SecurityException("This movie is not a completed standard/Scene Lab Windows project");
+        NativeWindowsAssets.validateServerManifest(links);
         JSONObject files=links.getJSONObject("files");
-        if(files.length()!=SCENE_LAB_KINDS.length)
-            throw new SecurityException("Experimental file manifest count mismatch");
         File[] verified=new File[SCENE_LAB_KINDS.length];
         try{
             for(int i=0;i<SCENE_LAB_KINDS.length;i++){
@@ -488,9 +479,21 @@ final class VerifiedDownloads {
                 JSONObject meta=files.getJSONObject(kind);
                 if(!SCENE_LAB_NAMES[i].equals(meta.optString("filename")))
                     throw new SecurityException("Cloudflare provided an unexpected filename for "+kind);
-                progress.update("Verifying experimental asset "+(i+1)+"/8");
+                progress.update("Downloading and SHA-256 verifying Windows file "+(i+1)+"/8: "+SCENE_LAB_NAMES[i]);
                 verified[i]=receive(meta.getString("url"),projectId,kind,
                     meta.getLong("bytes"),meta.getString("sha256"));
+                // Old Cloudflare jobs sometimes stored the *SRT JSON envelope*
+                // as the .srt asset. Verify ORIGINAL signed bytes first, then
+                // publish its genuine measured text, not the JSON wrapper.
+                if(i==4||i==5){
+                    String raw=new String(java.nio.file.Files.readAllBytes(verified[i].toPath()),StandardCharsets.UTF_8);
+                    String content=NativeWindowsAssets.measuredSrt(raw,i==4?"English":"Urdu");
+                    if(!content.equals(raw)){
+                        File prepared=stagedText(content);
+                        verified[i].delete();
+                        verified[i]=prepared;
+                    }
+                }
             }
             JSONObject nativeProject=new JSONObject(new String(
                 java.nio.file.Files.readAllBytes(verified[0].toPath()),StandardCharsets.UTF_8));
@@ -504,12 +507,14 @@ final class VerifiedDownloads {
         }
     }
 
-    String downloadSceneLabToDownloads(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
+    String downloadNativeWindowsToDownloads(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
         if(!SecurityRules.validUuid(projectId))throw new SecurityException("Invalid experiment project ID");
         File[] verified=verifySceneLabAssets(projectId,detail,links,progress);
         List<Uri> pending=new ArrayList<>();List<File> created=new ArrayList<>();File folder=null;
+        String type="scene_matching_lab".equals(detail.getJSONObject("project").optString("productionMode"))?
+            "SCENELAB":"WINDOWS";
         String name=SecurityRules.safeFolderName(detail.getJSONObject("project").optString("title"))+"-"+
-            SecurityRules.shortId(projectId)+"-SCENELAB-"+Long.toString(System.currentTimeMillis(),36);
+            SecurityRules.shortId(projectId)+"-"+type+"-"+Long.toString(System.currentTimeMillis(),36);
         String relative=Environment.DIRECTORY_DOWNLOADS+"/CinePulse/"+name+"/";
         try{
             if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q){
@@ -529,28 +534,28 @@ final class VerifiedDownloads {
                         if(out==null)throw new IOException("Cannot open output for "+filename);
                         copy(verified[i],out);
                     }
-                    progress.update("Saving Scene Lab file "+(i+1)+"/8");
+                    progress.update("Saving verified Windows file "+(i+1)+"/8");
                 }
                 for(Uri uri:pending){
                     ContentValues props=new ContentValues();
                     props.put(MediaStore.MediaColumns.IS_PENDING,0);
                     if(resolver.update(uri,props,null,null)!=1)
-                        throw new IOException("Cannot publish all verified Scene Lab files");
+                        throw new IOException("Cannot publish all eight Windows assets");
                 }
             }else{
                 File parent=new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),"CinePulse");
                 if(!parent.isDirectory()&&!parent.mkdirs())throw new IOException("Cannot create CinePulse Downloads folder");
                 folder=new File(parent,name);
-                if(!folder.mkdirs())throw new IOException("Cannot create isolated Scene Lab folder");
+                if(!folder.mkdirs())throw new IOException("Cannot create this movie Windows folder");
                 for(int i=0;i<verified.length;i++){
                     File output=new File(folder,SCENE_LAB_NAMES[i]);
                     if(!output.createNewFile())throw new IOException("Cannot create "+SCENE_LAB_NAMES[i]);
                     created.add(output);
                     try(OutputStream out=new FileOutputStream(output)){copy(verified[i],out);}
-                    progress.update("Saving Scene Lab file "+(i+1)+"/8");
+                    progress.update("Saving verified Windows file "+(i+1)+"/8");
                 }
             }
-            return "Saved 8 SHA-256 verified Scene Lab assets to Downloads/CinePulse/"+name+
+            return "Saved all 8 SHA-256 verified native Windows files to Downloads/CinePulse/"+name+
                 ". Move the entire folder to Windows and link the original movie file. No Muse matching is started by Android download.";
         }catch(Exception e){
             for(Uri uri:pending)try{resolver.delete(uri,null,null);}catch(Exception ignored){}
@@ -560,20 +565,20 @@ final class VerifiedDownloads {
         }finally{for(File file:verified)if(file!=null)file.delete();}
     }
 
-    ZipResult createSceneLabZip(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
+    ZipResult createNativeWindowsZip(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
         File[] verified=verifySceneLabAssets(projectId,detail,links,progress);
         File zip=null;
         try{
             zip=File.createTempFile("cinepulse-scene-lab-", ".zip",cache);
-            progress.update("Packaging 8 verified experimental assets");
+            progress.update("Packaging all 8 SHA-256 verified native Windows files");
             try(ZipOutputStream out=new ZipOutputStream(new FileOutputStream(zip))){
                 for(int i=0;i<verified.length;i++)zipFile(out,SCENE_LAB_NAMES[i],verified[i]);
             }
             if(zip.length()<100)throw new IOException("Experimental ZIP is empty");
             return new ZipResult(zip,
                 "CinePulse-"+SecurityRules.safeFolderName(detail.getJSONObject("project").optString("title"))+
-                "-"+SecurityRules.shortId(projectId)+"-SCENE-LAB.zip",
-                "8 server-signed, byte-size and SHA-256 verified files, for the V4 Windows editor. No movie video is included.");
+                "-"+SecurityRules.shortId(projectId)+"-WINDOWS-8-FILES.zip",
+                "8 server-produced, SHA-256 verified Windows files including both measured SRTs. No new scene generation or video download.");
         }catch(Exception e){if(zip!=null)zip.delete();throw e;}
         finally{for(File file:verified)if(file!=null)file.delete();}
     }

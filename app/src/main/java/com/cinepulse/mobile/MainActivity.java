@@ -853,19 +853,16 @@ public final class MainActivity extends Activity {
         task("Downloading and verifying complete ZIP",()->{
             JSONObject detail=api.project(id);
             boolean experiment="scene_intelligence_experiment".equals(detail.getJSONObject("project").optString("productionMode"));
-            boolean sceneLab="scene_matching_lab".equals(detail.getJSONObject("project").optString("productionMode"));
-            JSONObject links=sceneLab?api.sceneLabDownloads(id):experiment?api.experimentalDownloads(id):api.downloads(id);
+            JSONObject links=experiment?api.experimentalDownloads(id):api.windowsDownloads(id);
             VerifiedDownloads manager=new VerifiedDownloads(getContentResolver(),getCacheDir());
-            return sceneLab?manager.createSceneLabZip(id,detail,links,
+            return experiment?manager.createExperimentalZip(id,detail,links,
                 step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
-                experiment?manager.createExperimentalZip(id,detail,links,
-                step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
-                manager.createVerifiedZip(id,detail,links,
+                manager.createNativeWindowsZip(id,detail,links,
                 step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
         },result->{
             String excerpt=result.report.length()>1500?result.report.substring(0,1500)+"\n… full report is in ZIP":result.report;
             new AlertDialog.Builder(this).setTitle("Project QA and ZIP ready")
-                .setMessage(excerpt+"\n\nThe ZIP includes verified JSON, both MP3s, both SRTs (if present), metadata and this QA report. It does not contain movie footage.")
+                .setMessage(excerpt+"\n\nThe ZIP contains all eight native Windows files: project JSON, source SRT, two MP3s, two timed narration SRTs, and two narration scripts. It does not contain the original movie video.")
                 .setNegativeButton("Close",null)
                 .setPositiveButton("Share ZIP",(d,w)->{
                     try{
@@ -899,18 +896,15 @@ public final class MainActivity extends Activity {
         }
     }
     private void downloadProject(String id){
-        task("Downloading 4 files to Downloads/CinePulse",()->{
+        task("Downloading all 8 Windows files to Downloads/CinePulse",()->{
             // Fresh signed links on every click; verify all files before publishing any.
             JSONObject detail=api.project(id);
             boolean experiment="scene_intelligence_experiment".equals(detail.getJSONObject("project").optString("productionMode"));
-            boolean sceneLab="scene_matching_lab".equals(detail.getJSONObject("project").optString("productionMode"));
-            JSONObject urls=sceneLab?api.sceneLabDownloads(id):experiment?api.experimentalDownloads(id):api.downloads(id);
+            JSONObject urls=experiment?api.experimentalDownloads(id):api.windowsDownloads(id);
             VerifiedDownloads manager=new VerifiedDownloads(getContentResolver(),getCacheDir());
-            return sceneLab?manager.downloadSceneLabToDownloads(
+            return experiment?manager.downloadExperimentalToDownloads(
                 id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
-                experiment?manager.downloadExperimentalToDownloads(
-                id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show())):
-                manager.downloadToDownloads(
+                manager.downloadNativeWindowsToDownloads(
                 id,detail,urls,step->handler.post(()->Toast.makeText(this,step,Toast.LENGTH_SHORT).show()));
         },message->new AlertDialog.Builder(this).setTitle("Verified Windows package downloaded")
             .setMessage(message).setPositiveButton("Done",null).show());

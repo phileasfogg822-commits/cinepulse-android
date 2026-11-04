@@ -12,6 +12,7 @@ on:
       - 'cloudflare/cinepulse-android/src/scene-lab-runtime.mjs'
       - 'cloudflare/cinepulse-android/src/scene-lab-deep.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab-deep.test.mjs'
+      - 'cloudflare/cinepulse-android/tools/scene_lab_deep_payload.py'
       - 'cloudflare/cinepulse-android/tests/scene-lab-runtime.test.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab-v4.test.mjs'
       - 'cloudflare/cinepulse-android/src/index.mjs'
@@ -46,4 +47,5 @@ jobs:
           node --check src/scene-lab-deep.mjs
           node --check src/index.mjs
           python3 -m py_compile tools/scene_lab_extract.py
+          python3 -m py_compile tools/scene_lab_deep_payload.py
           python3 -m unittest discover -s tests -p 'test_scene_lab_extract.py' -v

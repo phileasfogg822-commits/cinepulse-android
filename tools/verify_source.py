@@ -11,7 +11,13 @@ main=(p/'app/src/main/AndroidManifest.xml').read_text()
 assert main.count('<uses-permission ')==2
 assert 'android.permission.WRITE_EXTERNAL_STORAGE' in main and 'android:maxSdkVersion="28"' in main
 assert 'ACTION_OPEN_DOCUMENT_TREE' not in (p/'app/src/main/java/com/cinepulse/mobile/MainActivity.java').read_text()
-assert 'downloadToDownloads(' in (p/'app/src/main/java/com/cinepulse/mobile/MainActivity.java').read_text()
+activity=(p/'app/src/main/java/com/cinepulse/mobile/MainActivity.java').read_text()
+assert 'downloadNativeWindowsToDownloads(' in activity
+assert 'createNativeWindowsZip(' in activity
+assert 'windowsDownloads(id)' in activity
+assert 'manager.downloadToDownloads(' not in activity
+assert 'manager.createVerifiedZip(' not in activity
+assert 'NativeWindowsAssets.java' in {x.name for x in files.values()}
 assert 'MediaStore.Downloads.EXTERNAL_CONTENT_URI' in (p/'app/src/main/java/com/cinepulse/mobile/VerifiedDownloads.java').read_text()
 assert 'android.permission.INTERNET' in main
 assert 'android:allowBackup="false"' in main

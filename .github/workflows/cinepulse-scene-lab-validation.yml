@@ -6,6 +6,7 @@ on:
       - feature/scene-lab-muse-deep-batches
       - feature/cinepulse-permanent-deep-muse-v5
       - fix/v5-urdu-anchor-window-and-duration
+      - fix/cinepulse-v52-targeted-urdu-rematch
     paths:
       - 'cloudflare/cinepulse-android/src/scene-lab.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab.test.mjs'
@@ -15,6 +16,8 @@ on:
       - 'cloudflare/cinepulse-android/src/scene-lab-deep.mjs'
       - 'cloudflare/cinepulse-android/src/scene-lab-deep-candidates.mjs'
       - 'cloudflare/cinepulse-android/src/permanent-deep-muse.mjs'
+      - 'cloudflare/cinepulse-android/src/permanent-deep-rematch.mjs'
+      - 'cloudflare/cinepulse-android/tests/permanent-deep-rematch.test.mjs'
       - 'cloudflare/cinepulse-android/src/narration-duration-policy.mjs'
       - 'cloudflare/cinepulse-android/tests/urdu-anchor-duration-v51.test.mjs'
       - 'cloudflare/cinepulse-android/tests/permanent-deep-muse.test.mjs'
@@ -64,6 +67,7 @@ jobs:
           node --check src/scene-lab-deep.mjs
           node --check src/scene-lab-deep-candidates.mjs
           node --check src/permanent-deep-muse.mjs
+          node --check src/permanent-deep-rematch.mjs
           node --check src/narration-duration-policy.mjs
           node --check src/index.mjs
           python3 -m py_compile tools/scene_lab_extract.py

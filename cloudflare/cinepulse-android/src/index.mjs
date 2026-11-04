@@ -1,3 +1,4 @@
+import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
@@ -111,14 +112,21 @@ async function queueTask(env,project,step,requestedPrompt){
   await env.DB.prepare('UPDATE projects SET updated_at=? WHERE id=?').bind(nowSeconds(),project.id).run();
   return id;
 }
+async function acceptedUrduRepairOutputs(env,projectId){
+ const result=await env.DB.prepare("SELECT output FROM jobs WHERE project_id=? AND step_id=? AND status='done' ORDER BY created_at ASC,rowid ASC")
+   .bind(projectId,URDU_REPAIR_STAGE).all();
+ return (result.results||[]).map(j=>JSON.parse(j.output||'null'));
+}
 async function acceptedPermanentDeepBatches(env,projectId,stage){
  const result=await env.DB.prepare("SELECT output FROM jobs WHERE project_id=? AND step_id=? AND status='done' ORDER BY created_at ASC,rowid ASC")
   .bind(projectId,stage).all();
- return (result.results||[]).map(j=>{
+ const original=(result.results||[]).map(j=>{
   const parsed=JSON.parse(j.output||'null');
   if(!parsed||!Array.isArray(parsed.decisions))throw Error('Deep Muse checkpoint output is corrupt');
   return parsed;
  });
+ return stage===PERMANENT_DEEP_MATCH_UR?
+   applyAcceptedUrduRepairs(original,await acceptedUrduRepairOutputs(env,projectId)):original;
 }
 async function priorOutputs(env,projectId) {
  const result=await env.DB.prepare("SELECT step_id,output FROM jobs WHERE project_id=? AND status='done' ORDER BY created_at ASC,rowid ASC").bind(projectId).all();
@@ -139,6 +147,32 @@ async function priorOutputs(env,projectId) {
  return outputs;
 }
 async function taskDetail(env,job) {
+  if(job.step_id===URDU_REPAIR_STAGE){
+    const policy=await projectPolicy(env,job.project_id);
+    if(!policy.permanentDeep)fail(403,'Targeted repair not authorized for older movie');
+    const project=await getProject(env,job.project_id);
+    const plan=parseUrduRepairPrompt(job.prompt);
+    const outputs=await priorOutputs(env,job.project_id);
+    const original=await env.FILES.get(project.source_srt_key);
+    if(!original)fail(409,'Original movie SRT unavailable');
+    const cues=loadProductionCues(outputs.srt_urdu);
+    const effective=await acceptedPermanentDeepBatches(env,job.project_id,PERMANENT_DEEP_MATCH_UR);
+    const task=UrduRepairTaskEvidence({
+      sourceSrt:await original.text(),urduCues:cues,acceptedBatches:effective,prompt:job.prompt
+    });
+    return {...publicJob(job),lease:job.lease,productionMode:'stable',
+      sceneMatchingMode:URDU_REPAIR_BUILD,
+      movie:{id:project.id,title:project.title,workerId:project.worker_id},
+      sourceSrtAsset:{path:'/tasks/'+job.id+'/asset/source_srt',mime:'application/x-subrip',name:'CinePulse_Source.srt'},
+      inputAsset:{path:'/tasks/'+job.id+'/asset/source_srt',mime:'application/x-subrip',name:'CinePulse_Source.srt'},
+      prompt:task.instructions,
+      deepMuse:{mode:'targeted_urdu_rematch',originalAcceptedSegments:cues.length,
+        repairIndices:plan.indices,repairBatchIndices:task.taskSegments.map(x=>x.segmentIndex),
+        repairOffset:plan.offset,originalCutPlanJobId:plan.sourceCutJobId,
+        segments:task.taskSegments,visualVerified:false,
+        candidateEvidenceBudget:4000,requiredSourceEvidence:true},
+      notice:'Re-match only the listed Urdu segments with REAL Muse decisions; preserve all original jobs, English cuts, narrations, MP3s, SRTs and source movie.'};
+  }
   if(DEEP_STAGES.includes(job.step_id)){
     const run=await deepRow(env,job.project_id);
     if(!run)fail(409,'Deep Muse job not registered');
@@ -218,6 +252,8 @@ async function taskDetail(env,job) {
       acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_EN),
       acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_UR)
     ]);
+    const acceptedRematches=await acceptedUrduRepairOutputs(env,movie.id);
+    const revisedUrduIndices=acceptedRematches.flatMap(b=>b.decisions.map(d=>d.segmentIndex));
     const enCues=loadProductionCues(outputs.srt_english),urCues=loadProductionCues(outputs.srt_urdu);
     if(!deepProductionProgress(enCues,english).complete||!deepProductionProgress(urCues,urdu).complete)
       fail(409,'All original full-movie narration segments must be Muse-reviewed before cut generation');
@@ -227,8 +263,11 @@ async function taskDetail(env,job) {
       sourceSrtAsset:readOnlyAsset,inputAsset:readOnlyAsset,
       deepMuse:{englishCues:enCues,urduCues:urCues,acceptedDecisions:{
        english:english.flatMap(x=>x.decisions),urdu:urdu.flatMap(x=>x.decisions)},
-       visualVerified:false},
+       targetedUrduRepair:{repairedIndices:revisedUrduIndices,acceptedReplacementCount:revisedUrduIndices.length,
+         useOriginalCompletedCandidateCutsWhereStillValid:true},visualVerified:false},
       prompt:'CINEPULSE PERMANENT DEEP MUSE: FINAL FULL-MOVIE CUT PLAN. '+
+       (revisedUrduIndices.length?'V5.2 TARGETED URDU REPAIRS HAVE BEEN ACCEPTED for segment indices '+revisedUrduIndices.join(',')+
+        '. Muse must reuse its existing verified Candidate 5 cut plan wherever it remains valid, then modify ONLY the affected Urdu windows/links to the NEW accepted source anchors. Do not regenerate original audio/SRT, do not alter any of the 209 accepted English cuts; exactly 369/369 original Urdu narration segments must be represented. ':'')+
        'All English '+enCues.length+' and Urdu '+urCues.length+' cues have individually accepted Muse source decisions. '+
        'Generate a SEPARATE complete 3–6 second cut plan for each language using ONLY those accepted source anchors. '+
        'Each clip must contain matchSegmentIndices linking to accepted Muse decisions in THAT language. '+
@@ -831,11 +870,82 @@ async function acceptPermanentDeepStage(env,job,output){
   pipeline:{status:'processing',nextStep:'windows_project'},nextEndpoint:'/agent/next'};
 }
 
+async function beginTargetedUrduRematch(env,job,indices,lease){
+  if(job.step_id!==PERMANENT_DEEP_CUTS||job.status!=='working')fail(409,'An active unaccepted deep_cut_plan task is required');
+  if(job.lease_until<=nowSeconds()||!secureEqual(lease||'',job.lease||''))fail(409,'The current cut-plan task lease must be valid');
+  const movie=await getProject(env,job.project_id),policy=await projectPolicy(env,movie.id);
+  if(!policy.permanentDeep||controlIsStopped(movie)||movie.status==='ready')
+    fail(409,'Only an active permanent Deep Muse movie can request a repair');
+  if(!Array.isArray(indices)||indices.length<1||indices.length>16||
+     !indices.every((n,i)=>Number.isInteger(n)&&n>0&&(i===0||indices[i-1]<n)))
+    fail(422,'Repair indices must be 1–16 unique ascending Urdu narration segments');
+  const [existing,busy,outputs]=await Promise.all([
+    env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND step_id=? LIMIT 1").bind(movie.id,URDU_REPAIR_STAGE).first(),
+    env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND id<>? AND status IN ('working','queued') LIMIT 1").bind(movie.id,job.id).first(),
+    priorOutputs(env,movie.id)
+  ]);
+  if(existing||busy)fail(409,'A repair already exists, or another movie task is active');
+  if(!outputs.srt_urdu||!outputs.srt_english)fail(409,'Original bilingual measured SRTs are missing');
+  const cues=loadProductionCues(outputs.srt_urdu);
+  if(indices.at(-1)>cues.length)fail(422,'Repair segment index beyond actual Urdu SRT');
+  const accepted=await acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_UR);
+  if(!deepProductionProgress(cues,accepted).complete)
+    fail(409,'All original Urdu Muse decisions must be complete before targeted repair');
+  const prompt=makeUrduRepairPrompt({indices,offset:0,sourceCutJobId:job.id});
+  const updated=await env.DB.prepare("UPDATE jobs SET status='cancelled',error=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND step_id=? AND status='working' AND lease=? RETURNING id")
+    .bind('Superseded by targeted Urdu re-matching; saved outputs remain untouched',nowSeconds(),
+       job.id,PERMANENT_DEEP_CUTS,lease).first();
+  if(!updated)fail(409,'The original cut-plan lease was claimed or changed during repair setup');
+  let nextId;
+  try{nextId=await queueTask(env,movie,URDU_REPAIR_STAGE,prompt);}
+  catch(err){
+    await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?")
+      .bind(nowSeconds(),movie.id).run();
+    throw err;
+  }
+  return {projectId:movie.id,workerId:movie.worker_id,previousCutTaskId:job.id,
+    nextJobId:nextId,nextStep:URDU_REPAIR_STAGE,indices,
+    batches:Math.ceil(indices.length/URDU_REPAIR_BATCH_MAX),
+    preserved:{englishCuts:true,englishSrt:true,urduSrt:true,englishMp3:true,urduMp3:true,
+      originalMuseDecisions:true},visualVerified:false};
+}
+async function acceptTargetedUrduRepair(env,job,output){
+  const plan=parseUrduRepairPrompt(job.prompt),movie=await getProject(env,job.project_id);
+  if(!output||typeof output!=='object'||Array.isArray(output))throw Error('Muse targeted repair must return decisions JSON');
+  const source=await env.FILES.get(movie.source_srt_key);
+  if(!source)throw Error('Original movie source SRT missing');
+  const outputs=await priorOutputs(env,movie.id);
+  const cues=loadProductionCues(outputs.srt_urdu);
+  const [accepted,done]=await Promise.all([
+    acceptedPermanentDeepBatches(env,movie.id,PERMANENT_DEEP_MATCH_UR),
+    acceptedUrduRepairOutputs(env,movie.id)
+  ]);
+  const validated=validateTargetedUrduRematch({
+    sourceSrt:await source.text(),urduCues:cues,
+    acceptedBatches:accepted,completedRepairs:done,plan,payload:output
+  });
+  const now=nowSeconds();
+  const saved=await env.DB.prepare("UPDATE jobs SET status='done',output=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+    .bind(JSON.stringify(validated),now,job.id,job.lease).first();
+  if(!saved)fail(409,'Muse repair lease changed; no duplicate accepted');
+  await logDaily(env,{jobs_completed:1});
+  const nextOffset=plan.offset+validated.decisions.length;
+  const nextStage=nextOffset<plan.indices.length?URDU_REPAIR_STAGE:PERMANENT_DEEP_CUTS;
+  const prompt=nextStage===URDU_REPAIR_STAGE?
+    makeUrduRepairPrompt({...plan,offset:nextOffset}):
+    '[PERMANENT-DEEP-MUSE] Targeted Urdu repairs accepted; rebuild final cuts from ALL effective Muse anchors, preserve English 209 cuts and original audio, 3–6s, Urdu 25s, original cue evidence';
+  const nextId=await queueTask(env,movie,nextStage,prompt);
+  return {id:job.id,status:'done',repairedIndices:validated.decisions.map(d=>d.segmentIndex),
+    repairedCount:nextOffset,totalRepairs:plan.indices.length,
+    nextStep:nextStage,nextJobId:nextId,originalSourceCutTaskId:plan.sourceCutJobId,
+    allOriginalCheckpointsPreserved:true,visualVerified:false};
+}
+
 async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,productionDeepMuseBatchSize:5,narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -906,7 +1016,37 @@ async function route(request,env){
         await env.DB.prepare("UPDATE jobs SET lease_until=? WHERE id=? AND lease=? AND status='working'").bind(nowSeconds()+LEASE_SECONDS,jid,job.lease).run();
         return json({ok:true,leaseUntil:nowSeconds()+LEASE_SECONDS});
       }
+      if(method==='POST'&&action==='request-urdu-rematch'){
+        const body=await getJson(request);
+        if(job.step_id!==PERMANENT_DEEP_CUTS||job.worker_id!==wid)
+          fail(403,'Only current assigned Muse cut-plan task may request targeted Urdu re-matching');
+        return json(await beginTargetedUrduRematch(env,job,body.indices,body.lease),201);
+      }
       if(method==='POST'&&action==='result'){
+        if(job.step_id===URDU_REPAIR_STAGE){
+          if(job.status!=='working'||job.lease_until<=nowSeconds())
+            fail(409,'Targeted Muse lease expired or not active');
+          const body=await getJson(request,MAX_JSON);
+          if(!secureEqual(body.lease||'',job.lease||''))
+            fail(409,'Targeted Urdu Muse lease mismatch');
+          if(body.error){
+            const reason=requireString(String(body.error),'Unresolved targeted Urdu source scene',1100);
+            const ended=await env.DB.prepare("UPDATE jobs SET status='error',error=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND status='working' AND lease=? RETURNING id")
+              .bind(reason,nowSeconds(),job.id,job.lease).first();
+            if(!ended)fail(409,'Targeted Muse task changed during failure report');
+            await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?")
+              .bind(nowSeconds(),job.project_id).run();
+            return json({id:job.id,status:'needs_review',reason,recoveryRoute:'/v1/projects/'+job.project_id+'/deep-muse/rematch-urdu/resume',
+              originalAcceptedResultsPreserved:true});
+          }
+          let output=body.output;
+          if(typeof output==='string'){try{output=JSON.parse(output);}catch{fail(422,'Targeted Muse output must be JSON');}}
+          try{return json(await acceptTargetedUrduRepair(env,job,output),201);}
+          catch(error){
+            if(error instanceof HttpError)throw error;
+            fail(422,'Targeted Urdu source decision rejected; repair same task: '+String(error.message||error).slice(0,1000));
+          }
+        }
         if(isProductionDeepStage(job.step_id)){
           const policy=await projectPolicy(env,job.project_id);
           if(!policy.permanentDeep)fail(403,'Not a permanent Muse Deep movie');
@@ -1313,6 +1453,40 @@ async function route(request,env){
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
+    if(action==='deep-muse/rematch-urdu'&&method==='POST'){
+      const body=await getJson(request);
+      const cutJobId=requireUUID(body.cutPlanJobId);
+      const task=await getJob(env,cutJobId);
+      if(task.project_id!==pid)fail(403,'The requested cut-plan job belongs to another movie');
+      return json(await beginTargetedUrduRematch(env,task,body.indices,task.lease),201);
+    }
+    if(action==='deep-muse/rematch-urdu/resume'&&method==='POST'){
+      const policy=await projectPolicy(env,pid);
+      if(!policy.permanentDeep||controlIsStopped(project)||project.status==='ready')
+        fail(409,'Only an active permanent Deep Muse project can resume a targeted repair');
+      const active=await env.DB.prepare("SELECT id,step_id FROM jobs WHERE project_id=? AND status IN ('queued','working') LIMIT 1")
+        .bind(pid).first();
+      if(active)return json({projectId:pid,status:'processing',activeJobId:active.id,
+        notice:'Existing Muse job preserved; no duplicate'});
+      const last=await env.DB.prepare("SELECT id,prompt,status FROM jobs WHERE project_id=? AND step_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1")
+        .bind(pid,URDU_REPAIR_STAGE).first();
+      if(!last)fail(404,'No targeted repair exists to resume');
+      const manifest=parseUrduRepairPrompt(last.prompt);
+      const completed=await acceptedUrduRepairOutputs(env,pid);
+      const repaired=completed.flatMap(b=>b.decisions.map(d=>d.segmentIndex));
+      const expected=manifest.indices.slice(0,repaired.length);
+      if(repaired.length!==expected.length||repaired.some((n,i)=>n!==expected[i]))
+        fail(409,'Targeted correction checkpoints are inconsistent; review before resuming');
+      const next=expected.length<manifest.indices.length?URDU_REPAIR_STAGE:PERMANENT_DEEP_CUTS;
+      const prompt=next===URDU_REPAIR_STAGE?
+        makeUrduRepairPrompt({indices:manifest.indices,offset:expected.length,sourceCutJobId:manifest.sourceCutJobId}):
+        '[PERMANENT-DEEP-MUSE] All targeted Urdu Muse repairs accepted. Rebuild final cut plan from patched source evidence, preserve original English and media.';
+      await env.DB.prepare("UPDATE projects SET status='processing',updated_at=? WHERE id=?")
+        .bind(nowSeconds(),pid).run();
+      const nextId=await queueTask(env,project,next,prompt);
+      return json({projectId:pid,nextJobId:nextId,nextStep:next,repairedCount:repaired.length,
+        targetCount:manifest.indices.length,originalCheckpointsPreserved:true},201);
+    }
     if(action==='deep-muse'&&method==='GET'){
       const policy=await projectPolicy(env,pid);
       if(!policy.permanentDeep)fail(404,'This movie predates permanent Muse Deep V5');
@@ -1328,11 +1502,17 @@ async function route(request,env){
             acceptedBatches:progress.batchIndex,batchCount:progress.batchCount,complete:progress.complete};
         }else state.langs[lang]={status:'waiting_for_measured_mp3_srt'};
       }
+      const repairs=await acceptedUrduRepairOutputs(env,pid);
+      state.urduTargetedRepairs={acceptedBatches:repairs.length,
+        repairedSegmentIndices:repairs.flatMap(b=>b.decisions.map(d=>d.segmentIndex))};
       state.cutPlanValidated=!!outputs[PERMANENT_DEEP_CUTS];
       state.windowsExportValidated=!!outputs.windows_project;
       return json(state);
     }
     if(action==='deep-muse/resume'&&method==='POST'){
+      const existingRepair=await env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND step_id=? LIMIT 1")
+        .bind(pid,URDU_REPAIR_STAGE).first();
+      if(existingRepair)fail(409,'Targeted Urdu correction is in progress; use /deep-muse/rematch-urdu/resume to preserve patches');
       const policy=await projectPolicy(env,pid);
       if(!policy.permanentDeep)fail(404,'Only permanent V5 movies can resume Deep Muse');
       if(controlIsStopped(project))fail(410,'Stopped movie cannot resume');

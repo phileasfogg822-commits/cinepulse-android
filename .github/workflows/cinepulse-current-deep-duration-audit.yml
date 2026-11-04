@@ -41,7 +41,27 @@ jobs:
           SELECT 1 FROM jobs d WHERE d.project_id=p.id AND d.step_id='digest'
           AND instr(d.prompt,'[CINEPULSE-V5-PERMANENT-DEEP-MUSE]')=1)
           ORDER BY p.created_at DESC,p.rowid DESC LIMIT 8"
-          npx wrangler d1 execute cinepulse-android-db --remote --json --command "$sql" > /tmp/cp-v5-duration-raw.json
+          if ! npx wrangler d1 execute cinepulse-android-db --remote --json --command "$sql" > /tmp/cp-v5-duration-raw.json 2>/tmp/cp-v5-duration-error.log; then
+            echo 'CINEPULSE_V5_READONLY_DURATION_QUERY_FAILED'
+            node --input-type=module - <<'AUDITERR'
+          import {readFileSync} from 'node:fs';
+          const err=readFileSync('/tmp/cp-v5-duration-error.log','utf8');
+          const stdout=readFileSync('/tmp/cp-v5-duration-raw.json','utf8');
+          const redact=x=>String(x).replace(/Bearer\\s+\\S+/gi,'Bearer [REDACTED]')
+            .replace(/[a-f0-9]{64,}/gi,'[HASH_REDACTED]')
+            .slice(0,700);
+          console.log('WRANGLER_ERROR='+redact(err));
+          if(stdout){
+            try{
+              const data=JSON.parse(stdout);
+              const arr=Array.isArray(data)?data:[data];
+              console.log('D1_ERROR='+JSON.stringify(arr.map(o=>({success:o.success,
+                errors:(o.errors||[]).map(e=>({code:e.code,message:redact(e.message)}))}))));
+            }catch{console.log('D1_OUTPUT_FORMAT_UNEXPECTED');}
+          }
+          AUDITERR
+            exit 2
+          fi
           node --input-type=module - <<'NODE'
           import {readFileSync} from 'node:fs';
           const raw=JSON.parse(readFileSync('/tmp/cp-v5-duration-raw.json','utf8'));

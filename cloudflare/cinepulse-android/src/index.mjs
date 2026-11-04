@@ -1,3 +1,4 @@
+import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
 import { buildSceneLabV4Package } from './scene-lab-package.mjs';
@@ -117,6 +118,15 @@ async function taskDetail(env,job) {
     const batch=job.step_id===DEEP_MATCH?await deepBatch(env,job.id):null;
     if(job.step_id===DEEP_MATCH&&!batch)fail(409,'Deep Muse batch checkpoint missing');
     const accepted=job.step_id===DEEP_PREPARE?[]:await deepOutputs(env,job.project_id);
+    let ranked=null;
+    if(batch){
+      const parent=await getProject(env,job.project_id);
+      const file=await env.FILES.get(parent.source_srt_key);
+      if(!file)fail(409,'Whole movie source SRT unavailable to rank Muse batch');
+      const all=Array.from({length:run.batch_count},(_,i)=>segmentBatch(run,i)).flat();
+      ranked=rankDeepMuseCandidates(await file.text(),segmentBatch(run,batch.batch_index),
+        all,accepted.flatMap(x=>x.decisions));
+    }
     const sourcePath='/tasks/'+job.id+'/asset/source_srt';
     const instructions=job.step_id===DEEP_PREPARE?preparePrompt(run):
       job.step_id===DEEP_MATCH?matchPrompt(run,batch.batch_index):exportPrompt(run);
@@ -128,12 +138,14 @@ async function taskDetail(env,job) {
       visualVerified:false,
       sourceSrtAsset:{path:sourcePath,name:'CinePulse_Source.srt',mime:'application/x-subrip'},
       acceptedDecisions:accepted,
+      ...(ranked?{rankedSourceCandidates:ranked.candidates,candidateRetrieval:{budget:ranked.budget,candidateCount:ranked.candidateCount,sourceCueCount:ranked.sourceCueCount}}:{}),
       ...(batch?{batchIndex:batch.batch_index,segments:segmentBatch(run,batch.batch_index)}:{}),
       ...(job.step_id===DEEP_PREPARE?{expectedMp3s:JSON.parse(run.expected_mp3s_json),
          uploadMp3Endpoints:{english:'/tasks/'+job.id+'/asset/english_mp3',
            urdu:'/tasks/'+job.id+'/asset/urdu_mp3'}}:{})};
     return {...publicJob(job),lease:job.lease,productionMode:'scene_lab_deep_muse',
-      prompt:instructions+(job.prompt?.startsWith('RETRY REQUIRED:')?'\n'+job.prompt:''),
+      prompt:instructions+(ranked?'\nWHOLE MOVIE RANKED CANDIDATE EVIDENCE (advisory, Muse must decide):\n'+ranked.candidateEvidenceText:'')+
+        (job.prompt?.startsWith('RETRY REQUIRED:')?'\n'+job.prompt:''),
       sceneLabDeep:deep,movie:{id:job.project_id,title:'Muse Deep Scene Lab — '+run.strategy,
         workerId:job.worker_id},sourceSrtAsset:deep.sourceSrtAsset,
       inputAsset:deep.sourceSrtAsset,previousOutputs:{},
@@ -689,7 +701,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);

@@ -12,6 +12,11 @@ export const PERMANENT_DEEP_MATCH_EN='deep_match_english';
 export const PERMANENT_DEEP_MATCH_UR='deep_match_urdu';
 export const PERMANENT_DEEP_CUTS='deep_cut_plan';
 export const PERMANENT_DEEP_BATCH_SIZE=5;
+// Preserve strict source provenance: English stays within 12 s. Long-form Urdu
+// can use up to 25 s only when the same Muse-reviewed source cue supports it.
+// These are SOURCE selection distances, never clip lengths or audio stretch.
+export const ENGLISH_SOURCE_ANCHOR_WINDOW_SECONDS=12;
+export const URDU_SOURCE_ANCHOR_WINDOW_SECONDS=25;
 export const PERMANENT_DEEP_MATCH_STEPS=[PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR];
 export const PERMANENT_DEEP_STEPS=[
  'digest','narration_english','narration_urdu','publishing_metadata',
@@ -120,23 +125,40 @@ export function validateProductionDeepCuts(lang,cues,cuts,accepted){
  const target=cues.at(-1).endSeconds;
  validateCompleteCutPlan(cuts,target);
  const decisions=progress.allDecisions,used=new Set(),verified=[];
+ const allowedWindow=lang==='urdu'?URDU_SOURCE_ANCHOR_WINDOW_SECONDS:ENGLISH_SOURCE_ANCHOR_WINDOW_SECONDS;
+ let relaxedCuts=0,maxAcceptedGapSeconds=0;
  for(let i=0;i<cuts.length;i++){
   const c=cuts[i],refs=c.matchSegmentIndices;
   if(!Array.isArray(refs)||!refs.length||refs.length>6||
     !refs.every(k=>Number.isInteger(k)&&k>0&&k<=decisions.length))
    throw Error(lang+' cut '+(i+1)+' missing valid segment-to-Muse evidence linkage');
-  const eligible=refs.map(k=>decisions[k-1]).filter(d=>
-   c.narrationStartSeconds<d.narrationEndSeconds+3&&c.narrationEndSeconds>d.narrationStartSeconds-3&&
-   c.sourceStartSeconds>=d.sourceStartSeconds-12&&c.sourceEndSeconds<=d.sourceEndSeconds+12);
-  if(!eligible.length)throw Error(lang+' cut '+(i+1)+' has no nearby accepted Muse source anchor');
-  for(const e of eligible)used.add(e.segmentIndex);
-  verified.push({...c,language:lang,confidence:Math.min(...eligible.map(e=>e.confidence)),
-   sourceEvidence:eligible.map(e=>'cue '+e.sourceCueIds.join(',')+': '+e.evidenceQuote).join(' | ')});
+  const candidates=refs.map(k=>decisions[k-1]).filter(d=>
+   c.narrationStartSeconds<d.narrationEndSeconds+3&&c.narrationEndSeconds>d.narrationStartSeconds-3);
+  const scored=candidates.map(d=>({d,gap:Math.max(0,
+    d.sourceStartSeconds-c.sourceStartSeconds,c.sourceEndSeconds-d.sourceEndSeconds)}));
+  const eligible=scored.filter(v=>v.gap<=allowedWindow+0.001);
+  if(!eligible.length){
+   const minimum=scored.length?Math.min(...scored.map(x=>x.gap)):null;
+   throw Error(lang+' cut '+(i+1)+' no nearby accepted Muse source anchor within '+
+    allowedWindow+'s: minRequiredWindowSeconds='+(minimum===null?'unlinked':minimum.toFixed(3))+
+    '; keep 3–6s clip duration, rematch weak narration segments to additional real source cues if needed');
+  }
+  for(const e of eligible)used.add(e.d.segmentIndex);
+  const closest=eligible.reduce((a,b)=>a.gap<b.gap?a:b);
+  const relaxed=closest.gap>ENGLISH_SOURCE_ANCHOR_WINDOW_SECONDS+0.001;
+  if(relaxed)relaxedCuts++;
+  maxAcceptedGapSeconds=Math.max(maxAcceptedGapSeconds,closest.gap);
+  verified.push({...c,language:lang,confidence:Math.min(...eligible.map(e=>e.d.confidence)),
+   ...(relaxed?{anchorWindowRelaxedSeconds:Number(closest.gap.toFixed(3)),
+      anchorWindowPolicy:'urdu_evidence_grounded_25s_max'}:{}),
+   sourceEvidence:eligible.map(e=>'cue '+e.d.sourceCueIds.join(',')+': '+e.d.evidenceQuote).join(' | ')});
  }
  if(used.size!==decisions.length)
   throw Error(lang+' final cuts do not represent all Muse-reviewed narration cues ('+used.size+'/'+decisions.length+')');
  return {cuts:verified,totalSegments:decisions.length,batches:accepted.length,
   museRequestIds:[...new Set(decisions.map(d=>d.museRequestId))],
+  sourceAnchorWindowSeconds:allowedWindow,relaxedCuts,
+  maxAcceptedGapSeconds:Number(maxAcceptedGapSeconds.toFixed(3)),
   visualVerified:false};
 }
 export function combineProductionDeepCuts(english,urdu,enCues,urCues,enBatches,urBatches){
@@ -144,8 +166,11 @@ export function combineProductionDeepCuts(english,urdu,enCues,urCues,enBatches,u
  const b=validateProductionDeepCuts('urdu',urCues,urdu,urBatches);
  return {cuts:[...a.cuts,...b.cuts],
   provenance:{method:'muse_semantic_batches',mode:'permanent_deep',
-   english:{reviewedSegments:a.totalSegments,batches:a.batches,requestIds:a.museRequestIds},
-   urdu:{reviewedSegments:b.totalSegments,batches:b.batches,requestIds:b.museRequestIds},
+   english:{reviewedSegments:a.totalSegments,batches:a.batches,requestIds:a.museRequestIds,
+    sourceAnchorWindowSeconds:a.sourceAnchorWindowSeconds,relaxedCuts:a.relaxedCuts},
+   urdu:{reviewedSegments:b.totalSegments,batches:b.batches,requestIds:b.museRequestIds,
+    sourceAnchorWindowSeconds:b.sourceAnchorWindowSeconds,relaxedCuts:b.relaxedCuts,
+    maxAcceptedGapSeconds:b.maxAcceptedGapSeconds},
    visualVerified:false}};
 }
 export function summariseProductionDeepMatches(enBatches,urBatches){

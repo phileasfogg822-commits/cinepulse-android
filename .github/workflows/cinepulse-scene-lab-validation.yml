@@ -3,12 +3,18 @@ on:
   push:
     branches:
       - feature/scene-lab-ten-strategies
+      - feature/scene-lab-muse-deep-batches
     paths:
       - 'cloudflare/cinepulse-android/src/scene-lab.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab.test.mjs'
       - 'cloudflare/cinepulse-android/src/scene-lab-package.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab-package.test.mjs'
       - 'cloudflare/cinepulse-android/src/scene-lab-runtime.mjs'
+      - 'cloudflare/cinepulse-android/src/scene-lab-deep.mjs'
+      - 'cloudflare/cinepulse-android/src/scene-lab-deep-candidates.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab-deep-candidates.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/scene-lab-deep.test.mjs'
+      - 'cloudflare/cinepulse-android/tools/scene_lab_deep_payload.py'
       - 'cloudflare/cinepulse-android/tests/scene-lab-runtime.test.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab-v4.test.mjs'
       - 'cloudflare/cinepulse-android/src/index.mjs'
@@ -40,6 +46,9 @@ jobs:
           node --check src/scene-lab.mjs
           node --check src/scene-lab-package.mjs
           node --check src/scene-lab-runtime.mjs
+          node --check src/scene-lab-deep.mjs
+          node --check src/scene-lab-deep-candidates.mjs
           node --check src/index.mjs
           python3 -m py_compile tools/scene_lab_extract.py
+          python3 -m py_compile tools/scene_lab_deep_payload.py
           python3 -m unittest discover -s tests -p 'test_scene_lab_extract.py' -v

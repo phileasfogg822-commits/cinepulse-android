@@ -89,7 +89,7 @@ export function experimentPlan(parentProjectId,excerpts){
  * V4 preservation path: clone the user's accepted Muse ProjectState instead of
  * introducing a V3 schema. This is the ONLY exporter used by live Scene Lab.
  */
-export function buildSceneLabV4Package({manifest,baselineProject,sourceSrt,narrations,englishCues,urduSrt,englishAudio,urduAudio,englishCuts,urduCuts,mp3s,projectId,workerId}){
+export function buildSceneLabV4Package({manifest,baselineProject,sourceSrt,narrations,englishCues,urduSrt,englishAudio,urduAudio,englishCuts,urduCuts,mp3s,projectId,workerId,deepMatching}){
  const {totalSeconds,experimentId}=validateExperimentManifest(manifest);
  if(!baselineProject||baselineProject.cloudImport?.schema!=='cinepulse.windows-muse.v4')throw Error('Original Muse V4 ProjectState is required');
  if(baselineProject.cloudImport?.cloudProjectId!==manifest.parentProjectId)throw Error('Original project ID mismatch');
@@ -124,7 +124,7 @@ export function buildSceneLabV4Package({manifest,baselineProject,sourceSrt,narra
  clone.cloudImport={...clone.cloudImport,schema:'cinepulse.windows-muse.v4',cloudProjectId:projectId,outputMode:'long_form_only',
   mp3s,sceneLab:{parentProjectId:manifest.parentProjectId,experimentId,strategy:manifest.strategy,excerpts:manifest.excerpts,
    englishDurationSeconds:totalSeconds,urduDurationSeconds:urduCutDuration,
-   evidenceType:'original_source_srt_only',visualVerified:false},
+   evidenceType:'original_source_srt_only',visualVerified:false,...(deepMatching?{deepMatching}: {})},
   longVideoCount:2,optionalShortsGenerated:false,optionalViralsGenerated:false,importedFilePathsAreRelative:true};
  function updateTrack(name,lang,cues,srt,cuts,duration){
   const old=clone.tracks?.[name];if(!old)throw Error('Original V4 '+name+' track missing');

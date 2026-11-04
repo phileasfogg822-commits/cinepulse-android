@@ -48,8 +48,14 @@ jobs:
         run: npm test
       - name: Install FFmpeg for mandatory real-audio extraction test
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            echo "FFMPEG_AND_FFPROBE_ALREADY_PRESENT"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
       - name: Verify backend and FFmpeg extraction module syntax
         run: |
           node --check src/scene-lab.mjs

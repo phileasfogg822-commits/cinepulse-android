@@ -139,7 +139,7 @@ export function validateProductionDeepCuts(lang,cues,cuts,accepted){
   const eligible=scored.filter(v=>v.gap<=allowedWindow+0.001);
   if(!eligible.length){
    const minimum=scored.length?Math.min(...scored.map(x=>x.gap)):null;
-   throw Error(lang+' cut '+(i+1)+' cannot use accepted Muse source anchor within '+
+   throw Error(lang+' cut '+(i+1)+' no nearby accepted Muse source anchor within '+
     allowedWindow+'s: minRequiredWindowSeconds='+(minimum===null?'unlinked':minimum.toFixed(3))+
     '; keep 3–6s clip duration, rematch weak narration segments to additional real source cues if needed');
   }

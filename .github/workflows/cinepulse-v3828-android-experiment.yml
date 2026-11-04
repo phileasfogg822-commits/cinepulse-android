@@ -1,11 +1,5 @@
-name: CinePulse v3.8.28 Android experimental APK (NO RELEASE)
+name: CinePulse legacy experimental Android APK (MANUAL ONLY)
 on:
-  push:
-    branches: [feature/scene-intelligence-v3828-staging]
-    paths:
-      - '.github/workflows/cinepulse-v3828-android-experiment.yml'
-      - 'app/src/main/java/com/cinepulse/mobile/**'
-      - 'app/src/test/**'
   workflow_dispatch:
 concurrency:
   group: v3828-apk-${{ github.ref }}

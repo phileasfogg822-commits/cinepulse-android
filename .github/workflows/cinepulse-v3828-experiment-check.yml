@@ -1,21 +1,5 @@
-name: CinePulse v3.8.28 experimental contract (NO DEPLOY)
+name: CinePulse legacy experiment regression archive (MANUAL ONLY)
 on:
-  push:
-    branches:
-      - feature/scene-intelligence-v3828-staging
-    paths:
-      - 'cloudflare/cinepulse-android/src/scene-intelligence-experiment.mjs'
-      - 'cloudflare/cinepulse-android/src/experimental-muse-instructions.mjs'
-      - 'cloudflare/cinepulse-android/tests/**'
-      - 'cloudflare/cinepulse-android/migrations/experimental/**'
-      - 'cloudflare/cinepulse-android/tools/build_scene_sqlite.py'
-      - '.github/workflows/cinepulse-v3828-experiment-check.yml'
-  pull_request:
-    branches:
-      - ops/cloudflare-deploy-bridge
-    paths:
-      - 'cloudflare/cinepulse-android/**'
-      - '.github/workflows/cinepulse-v3828-experiment-check.yml'
   workflow_dispatch:
 concurrency:
   group: v3828-contract-${{ github.ref }}

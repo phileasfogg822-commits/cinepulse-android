@@ -55,7 +55,8 @@ jobs:
             try{
               const data=JSON.parse(stdout);
               const arr=Array.isArray(data)?data:[data];
-              console.log('D1_ERROR='+JSON.stringify(arr.map(o=>({success:o.success,
+              console.log('D1_ERROR='+JSON.stringify(arr.map(o=>({success:o.success,code:o.code,
+                keys:Object.keys(o).slice(0,15),message:redact(o.message||o.error||''),
                 errors:(o.errors||[]).map(e=>({code:e.code,message:redact(e.message)}))}))));
             }catch{console.log('D1_OUTPUT_FORMAT_UNEXPECTED');}
           }

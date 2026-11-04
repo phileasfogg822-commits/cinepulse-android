@@ -58,7 +58,9 @@ final class CloudApi {
     JSONObject project(String id) throws Exception {return call("GET","/v1/projects/"+checked(id),null);}
     JSONObject downloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads",null);}
     JSONObject experimentalDownloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads?format=windows_experiment",null);}
-    JSONObject sceneLabDownloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads?format=windows",null);}
+    /** Native Cloudflare eight-file package for current STABLE movies and prior Scene Lab V4. */
+    JSONObject windowsDownloads(String id) throws Exception {return call("GET","/v1/projects/"+checked(id)+"/downloads?format=windows",null);}
+    JSONObject sceneLabDownloads(String id) throws Exception {return windowsDownloads(id);}
     JSONObject jobs() throws Exception {return call("GET","/v1/jobs",null);}
     JSONObject nudge(String jobId) throws Exception {return call("POST","/v1/jobs/"+checked(jobId)+"/nudge",new JSONObject());}
     JSONObject recovery(String projectId) throws Exception {return call("GET","/v1/projects/"+checked(projectId)+"/recovery",null);}

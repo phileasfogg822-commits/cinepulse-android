@@ -62,6 +62,11 @@ test('narration writing stage catches repeated English phrases before TTS',()=>{
 test('narration writing stage refuses Hindi Devanagari/mixed-script substitutions',()=>{
  reject(()=>validateNarrationContent(urdu+' परिवार हमारा घर','urdu'),/non-Urdu\/non-Latin script/);
 });
+test('Pakistani Urdu script rejects high-confidence Hindi-register vocabulary, with Urdu substitute',()=>{
+ for(const word of ['پریاس','سمپرک','آوشیک','پریوار','وشواس']){
+  reject(()=>validateNarrationContent(urdu+' '+word+' کی جگہ اردو بولنی چاہیے۔','urdu'),/Unnatural Hindi-register vocabulary/);
+ }
+});
 test('clean measured English and Urdu SRT cues align with the approved texts',()=>{
  assert.equal(validateMeasuredSubtitleQuality(srt(enParts),'english',english).cues,15);
  assert.equal(validateMeasuredSubtitleQuality(JSON.stringify({format:'srt',text:srt(urParts)}),'urdu',urdu).cues,15);

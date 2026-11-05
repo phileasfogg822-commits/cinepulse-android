@@ -8,6 +8,7 @@ on:
       - fix/v5-urdu-anchor-window-and-duration
       - fix/cinepulse-v52-targeted-urdu-rematch
       - fix/cinepulse-v54-audio-urdu-qa-gates
+      - fix/cinepulse-v55-devanagari-urdu-voice
     paths:
       - 'cloudflare/cinepulse-android/src/scene-lab.mjs'
       - 'cloudflare/cinepulse-android/tests/scene-lab.test.mjs'
@@ -21,6 +22,8 @@ on:
       - 'cloudflare/cinepulse-android/tests/permanent-deep-rematch.test.mjs'
       - 'cloudflare/cinepulse-android/src/narration-duration-policy.mjs'
       - 'cloudflare/cinepulse-android/src/audio-urdu-quality.mjs'
+      - 'cloudflare/cinepulse-android/src/urdu-devanagari-voice.mjs'
+      - 'cloudflare/cinepulse-android/tests/urdu-devanagari-voice.test.mjs'
       - 'cloudflare/cinepulse-android/tests/audio-urdu-quality.test.mjs'
       - 'cloudflare/cinepulse-android/tests/urdu-anchor-duration-v51.test.mjs'
       - 'cloudflare/cinepulse-android/tests/permanent-deep-muse.test.mjs'
@@ -73,6 +76,7 @@ jobs:
           node --check src/permanent-deep-rematch.mjs
           node --check src/narration-duration-policy.mjs
           node --check src/audio-urdu-quality.mjs
+          node --check src/urdu-devanagari-voice.mjs
           node --check src/index.mjs
           python3 -m py_compile tools/scene_lab_extract.py
           python3 -m py_compile tools/scene_lab_deep_payload.py

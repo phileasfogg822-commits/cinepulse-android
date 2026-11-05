@@ -1,3 +1,4 @@
+import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAGARI_BUILD,URDU_DEVANAGARI_METHOD,validateDevanagariUrduVoiceReceipt,urduDevanagariInstructions,urduDevanagariSrtInstructions} from './urdu-devanagari-voice.mjs';
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
 import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
@@ -30,11 +31,12 @@ async function projectPolicy(env,projectId){
   const permanentDeep=prompt.startsWith(PERMANENT_DEEP_MARKER);
   const strictNarrationDuration=permanentDeep&&prompt.includes(STRICT_DURATION_MARKER);
   const audioLanguageQa=permanentDeep&&prompt.includes(AUDIO_QA_MARKER);
+  const urduDevanagariVoice=permanentDeep&&prompt.includes(URDU_DEVANAGARI_POLICY_MARKER);
   const museOwnsCuts=permanentDeep||experiment||prompt.startsWith(MUSE_V4_MARKER);
   const serverCuts=prompt.startsWith(LONGFORM_MARKER_V3);
   const longForm=museOwnsCuts||serverCuts||prompt.startsWith(LONGFORM_MARKER);
   const targetMinutes=longForm ? Number(/targetMinutes=(\d+)/.exec(prompt)?.[1]||10) : null;
-  return {longForm,serverCuts,museOwnsCuts,permanentDeep,strictNarrationDuration,audioLanguageQa,experiment,targetMinutes,
+  return {longForm,serverCuts,museOwnsCuts,permanentDeep,strictNarrationDuration,audioLanguageQa,urduDevanagariVoice,experiment,targetMinutes,
     stages:permanentDeep?PERMANENT_DEEP_STEPS:experiment?EXPERIMENT_JOB_STAGES:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
 }
 
@@ -304,8 +306,18 @@ async function taskDetail(env,job) {
   const assetPath=`/tasks/${job.id}/asset`;
   const experimentSource=policy.experiment?await experimentalSourceInfo(env,job.project_id):null;
   const experimentPrompt=policy.experiment?experimentalQueuePrompt(job.step_id,{projectId:job.project_id,sourceSrtSha256:experimentSource.sourceSrtSha256}):'';
+  const urduAudioIsDev=(()=>{
+    try{return JSON.parse(outputs.mp3_urdu||'null')?.method===URDU_DEVANAGARI_METHOD;}
+    catch{return false;}
+  })();
+  const controlledUrduTask=policy.urduDevanagariVoice||
+    (job.step_id==='mp3_urdu'&&String(job.prompt||'').includes(URDU_DEVANAGARI_RESCUE_MARKER))||
+    (job.step_id==='srt_urdu'&&urduAudioIsDev);
+  const originalUrduDigest=controlledUrduTask&&job.step_id==='mp3_urdu'&&outputs.narration_urdu?
+    await sha256(new TextEncoder().encode(outputs.narration_urdu)):undefined;
+
   return {...publicJob(job),lease:job.lease,
-    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(policy.audioLanguageQa&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?
+    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(controlledUrduTask&&job.step_id==='mp3_urdu'?'\n'+urduDevanagariInstructions({rescue:String(job.prompt||'').includes(URDU_DEVANAGARI_RESCUE_MARKER)}):'')+(controlledUrduTask&&job.step_id==='srt_urdu'?'\n'+urduDevanagariSrtInstructions:'')+(controlledUrduTask&&job.step_id==='narration_urdu'?'\nAPPROVED CANONICAL NARRATION IS PAKISTANI URDU SCRIPT. The later Devanagari TTS transport MUST NOT alter this text.':'')+(policy.audioLanguageQa&&!((controlledUrduTask)&&['narration_urdu','mp3_urdu','srt_urdu'].includes(job.step_id))&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?
       '\nCINEPULSE V5.4 AUDIO QA (NEW MOVIES ONLY): Reject filler or repeated 5- to 8-word phrases and repeated TTS chunks. Before MP3, compare the exact script against all previous chunks and check chunk joins with overlap-free sample playback. Never restart, duplicate or loop a previously synthesized chunk. After MP3, use speech-to-text aligned to REAL audio and compare each transcript region with the approved script; never hallucinate transcription or fake cues. For URDU ONLY: write natural idiomatic Pakistani Urdu (Nastaliq/Arabic-derived script) with Pakistani vocabulary, not Hindi or awkward literal translation; read Urdu text aloud in a genuine ur-PK-capable voice and do not transliterate to Devanagari or use a hi-IN Hindi voice. If ur-PK TTS unavailable, return a clear unresolved stage error; never silently substitute Hindi. The mp3_urdu result output MUST be JSON {"provider":"actual provider","voiceName":"actual voice id","voiceLocale":"ur-PK","inputScript":"Urdu","transliterated":false,"hindiFallback":false} after uploading the real MP3. The SRT must be plain timed Urdu (or a JSON envelope with format=srt, text=timed Urdu), without Cyrillic, Chinese, Korean, Devanagari or repeated hallucinated segments. QA failures mean repair THIS stage; never advance to Deep matching with bad audio.': '')+(policy.strictNarrationDuration&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?'\nHARD CAP FOR THIS NEW MOVIE: '+policy.targetMinutes+' minutes per language. Narration must stay under the word cap and measured MP3-aligned SRT MUST end no later than '+(policy.targetMinutes*60)+'s. Shorten script before TTS to prevent overlong audio. Do not slow down or stretch narration.':'')+(policy.permanentDeep&&job.step_id==='windows_project'?'\nPERMANENT DEEP MUSE V5: use priorOutputs.cut_plan derived from the validated 5-cue semantic batches for BOTH languages; preserve all cut values and sourceEvidence; do not repeat matching or alter narration/audio. Include method/provenance in cloudImport if supported.':'')+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
       policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
     movie:policy.museOwnsCuts?{id:movie.id,title:movie.title,targetMinutes:policy.targetMinutes,workerId:movie.worker_id}:undefined,
@@ -313,6 +325,11 @@ async function taskDetail(env,job) {
     sceneIndexAsset:policy.experiment?{path:assetPath+'/scene_index_json',mime:'application/json',name:'Scene_Evidence.json',sourceSrtSha256:experimentSource.sourceSrtSha256,uploadSqlitePath:assetPath+'/scene_index_sqlite'}:undefined,
     productionMode:policy.experiment?'scene_intelligence_experiment':undefined,
     audioManifest:audioManifest||undefined,
+    urduPronunciation:controlledUrduTask&&job.step_id==='mp3_urdu'?{
+      method:URDU_DEVANAGARI_METHOD,sourceUrduSha256:originalUrduDigest,
+      approvedUrduPreserved:true,pronunciationInputScript:'Devanagari',
+      readerLocale:'hi-IN',finalSrtScript:'Urdu',voiceAccentVerified:false
+    }:undefined,
     analysisReference,
     analysisFieldPaths:analysisReference?{
       'analysis.narrations.english':'analysisReference.narrations.english',
@@ -947,11 +964,58 @@ async function acceptTargetedUrduRepair(env,job,output){
     allOriginalCheckpointsPreserved:true,visualVerified:false};
 }
 
+/** Recover only an error-parked Urdu MP3 task, with no previous output rewrites. */
+async function resumeControlledUrduPronunciation(env,projectId,authorizedWorkerId=null){
+ const project=await getProject(env,projectId);
+ if(authorizedWorkerId&&project.worker_id!==authorizedWorkerId)
+   fail(403,'Cannot recover another worker\'s movie');
+ if(controlIsStopped(project))fail(410,'Stopped movie cannot be requeued');
+ if(project.status==='ready')fail(409,'Completed movie already has verified Windows outputs');
+ const policy=await projectPolicy(env,project.id);
+ if(!policy.permanentDeep||!policy.audioLanguageQa)
+   fail(403,'Controlled Urdu pronunciation recovery is available only to permanent V5.4+ movies');
+ const active=await env.DB.prepare("SELECT id,step_id,status FROM jobs WHERE project_id=? AND status IN ('queued','working') LIMIT 1")
+   .bind(project.id).first();
+ if(active)return {projectId:project.id,workerId:project.worker_id,status:'processing',
+   existingJobId:active.id,existingStep:active.step_id,notice:'Existing task preserved; no duplicate or reset'};
+ if(project.status!=='needs_review')fail(409,'Recovery requires needs_review; existing movie not failed at the Urdu MP3 stage');
+ const latest=await env.DB.prepare("SELECT id,status,error FROM jobs WHERE project_id=? AND step_id='mp3_urdu' ORDER BY created_at DESC,rowid DESC LIMIT 1")
+   .bind(project.id).first();
+ if(!latest||latest.status!=='error')
+   fail(409,'Only an actual failed Urdu MP3 task can be safely recovered');
+ const output=await priorOutputs(env,project.id);
+ if(!output.digest||!output.narration_english||!output.narration_urdu||
+    !output.publishing_metadata||!output.mp3_english||!output.srt_english)
+   fail(409,'Approved English, Urdu narration, and publishing checkpoints must be complete before resuming');
+ if(output.mp3_urdu||output.srt_urdu)
+   fail(409,'An Urdu voice or SRT was already accepted; avoid duplicate replacement');
+ const [mp3,english]=await Promise.all([
+  assetByKind(env,project.id,'urdu_mp3'),
+  assetByKind(env,project.id,'english_mp3')
+ ]);
+ if(mp3)fail(409,'An Urdu MP3 asset exists: inspect and reconcile it first, never overwrite accepted/partial audio silently');
+ if(!english)fail(409,'Original English MP3 physical asset is missing');
+ const id=newId(),ts=nowSeconds(),prompt=URDU_DEVANAGARI_RESCUE_MARKER+
+   ' Controlled Urdu TTS ONLY. Resume after failed native Urdu voice attempts; canonical Urdu narration and English accepted results unchanged.';
+ // One conditional insert prevents parallel admin/worker requests from creating duplicates.
+ const inserted=await env.DB.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,prompt,created_at) SELECT ?,?,?,?,'queued',?,? WHERE EXISTS (SELECT 1 FROM projects WHERE id=? AND status='needs_review') AND NOT EXISTS (SELECT 1 FROM jobs WHERE project_id=? AND status IN ('queued','working')) RETURNING id")
+   .bind(id,project.id,project.worker_id,'mp3_urdu',prompt,ts,project.id,project.id).first();
+ if(!inserted)fail(409,'Concurrent recovery already queued or changed this project: retry queue status, not task creation');
+ await logDaily(env,{jobs_created:1});
+ await env.DB.prepare("UPDATE projects SET status='processing',updated_at=? WHERE id=? AND status='needs_review'")
+   .bind(nowSeconds(),project.id).run();
+ return {projectId:project.id,workerId:project.worker_id,previousFailedTaskId:latest.id,
+   nextJobId:id,nextStep:'mp3_urdu',status:'processing',voiceMethod:URDU_DEVANAGARI_METHOD,
+   preserved:{digest:true,englishNarration:true,urduNarration:true,publishingMetadata:true,
+      englishMp3:true,englishSrt:true,originalSourceSrt:true},
+   notice:'Same project resumed at Urdu TTS only. Claim queued Urdu MP3, synthesize genuine Urdu words through Devanagari Hindi reader, then timed Urdu-script SRT. No audio was fabricated.'};
+}
+
 async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsLocaleRequired:'ur-PK',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -959,6 +1023,9 @@ async function route(request,env){
   if(parts[1]==='w'&&parts.length>=4){
     const wid=parts[2],worker=await authWorker(request,env,wid);
     const tail='/'+parts.slice(3).join('/');
+    const urduVoiceRescue=/^\/projects\/([a-f0-9-]{36})\/audio\/urdu-devanagari\/resume$/.exec(tail);
+    if(method==='POST'&&urduVoiceRescue)
+      return json(await resumeControlledUrduPronunciation(env,requireUUID(urduVoiceRescue[1]),wid),201);
     if(method==='GET'&&['/agent/queue','/agent/next','/agent/current'].includes(tail)){
       // Requeue only expired leases; a crash cannot permanently strand this task.
       const expired=await env.DB.prepare("SELECT id FROM jobs WHERE worker_id=? AND status='working' AND lease_until<=? LIMIT 1").bind(wid,nowSeconds()).first();
@@ -1144,8 +1211,18 @@ async function route(request,env){
         if(job.step_id==='mp3_urdu'){
           const pp=await projectPolicy(env,job.project_id);
           if(pp.audioLanguageQa){
-            try{validateUrduVoiceReceipt(output);}
-            catch(error){fail(422,'New-movie Pakistani Urdu TTS provenance: '+error.message);}
+            const controlled=pp.urduDevanagariVoice||String(job.prompt||'').includes(URDU_DEVANAGARI_RESCUE_MARKER);
+            if(controlled){
+              const source=(await priorOutputs(env,job.project_id)).narration_urdu;
+              if(!source)fail(409,'Approved original Urdu narration is missing');
+              try{
+                const digest=await sha256(new TextEncoder().encode(source));
+                validateDevanagariUrduVoiceReceipt(output,source,digest);
+              }catch(error){fail(422,'Controlled Urdu-in-Devanagari TTS input rejected: '+error.message);}
+            }else{
+              try{validateUrduVoiceReceipt(output);}
+              catch(error){fail(422,'Original native Pakistani Urdu TTS provenance: '+error.message);}
+            }
           }
         }
         if(['srt_english','srt_urdu'].includes(job.step_id)){
@@ -1455,7 +1532,7 @@ async function route(request,env){
     }
     await logDaily(env,{projects_created:1,uploaded_bytes:bytes.byteLength});
     // Durable project-level policy stored in the first digest job prompt: no schema migration.
-    const policyPrompt=`${experiment?EXPERIMENT_JOB_MARKER:PERMANENT_DEEP_MARKER} ${STRICT_DURATION_MARKER} ${AUDIO_QA_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=${experiment?11:8}\n${promptFor('digest')}`;
+    const policyPrompt=`${experiment?EXPERIMENT_JOB_MARKER:PERMANENT_DEEP_MARKER} ${STRICT_DURATION_MARKER} ${AUDIO_QA_MARKER} ${URDU_DEVANAGARI_POLICY_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=${experiment?11:8}\n${promptFor('digest')}`;
     const taskId=await queueTask(env,{id:pid,worker_id:workerId},'digest',policyPrompt);
     return json({projectId:pid,workerId,title,firstTaskId:taskId,stage:'digest',status:'processing',retentionHours:hours,
       productionMode:experiment?'scene_intelligence_experiment':'stable',
@@ -1475,6 +1552,8 @@ async function route(request,env){
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
+    if(action==='audio/urdu-devanagari/resume'&&method==='POST')
+      return json(await resumeControlledUrduPronunciation(env,pid),201);
     if(action==='deep-muse/rematch-urdu'&&method==='POST'){
       const body=await getJson(request);
       const cutJobId=requireUUID(body.cutPlanJobId);

@@ -31,7 +31,7 @@ test('approved Urdu stays canonical while only Devanagari is delivered to Hindi-
  assert.equal(validateDevanagariUrduVoiceReceipt(JSON.stringify(receipt),urdu,SHA).spokenLanguage,'Urdu');
 });
 test('reject Hindi translation disguised as transliteration through word count extremes',()=>{
- assert.throws(()=>validateDevanagariPronunciationText('यह है एक कहानी और बस यही सब कुछ है।',urdu),/comparable-length/);
+ assert.throws(()=>validateDevanagariPronunciationText('यह एक छोटी कहानी कही गई है। '.repeat(5),urdu),/comparable-length/);
 });
 test('reject scripts other than Devanagari including Urdu/Arabic, Latin, Greek, Korean or Chinese',()=>{
  for(const word of ['اردو','Persian','Ελληνικά','한국어','中文','русский']){

@@ -47,7 +47,7 @@ test('marked policy is opt-in only for newly created movie digests, preserving e
  assert.match(index,/AUDIO_QA_MARKER\} \$\{URDU_DEVANAGARI_POLICY_MARKER\} targetMinutes/);
  assert.match(index,/if\(pp\.audioLanguageQa\)/);
  assert.match(index,/audioLanguageQualityForNewProjects:true/);
- assert.match(index,/urduTtsLocaleRequired:'ur-PK'/);
+ assert.match(index,/urduTtsLocaleRequired:'hi-IN'/);
  assert.equal(AUDIO_QA_BUILD,'cinepulse-v5.4-audio-urdu-qa');
  assert.ok(AUDIO_QA_MARKER.includes('PAKISTANI-URDU'));
 });

@@ -964,6 +964,53 @@ async function acceptTargetedUrduRepair(env,job,output){
     allOriginalCheckpointsPreserved:true,visualVerified:false};
 }
 
+/** Recover only an error-parked Urdu MP3 task, with no previous output rewrites. */
+async function resumeControlledUrduPronunciation(env,projectId,authorizedWorkerId=null){
+ const project=await getProject(env,projectId);
+ if(authorizedWorkerId&&project.worker_id!==authorizedWorkerId)
+   fail(403,'Cannot recover another worker\'s movie');
+ if(controlIsStopped(project))fail(410,'Stopped movie cannot be requeued');
+ if(project.status==='ready')fail(409,'Completed movie already has verified Windows outputs');
+ const policy=await projectPolicy(env,project.id);
+ if(!policy.permanentDeep||!policy.audioLanguageQa)
+   fail(403,'Controlled Urdu pronunciation recovery is available only to permanent V5.4+ movies');
+ const active=await env.DB.prepare("SELECT id,step_id,status FROM jobs WHERE project_id=? AND status IN ('queued','working') LIMIT 1")
+   .bind(project.id).first();
+ if(active)return {projectId:project.id,workerId:project.worker_id,status:'processing',
+   existingJobId:active.id,existingStep:active.step_id,notice:'Existing task preserved; no duplicate or reset'};
+ if(project.status!=='needs_review')fail(409,'Recovery requires needs_review; existing movie not failed at the Urdu MP3 stage');
+ const latest=await env.DB.prepare("SELECT id,status,error FROM jobs WHERE project_id=? AND step_id='mp3_urdu' ORDER BY created_at DESC,rowid DESC LIMIT 1")
+   .bind(project.id).first();
+ if(!latest||latest.status!=='error')
+   fail(409,'Only an actual failed Urdu MP3 task can be safely recovered');
+ const output=await priorOutputs(env,project.id);
+ if(!output.digest||!output.narration_english||!output.narration_urdu||
+    !output.publishing_metadata||!output.mp3_english||!output.srt_english)
+   fail(409,'Approved English, Urdu narration, and publishing checkpoints must be complete before resuming');
+ if(output.mp3_urdu||output.srt_urdu)
+   fail(409,'An Urdu voice or SRT was already accepted; avoid duplicate replacement');
+ const [mp3,english]=await Promise.all([
+  assetByKind(env,project.id,'urdu_mp3'),
+  assetByKind(env,project.id,'english_mp3')
+ ]);
+ if(mp3)fail(409,'An Urdu MP3 asset exists: inspect and reconcile it first, never overwrite accepted/partial audio silently');
+ if(!english)fail(409,'Original English MP3 physical asset is missing');
+ const id=newId(),ts=nowSeconds(),prompt=URDU_DEVANAGARI_RESCUE_MARKER+
+   ' Controlled Urdu TTS ONLY. Resume after failed native Urdu voice attempts; canonical Urdu narration and English accepted results unchanged.';
+ // One conditional insert prevents parallel admin/worker requests from creating duplicates.
+ const inserted=await env.DB.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,prompt,created_at) SELECT ?,?,?,?,'queued',?,? WHERE EXISTS (SELECT 1 FROM projects WHERE id=? AND status='needs_review') AND NOT EXISTS (SELECT 1 FROM jobs WHERE project_id=? AND status IN ('queued','working')) RETURNING id")
+   .bind(id,project.id,project.worker_id,'mp3_urdu',prompt,ts,project.id,project.id).first();
+ if(!inserted)fail(409,'Concurrent recovery already queued or changed this project: retry queue status, not task creation');
+ await logDaily(env,{jobs_created:1});
+ await env.DB.prepare("UPDATE projects SET status='processing',updated_at=? WHERE id=? AND status='needs_review'")
+   .bind(nowSeconds(),project.id).run();
+ return {projectId:project.id,workerId:project.worker_id,previousFailedTaskId:latest.id,
+   nextJobId:id,nextStep:'mp3_urdu',status:'processing',voiceMethod:URDU_DEVANAGARI_METHOD,
+   preserved:{digest:true,englishNarration:true,urduNarration:true,publishingMetadata:true,
+      englishMp3:true,englishSrt:true,originalSourceSrt:true},
+   notice:'Same project resumed at Urdu TTS only. Claim queued Urdu MP3, synthesize genuine Urdu words through Devanagari Hindi reader, then timed Urdu-script SRT. No audio was fabricated.'};
+}
+
 async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
@@ -976,6 +1023,9 @@ async function route(request,env){
   if(parts[1]==='w'&&parts.length>=4){
     const wid=parts[2],worker=await authWorker(request,env,wid);
     const tail='/'+parts.slice(3).join('/');
+    const urduVoiceRescue=/^\/projects\/([a-f0-9-]{36})\/audio\/urdu-devanagari\/resume$/.exec(tail);
+    if(method==='POST'&&urduVoiceRescue)
+      return json(await resumeControlledUrduPronunciation(env,requireUUID(urduVoiceRescue[1]),wid),201);
     if(method==='GET'&&['/agent/queue','/agent/next','/agent/current'].includes(tail)){
       // Requeue only expired leases; a crash cannot permanently strand this task.
       const expired=await env.DB.prepare("SELECT id FROM jobs WHERE worker_id=? AND status='working' AND lease_until<=? LIMIT 1").bind(wid,nowSeconds()).first();
@@ -1502,6 +1552,8 @@ async function route(request,env){
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
+    if(action==='audio/urdu-devanagari/resume'&&method==='POST')
+      return json(await resumeControlledUrduPronunciation(env,pid),201);
     if(action==='deep-muse/rematch-urdu'&&method==='POST'){
       const body=await getJson(request);
       const cutJobId=requireUUID(body.cutPlanJobId);

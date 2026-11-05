@@ -83,7 +83,7 @@ test('Urdu transcript mixed with Chinese, Cyrillic, Korean or Devanagari is reje
  }
 });
 test('six consecutive unapproved SRT story cues cannot pass by timing alone',()=>{
- const gibberish=Array.from({length:7},(_,i)=>'Alpha cruiser nebula color velocity narrow purple meadow sequence '+(i*29+1));
+ const gibberish=Array.from({length:7},(_,i)=>'Alpha'+i+' cruiser'+i+' nebula'+i+' color'+i+' velocity'+i+' narrow'+i+' purple'+i+' meadow'+i+' sequence'+i);
  const damaged=[...enParts];damaged.splice(4,7,...gibberish);
  reject(()=>validateMeasuredSubtitleQuality(srt(damaged),'english',english),/Speech recognition diverged/);
 });

@@ -38,6 +38,11 @@ function foreignLetters(text){
  return [...String(text).matchAll(/\p{L}/gu)].filter(x=>!(/[\p{Script=Arabic}\p{Script=Latin}]/u.test(x[0])))
    .map(x=>({letter:x[0],offset:x.index}));
 }
+const UNNATURAL_HINDI_WORDS=new Map([
+ ['پریاس','کوشش'],['سمپرک','رابطہ'],['آوشیک','ضروری'],
+ ['وشواس','بھروسہ'],['پریوار','خاندان'],['نرنئے','فیصلہ'],
+ ['بھاشا','زبان'],['شودھ','تحقیق'],['ویکتی','شخص'],['پرنتو','لیکن']
+]);
 function scriptStats(text){
  const arabic=(text.match(/\p{Script=Arabic}/gu)||[]).length;
  const latin=(text.match(/\p{Script=Latin}/gu)||[]).length;
@@ -55,6 +60,9 @@ export function validateNarrationContent(text,language){
   const stat=scriptStats(text);
   if(stat.arabic<100||stat.arabic/(stat.arabic+stat.latin||1)<.82)
    throw Error('Urdu narration is not predominantly written in Urdu script. Do not submit Hindi or Devanagari.');
+  const unnatural=words(text).find(word=>UNNATURAL_HINDI_WORDS.has(word));
+  if(unnatural)throw Error('Unnatural Hindi-register vocabulary in Pakistani Urdu narration: "'+
+    unnatural+'"; use idiomatic Urdu equivalent "'+UNNATURAL_HINDI_WORDS.get(unnatural)+'" before voice generation.');
  }else{
   const stat=scriptStats(text);
   if(stat.arabic>Math.max(12,stat.latin*.15))

@@ -44,7 +44,7 @@ const reject=(fn,match)=>assert.throws(fn,match);
 test('marked policy is opt-in only for newly created movie digests, preserving existing movies',()=>{
  const index=readFileSync(new URL('../src/index.mjs',import.meta.url),'utf8');
  assert.match(index,/audioLanguageQa=permanentDeep&&prompt\.includes\(AUDIO_QA_MARKER\)/);
- assert.match(index,/AUDIO_QA_MARKER\} targetMinutes/);
+ assert.match(index,/AUDIO_QA_MARKER\} \$\{URDU_DEVANAGARI_POLICY_MARKER\} targetMinutes/);
  assert.match(index,/if\(pp\.audioLanguageQa\)/);
  assert.match(index,/audioLanguageQualityForNewProjects:true/);
  assert.match(index,/urduTtsLocaleRequired:'ur-PK'/);

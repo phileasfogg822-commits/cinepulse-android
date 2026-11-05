@@ -20,6 +20,8 @@ on:
       - 'cloudflare/cinepulse-android/tests/permanent-deep-rematch.test.mjs'
       - 'cloudflare/cinepulse-android/src/narration-duration-policy.mjs'
       - 'cloudflare/cinepulse-android/src/audio-urdu-quality.mjs'
+      - 'cloudflare/cinepulse-android/src/urdu-devanagari-voice.mjs'
+      - 'cloudflare/cinepulse-android/tests/urdu-devanagari-voice.test.mjs'
       - 'cloudflare/cinepulse-android/tests/audio-urdu-quality.test.mjs'
       - 'cloudflare/cinepulse-android/tests/urdu-anchor-duration-v51.test.mjs'
       - 'cloudflare/cinepulse-android/tests/permanent-deep-muse.test.mjs'
@@ -97,6 +99,7 @@ jobs:
           node --check src/permanent-deep-rematch.mjs
           node --check src/narration-duration-policy.mjs
           node --check src/audio-urdu-quality.mjs
+          node --check src/urdu-devanagari-voice.mjs
           node --check src/scene-lab-package.mjs
           python3 -m py_compile tools/scene_lab_extract.py
           python3 -m py_compile tools/scene_lab_deep_payload.py
@@ -125,7 +128,7 @@ jobs:
           sleep 3
           for attempt in $(seq 1 12); do
             status=$(curl -sS --connect-timeout 10 --max-time 20 -o /tmp/cp-after-health.json -w '%{http_code}' "$PROD_ORIGIN/health") || status=000
-            if [[ "$status" == "200" ]] && jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.museOwnsCuts==true and .policy.sceneLabIsolatedQueue==true and .policy.sceneLabMuseV4Export==true and .policy.sceneLabBuild=="cinepulse-scene-lab-v1" and .policy.deepMuseBatches==true and .policy.deepMuseSourceEvidence==true and .policy.deepMuseCheckpoints==true and .policy.deepMuseBuild=="cinepulse-scene-lab-deep-muse-v1" and .policy.deepMuseWindowCandidateBudget==22000 and .policy.permanentDeepMuseDefault==true and .policy.urduAnchorWindowSeconds==25 and .policy.englishAnchorWindowSeconds==12 and .policy.urduTargetedRematchEnabled==true and .policy.audioLanguageQualityForNewProjects==true and .policy.audioLanguageQualityBuild=="cinepulse-v5.4-audio-urdu-qa" and .policy.urduTtsLocaleRequired=="ur-PK" and .policy.urduTargetedRematchBuild=="cinepulse-urdu-targeted-rematch-v5.2" and .policy.narrationDurationPolicy=="v5.1-strict-for-new-projects" and .policy.productionDeepMuseBuild=="cinepulse-production-muse-deep-v5.0" and .policy.productionDeepMuseBatchSize==5 and .policy.legacySceneLabCreationRetired==true' /tmp/cp-after-health.json >/dev/null; then break; fi
+            if [[ "$status" == "200" ]] && jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.museOwnsCuts==true and .policy.sceneLabIsolatedQueue==true and .policy.sceneLabMuseV4Export==true and .policy.sceneLabBuild=="cinepulse-scene-lab-v1" and .policy.deepMuseBatches==true and .policy.deepMuseSourceEvidence==true and .policy.deepMuseCheckpoints==true and .policy.deepMuseBuild=="cinepulse-scene-lab-deep-muse-v1" and .policy.deepMuseWindowCandidateBudget==22000 and .policy.permanentDeepMuseDefault==true and .policy.urduAnchorWindowSeconds==25 and .policy.englishAnchorWindowSeconds==12 and .policy.urduTargetedRematchEnabled==true and .policy.audioLanguageQualityForNewProjects==true and .policy.audioLanguageQualityBuild=="cinepulse-v5.4-audio-urdu-qa" and .policy.urduTtsLocaleRequired=="hi-IN" and .policy.urduTtsControlledDevanagari==true and .policy.urduPronunciationBuild=="cinepulse-v5.5-urdu-pronunciation" and .policy.urduCanonicalScript=="Urdu" and .policy.urduTargetedRematchBuild=="cinepulse-urdu-targeted-rematch-v5.2" and .policy.narrationDurationPolicy=="v5.1-strict-for-new-projects" and .policy.productionDeepMuseBuild=="cinepulse-production-muse-deep-v5.0" and .policy.productionDeepMuseBatchSize==5 and .policy.legacySceneLabCreationRetired==true' /tmp/cp-after-health.json >/dev/null; then break; fi
             sleep 3
           done
           [[ "$status" == "200" ]]
@@ -156,4 +159,7 @@ jobs:
           repair_auth=$(curl -sS --max-time 20 -X POST -H 'Content-Type: application/json' --data '{}' -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects/eb1333b8-ecbf-4b8a-b1f0-1a9ba75b79d6/deep-muse/rematch-urdu")
           test "$repair_auth" = "401"
           echo 'CINEPULSE_V52_URDU_REPAIR_ROUTE_AUTH_PROTECTED'
+          voice_auth=$(curl -sS --max-time 20 -X POST -H 'Content-Type: application/json' --data '{}' -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects/eb1333b8-ecbf-4b8a-b1f0-1a9ba75b79d6/audio/urdu-devanagari/resume")
+          test "$voice_auth" = "401"
+          echo 'CINEPULSE_V55_URDU_DEVANAGARI_RECOVERY_AUTH_PROTECTED'
           echo 'PRODUCTION_PROMOTION_VERIFIED'

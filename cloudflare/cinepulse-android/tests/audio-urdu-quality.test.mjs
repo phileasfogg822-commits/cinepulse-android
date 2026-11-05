@@ -2,8 +2,40 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt} from '../src/audio-urdu-quality.mjs';
-const enParts=Array.from({length:15},(_,i)=>'The film narration follows verified events with characters on the island scene number '+(i+1)+' carefully.');
-const urParts=Array.from({length:15},(_,i)=>'اس جزیرے پر موجود کردار اپنی کہانی آگے بڑھاتے ہیں اور مختلف واقعات کا سامنا کرتے ہیں نمبر '+(i+1)+'۔');
+const enParts=[
+'At the isolated beach Cathy discovers strange animals among the trees.',
+'John Hammond reveals the hidden breeding site and explains its history.',
+'Ian Malcolm refuses to risk another expedition without proper precautions.',
+'Sarah Harding travels ahead to examine how dinosaurs protect their young.',
+'The boat captain warns everyone about fishermen who never returned.',
+'Kelly secretly hides inside the trailer against her father’s instructions.',
+'Nick photographs the animals while Eddie tests the expedition equipment.',
+'The rival InGen team arrives with cages and powerful hunting vehicles.',
+'Roland follows enormous footprints and searches for the tyrannosaur nest.',
+'Ludlow intends to transport the wild creatures directly to San Diego.',
+'The injured baby dinosaur needs immediate care from the researchers.',
+'Two adult predators defend their offspring and attack the fragile trailers.',
+'Eddie sacrifices his life while the other survivors climb toward safety.',
+'The remaining people reach the old building and radio for urgent rescue.',
+'Malcolm ultimately understands why the island must remain protected.'
+];
+const urParts=[
+'ساحل پر چھوٹی بچی کیتھی نے عجیب جانور دیکھے اور گھبرا کر اپنے والدین کو بلایا۔',
+'جان ہیمنڈ نے دوسرے جزیرے کی پوشیدہ حقیقت بیان کی اور پچھلے تجربات یاد دلائے۔',
+'ایان میلکم نے دوبارہ خطرناک سفر کرنے سے پہلے مناسب حفاظتی اقدامات کا مطالبہ کیا۔',
+'سارہ ہارڈنگ ڈائنوسار کے بچوں کی دیکھ بھال اور ان کے رویوں کا مشاہدہ کر رہی تھیں۔',
+'کشتی کے کپتان نے لاپتہ ماہی گیروں کے واقعات سنا کر سب کو خبردار کیا۔',
+'کیلی اپنے والد کی مرضی کے خلاف چپکے سے ٹریلر کے اندر جا کر چھپ گئی۔',
+'نک نے جانوروں کی تصویریں بنائیں جبکہ ایڈی ضروری آلات کی جانچ کر رہا تھا۔',
+'انجن کی دوسری ٹیم بڑے پنجروں اور طاقتور گاڑیوں کے ساتھ شکار کرنے پہنچ گئی۔',
+'رولینڈ نے دیوہیکل قدموں کے نشان دیکھے اور ٹائرانوسارس کا گھونسلا تلاش کیا۔',
+'پیٹر لڈلو ان جانوروں کو سمندر پار سین ڈیاگو منتقل کرنے کا منصوبہ بنا رہا تھا۔',
+'زخمی چھوٹے ڈائنوسار کو محققین کی فوری مدد اور مرہم پٹی کی ضرورت تھی۔',
+'دو بڑے شکاری اپنے بچے کی حفاظت کے لیے ٹریلر پر اچانک حملہ کرتے ہیں۔',
+'ایڈی نے اپنے ساتھیوں کی جان بچاتے ہوئے اپنی زندگی قربان کر دی۔',
+'بچ جانے والے لوگ پرانی عمارت تک پہنچ کر ریڈیو کے ذریعے امداد مانگتے ہیں۔',
+'میلکم آخر میں سمجھ جاتا ہے کہ جزیرے کو انسانی مداخلت سے محفوظ رکھنا ضروری ہے۔'
+];
 const english=enParts.join(' '), urdu=urParts.join(' ');
 const clock=n=>{const ms=Math.round(n*1000),pad=x=>String(x).padStart(2,'0');return pad(Math.floor(ms/3600000))+':'+pad(Math.floor(ms/60000)%60)+':'+pad(Math.floor(ms/1000)%60)+','+String(ms%1000).padStart(3,'0');};
 const srt=parts=>parts.map((text,i)=>(i+1)+'\n'+clock(i*4)+' --> '+clock((i+1)*4)+'\n'+text+'\n').join('\n');

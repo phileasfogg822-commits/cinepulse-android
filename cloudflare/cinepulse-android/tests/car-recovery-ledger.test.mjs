@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint} from '../src/car-recovery-ledger.mjs';
+import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints} from '../src/car-recovery-ledger.mjs';
 const id='fed941ad-ff7f-4b0f-8439-25cfda24d187';
 const good=()=>({enabled:true,projectId:id,targetId:'english:81',inventory:{source:'d1_authoritative',complete:true,mutationPermitted:true,snapshotVersion:8,acceptedSegmentIds:[],recoveredSegmentIds:[],eligibility:{verified:true,unresolvedSegmentIds:['english:81']}},decision:{anchorMethod:'context',visualVerified:false,sourceCueIds:[480],museRequestId:'muse-123'}});
 test('disabled by default',()=>assert.equal(checkCarRecoveryWrite({...good(),enabled:false}).reason,'feature_disabled'));
@@ -96,4 +96,20 @@ test('scoped CAR checkpoint performs single conditional CAR-only insert',async()
  assert.match(queries[0],/MAX\(created_at\)/);
  assert.doesNotMatch(queries[0],/UPDATE jobs|DELETE FROM jobs/);
  assert.equal(bindings[0][9],100);
+});
+
+test('durable CAR reader returns bounded checkpoints without mutation',async()=>{
+ const sql=[];
+ const env={DB:{prepare(q){sql.push(q);return {bind(project){assert.equal(project,id);return {
+  async all(){return {results:[{target_id:'english:81',snapshot_version:100,
+   decision_json:JSON.stringify({anchorMethod:'context',visualVerified:false,sourceCueIds:[25]}),
+   created_at:99}]}}}}}}}};
+ const result=await loadScopedCarRecoveryCheckpoints(env,id);
+ assert.equal(result.length,1);assert.equal(result[0].targetId,'english:81');
+ assert.equal(sql.length,1);assert.match(sql[0],/^SELECT /);
+});
+test('durable CAR reader fails closed on corrupt stored decisions',async()=>{
+ const env={DB:{prepare(){return {bind(){return {async all(){return {results:[
+  {target_id:'urdu:4',snapshot_version:9,decision_json:'not-json',created_at:1}]}}}}}}}};
+ await assert.rejects(loadScopedCarRecoveryCheckpoints(env,id),/corrupt_car_checkpoint/);
 });

@@ -8,7 +8,7 @@ test('D1 collector enumerates both languages without guessing unresolved',()=>{c
 test('D1 failure messages do not certify unresolved segments',()=>{const x=input();x.jobs.push({id:'failure',step_id:'deep_match_english',status:'error',error:'segment 6 lacks a cue',created_at:101});const i=assemble(x);assert.equal(i.failedJobEvidence.length,1);assert.deepEqual(i.unknownSegmentIds,['english:6','urdu:1','urdu:2']);assert.equal(i.eligibility.verified,false)});
 test('missing Urdu measured SRT rejects instead of inferring coverage',()=>{const x=input();delete x.urduSrt;assert.throws(()=>assemble(x),/missing urdu/)});
 test('corrupt committed batch fails rather than silently skipping',()=>{const x=input();x.englishBatches=[{decisions:[{segmentIndex:2}]}];assert.throws(()=>assemble(x),/Corrupt|Incomplete/)});
-test('fully accepted D1 source is not eligible for recovery',()=>{const x=input();x.englishSrt=srt(5);x.urduBatches=[batch(2)];const i=assemble(x);assert.equal(i.complete,true);assert.equal(i.eligibility.verified,false);assert.equal(i.eligibility.reason,'no_unresolved')});
+test('fully accepted D1 source is not eligible for recovery',()=>{const x=input();x.englishSrt=srt(5);x.urduBatches=[batch(2)];const i=assemble(x);assert.equal(i.complete,true);assert.equal(i.eligibility.verified,false);assert.equal(i.eligibility.reason,'lifetime_cap_exceeded_or_empty')});
 test('collector queries D1 read-only and loads checkpoints for both languages',async()=>{
   const x=input(),queries=[];
   const db={

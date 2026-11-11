@@ -40,6 +40,47 @@ export function assembleCarD1Inventory({englishSrt,urduSrt,englishBatches=[],urd
   eligibility:{verified:false,reason:unknown.length?'unverified_segments_remain':verification.reason},
   readOnly:true,mutationPermitted:false};
 }
+/**
+ * A per-segment unresolved state is valid only when accompanied by durable,
+ * independently validated Muse evidence. Job failure text and partial batches
+ * are not evidence. This is an opt-in pure reconciler; the read-only endpoint
+ * deliberately continues to use assembleCarD1Inventory until evidence exists.
+ */
+export function reconcileCarEvidence(base,evidence=[]){
+ if(!base||base.source!=='d1_read_only'||!Array.isArray(base.unknownSegmentIds))
+   throw Error('CAR requires live D1 base inventory');
+ const allowed=new Set(base.unknownSegmentIds),seen=new Set(),accepted=new Set(base.acceptedSegmentIds);
+ const unresolved=[],recovered=[];
+ for(const item of evidence){
+  if(!item||typeof item.id!=='string'||!allowed.has(item.id)||seen.has(item.id)||
+     !['unresolved','recovered'].includes(item.status)||
+     item.verifiedByProduction!==true||
+     typeof item.sourceJobId!=='string'||!item.sourceJobId.trim()||
+     !Number.isSafeInteger(item.snapshotVersion)||item.snapshotVersion!==base.snapshotVersion)
+   throw Error('CAR evidence invalid, stale or collides with accepted checkpoint');
+  seen.add(item.id);
+  (item.status==='unresolved'?unresolved:recovered).push(item.id);
+ }
+ const copy=structuredClone(base);
+ for(const [language,part] of [['english',copy.english],['urdu',copy.urdu]]){
+  for(const segment of part.segments){
+   const id=language+':'+segment.index;
+   if(seen.has(id))segment.status=unresolved.includes(id)?'unresolved':'recovered';
+  }
+  part.complete=part.segments.every(segment=>segment.status!=='unknown');
+ }
+ copy.unknownSegmentIds=base.unknownSegmentIds.filter(id=>!seen.has(id));
+ copy.recoveredSegmentIds=recovered;
+ copy.complete=copy.unknownSegmentIds.length===0;
+ const verified=copy.complete?verifyCarLiveInventory({
+  english:copy.english,urdu:copy.urdu,accepted:[...accepted],
+  recovered,snapshotVersion:copy.snapshotVersion
+ }):{verified:false,reason:'unverified_segments_remain'};
+ copy.eligibility={...verified};
+ copy.mutationPermitted=false;
+ copy.readOnly=true;
+ return copy;
+}
 export async function collectCarD1Inventory(env,projectId,priorOutputs,loadAccepted){
  const [english,urdu,jobResult]=await Promise.all([
   loadAccepted(env,projectId,PERMANENT_DEEP_MATCH_EN),

@@ -186,3 +186,37 @@ export async function loadScopedCarRecoveryCheckpoints(env,projectId){
  if(result.length>3)throw Error('car_recovery_limit_exceeded');
  return result;
 }
+
+/**
+ * Fail-closed recovery consumption gate. Reading a saved checkpoint never
+ * advances a movie; only independently verified, current Muse evidence may
+ * be handed to a future resume operation.
+ */
+export function inspectScopedCarRecoveryReadiness({audit,checkpoints,sourceSrt}={}){
+ if(!audit||audit.source!=='d1_read_only'||audit.evidenceStatus!=='verified'||
+    !Number.isSafeInteger(audit.inventory?.snapshotVersion)||
+    !Array.isArray(checkpoints)||checkpoints.length>3)
+  return {ready:false,reason:'unverified_recovery_snapshot',eligible:[]};
+ const accepted=new Set(audit.inventory.acceptedSegmentIds||[]);
+ const unknown=new Set(audit.inventory.unknownSegmentIds||[]);
+ const verified=new Set(audit.verifiedSegmentIds||[]);
+ const seen=new Set(),eligible=[];
+ for(const checkpoint of checkpoints){
+  const target=checkpoint?.targetId,decision=checkpoint?.decision;
+  if(!validTarget(target)||seen.has(target)||accepted.has(target)||!unknown.has(target)||
+     !verified.has(target)||checkpoint.snapshotVersion!==audit.inventory.snapshotVersion)
+   return {ready:false,reason:'stale_or_colliding_checkpoint',eligible:[]};
+  seen.add(target);
+  const evidence=(audit.verifiedProvenance||[]).filter(x=>x.targetId===target);
+  if(evidence.length!==1||decision?.anchorMethod!=='context'||decision?.visualVerified!==false||
+     decision.museRequestId!==evidence[0].museRequestId||
+     decision.evidenceQuote!==evidence[0].sourceCueQuote||
+     JSON.stringify(decision.sourceCueIds)!==JSON.stringify(evidence[0].sourceCueIds)||
+     !verifyCarSourceSrt(sourceSrt,decision).verified)
+   return {ready:false,reason:'source_provenance_mismatch',eligible:[]};
+  eligible.push({targetId:target,snapshotVersion:checkpoint.snapshotVersion,
+   sourceJobId:evidence[0].sourceJobId});
+ }
+ return {ready:eligible.length>0,reason:eligible.length?'verified_read_only':'no_checkpoints',
+  eligible,resumeTriggered:false};
+}

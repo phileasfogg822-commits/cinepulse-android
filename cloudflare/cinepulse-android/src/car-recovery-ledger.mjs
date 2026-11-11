@@ -134,6 +134,14 @@ export async function insertScopedCarRecoveryCheckpoint(env,{projectId,targetId,
  if(decision?.anchorMethod!=='context'||decision?.visualVerified!==false||
     typeof decision.museRequestId!=='string'||decision.museRequestId.length<6)
   return {saved:false,reason:'invalid_recovery_decision'};
+ const evidence=(audit.verifiedProvenance||[]).filter(x=>x.targetId===targetId);
+ if(evidence.length!==1)return {saved:false,reason:'unique_muse_provenance_required'};
+ const original=evidence[0];
+ if(decision?.museRequestId!==original.museRequestId||
+    decision?.evidenceQuote!==original.sourceCueQuote||
+    !Array.isArray(decision?.sourceCueIds)||
+    JSON.stringify(decision.sourceCueIds)!==JSON.stringify(original.sourceCueIds))
+  return {saved:false,reason:'recovery_evidence_differs_from_muse'};
  const source=verifyCarSourceSrt(sourceSrt,decision);
  if(!source.verified)return {saved:false,reason:source.reason};
  // A successful INSERT is conditional on the ledger's existing lifetime count.

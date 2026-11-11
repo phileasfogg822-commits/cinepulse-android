@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {assembleCarD1Inventory as assemble,collectCarD1Inventory as collect,reconcileCarEvidence,verifyCarMuseEvidence} from '../src/car-d1-inventory.mjs';
+import {assembleCarD1Inventory as assemble,collectCarD1Inventory as collect,reconcileCarEvidence,verifyCarMuseEvidence,auditCarD1Evidence} from '../src/car-d1-inventory.mjs';
 const srt=(n)=>Array.from({length:n},(_,i)=>String(i+1)+'\n00:00:'+String(i*2).padStart(2,'0')+',000 --> 00:00:'+String(i*2+1).padStart(2,'0')+',000\nNarration '+(i+1)+'\n').join('\n');
 const batch=(n)=>({decisions:Array.from({length:n},(_,i)=>({segmentIndex:i+1}))});
 const input=()=>({englishSrt:srt(6),urduSrt:srt(2),englishBatches:[batch(5)],urduBatches:[],jobs:[{id:'a',step_id:'deep_match_english',status:'done',created_at:100}]});
@@ -94,4 +94,26 @@ test('wrong language and stale version reject otherwise complete evidence',()=>{
  assert.equal(verifyCarMuseEvidence(base,[row],e).verified,false);
  row.step_id='deep_match_english';e[0].snapshotVersion=99;
  assert.equal(verifyCarMuseEvidence(base,[row],e).verified,false);
+});
+
+test('operational D1 audit reads durable declarations without mutating ordinary jobs',async()=>{
+ const x=input(),sql=[];
+ const jobs=[{id:'j1',step_id:'deep_match_english',status:'done',created_at:100,
+ output:JSON.stringify({unresolvedSegments:[{segmentIndex:6,status:'unresolved',reviewedByMuse:true,sourceCueQuote:'source',sourceCueIds:[25],museRequestId:'muse-123'}]})}];
+ const db={prepare(query){sql.push(query);return {bind(){return {async all(){return {results:query.includes('status=\'done\'')?jobs:x.jobs}}}}}}};
+ const result=await auditCarD1Evidence({DB:db},'project',{srt_english:x.englishSrt,srt_urdu:x.urduSrt},
+  async (_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[]);
+ assert.equal(result.declaredCount,1);
+ assert.equal(result.verifiedCount,1);
+ assert.equal(result.mutationPermitted,false);
+ assert.ok(sql.every(q=>q.trim().startsWith('SELECT ')));
+});
+test('operational D1 audit does not invent declarations from error jobs',async()=>{
+ const x=input(),sql=[];
+ const db={prepare(query){sql.push(query);return {bind(){return {async all(){return {results:query.includes('status=\'done\'')?[]:x.jobs}}}}}}};
+ const result=await auditCarD1Evidence({DB:db},'project',{srt_english:x.englishSrt,srt_urdu:x.urduSrt},
+  async (_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[]);
+ assert.equal(result.declaredCount,0);
+ assert.equal(result.verifiedCount,0);
+ assert.equal(result.mutationPermitted,false);
 });

@@ -1380,7 +1380,7 @@ async function route(request,env){
 
   // Administrator-only, read-only operational CAR audit. This route does not
   // advance, lease, pause or alter any normal movie job.
-  const carAuditRoute=new RegExp('^/v1/projects/([a-f0-9-]{36})/car/audit
+  const carAuditRoute=/^\/v1\/projects\/([a-f0-9-]{36})\/car\/audit$/.exec(url.pathname);
   if(method==='GET'&&carAuditRoute){
     const projectId=requireUUID(carAuditRoute[1]);
     const project=await getProject(env,projectId);

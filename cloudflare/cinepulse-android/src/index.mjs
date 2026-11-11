@@ -5,6 +5,7 @@ import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurat
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { carEligibility } from './context-anchor-recovery.mjs';
+import { verifyCarLiveInventory } from './car-live-inventory.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
 import { buildSceneLabV4Package,unwrapMeasuredSrt } from './scene-lab-package.mjs';
@@ -858,10 +859,11 @@ async function acceptPermanentDeepStage(env,job,output){
    // A future recovery submission must provide a complete independently verified
    // movie-wide unresolved inventory, and must not replace accepted decisions.
    if(output?.carRecovery){
-     const inventory=output.carRecovery.liveUnresolvedSegmentIds;
+     const verifiedInventory=verifyCarLiveInventory(output.carRecovery.inventory);
+     if(!verifiedInventory.verified)throw Error('CAR live inventory denied: '+verifiedInventory.reason);
      const check=carEligibility({
-       enabled:env.CAR_V1_1_ENABLED==='true' && output.carRecovery.inventoryVerified===true,
-       unresolvedSegmentIds:inventory,
+       enabled:env.CAR_V1_1_ENABLED==='true',
+       unresolvedSegmentIds:verifiedInventory.unresolvedSegmentIds,
        acceptedSegmentIds:[
          ...accepted.flatMap(batch=>batch.decisions||[]).map(d=>language+':'+d.segmentIndex)
        ]

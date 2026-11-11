@@ -6,6 +6,7 @@ import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANE
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { carEligibility } from './context-anchor-recovery.mjs';
 import { verifyCarLiveInventory } from './car-live-inventory.mjs';
+import { collectCarD1Inventory } from './car-d1-inventory.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
 import { buildSceneLabV4Package,unwrapMeasuredSrt } from './scene-lab-package.mjs';
@@ -859,8 +860,12 @@ async function acceptPermanentDeepStage(env,job,output){
    // A future recovery submission must provide a complete independently verified
    // movie-wide unresolved inventory, and must not replace accepted decisions.
    if(output?.carRecovery){
-     const verifiedInventory=verifyCarLiveInventory(output.carRecovery.inventory);
-     if(!verifiedInventory.verified)throw Error('CAR live inventory denied: '+verifiedInventory.reason);
+     // Client-supplied inventories are not trusted. Reconcile both languages
+     // against this project's live D1 checkpoints before any CAR decision.
+     const d1Inventory=await collectCarD1Inventory(env,job.project_id,outputs,acceptedPermanentDeepBatches);
+     if(!d1Inventory.eligibility.verified)
+       throw Error('CAR live D1 inventory denied: '+d1Inventory.eligibility.reason);
+     const verifiedInventory=verifyCarLiveInventory(d1Inventory);
      const check=carEligibility({
        enabled:env.CAR_V1_1_ENABLED==='true',
        unresolvedSegmentIds:verifiedInventory.unresolvedSegmentIds,
@@ -1360,6 +1365,18 @@ async function route(request,env){
   }
   if(!url.pathname.startsWith('/v1/'))fail(404,'Route not found');
   await administrator(request,env);
+
+  // Read-only, administrator-authenticated CAR coverage diagnostic.
+  // No stage is resumed and no D1/R2 record is modified by this endpoint.
+  const carInventoryRoute=/^\/v1\/projects\/([a-f0-9-]{36})\/car\/inventory$/.exec(url.pathname);
+  if(method==='GET'&&carInventoryRoute){
+    const projectId=requireUUID(carInventoryRoute[1]);
+    await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR D1 inventory requires a V5 permanent Muse project');
+    const outputs=await priorOutputs(env,projectId);
+    return json({projectId,...await collectCarD1Inventory(env,projectId,outputs,acceptedPermanentDeepBatches)});
+  }
 
   if(method==='GET'&&url.pathname==='/v1/scene-lab/deep'){
     await ensureDeepTables(env);

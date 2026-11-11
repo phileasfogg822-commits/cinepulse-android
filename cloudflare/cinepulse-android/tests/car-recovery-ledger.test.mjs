@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger} from '../src/car-recovery-ledger.mjs';
+import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory} from '../src/car-recovery-ledger.mjs';
 const id='fed941ad-ff7f-4b0f-8439-25cfda24d187';
 const good=()=>({enabled:true,projectId:id,targetId:'english:81',inventory:{source:'d1_authoritative',complete:true,mutationPermitted:true,snapshotVersion:8,acceptedSegmentIds:[],recoveredSegmentIds:[],eligibility:{verified:true,unresolvedSegmentIds:['english:81']}},decision:{anchorMethod:'context',visualVerified:false,sourceCueIds:[480],museRequestId:'muse-123'}});
 test('disabled by default',()=>assert.equal(checkCarRecoveryWrite({...good(),enabled:false}).reason,'feature_disabled'));
@@ -28,4 +28,33 @@ test('recovered plus unresolved lifetime cap cannot exceed three',()=>{
 test('read-only D1 diagnostic cannot be used as write authorization',()=>{
  const x=good();x.inventory.source='d1_read_only';x.inventory.mutationPermitted=false;
  assert.equal(checkCarRecoveryWrite(x).reason,'inventory_not_authoritative');
+});
+
+test('D1 authorization never upgrades incomplete unknown coverage',()=>{
+ const snapshot={source:'d1_read_only',readOnly:true,mutationPermitted:false,
+  complete:false,snapshotVersion:12,unknownSegmentIds:['english:81'],
+  acceptedSegmentIds:[],recoveredSegmentIds:[]};
+ const verified={verified:true,snapshotVersion:12,unresolvedSegmentIds:['english:81'],lifetimeCount:1};
+ assert.equal(authorizeCarD1Inventory(snapshot,verified).authorized,false);
+});
+test('D1 authorization refuses mismatched snapshot versions',()=>{
+ const snapshot={source:'d1_read_only',readOnly:true,mutationPermitted:false,
+  complete:true,snapshotVersion:12,unknownSegmentIds:[],acceptedSegmentIds:[],recoveredSegmentIds:[]};
+ const verified={verified:true,snapshotVersion:13,unresolvedSegmentIds:['english:81'],lifetimeCount:1};
+ assert.equal(authorizeCarD1Inventory(snapshot,verified).authorized,false);
+});
+test('D1 authorization accepts only verified complete noncolliding snapshot',()=>{
+ const snapshot={source:'d1_read_only',readOnly:true,mutationPermitted:false,
+  complete:true,snapshotVersion:12,unknownSegmentIds:[],acceptedSegmentIds:['english:1'],recoveredSegmentIds:[]};
+ const verified={verified:true,snapshotVersion:12,unresolvedSegmentIds:['english:81'],lifetimeCount:1};
+ const result=authorizeCarD1Inventory(snapshot,verified);
+ assert.equal(result.authorized,true);
+ assert.equal(checkCarRecoveryWrite({...good(),inventory:result.inventory}).ok,true);
+ assert.equal(snapshot.mutationPermitted,false);
+});
+test('D1 authorization refuses unresolved collision with accepted decisions',()=>{
+ const snapshot={source:'d1_read_only',readOnly:true,mutationPermitted:false,
+  complete:true,snapshotVersion:12,unknownSegmentIds:[],acceptedSegmentIds:['english:81'],recoveredSegmentIds:[]};
+ const verified={verified:true,snapshotVersion:12,unresolvedSegmentIds:['english:81'],lifetimeCount:1};
+ assert.equal(authorizeCarD1Inventory(snapshot,verified).reason,'checkpoint_collision');
 });

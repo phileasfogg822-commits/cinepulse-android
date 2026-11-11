@@ -6,6 +6,7 @@
  */
 import {deepProductionProgress,loadProductionCues,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR} from './permanent-deep-muse.mjs';
 import {verifyCarLiveInventory} from './car-live-inventory.mjs';
+import {verifyCarSourceSrt} from './car-recovery-ledger.mjs';
 
 export function assembleCarD1Inventory({englishSrt,urduSrt,englishBatches=[],urduBatches=[],jobs=[]}={}){
  const parts={},accepted=[],unknown=[];
@@ -143,12 +144,13 @@ export function inspectCarRecoveryCandidate(audit,targetId){
  return {eligible:true,reason:'candidate_only',mutationPermitted:false,
   targetId,unrelatedUnknownCount:base.unknownSegmentIds.length-audit.verifiedSegmentIds.length};
 }
-export async function auditCarD1Evidence(env,projectId,priorOutputs,loadAccepted){
+export async function auditCarD1Evidence(env,projectId,priorOutputs,loadAccepted,sourceSrt){
  const base=await collectCarD1Inventory(env,projectId,priorOutputs,loadAccepted);
  const rows=await env.DB.prepare(
   "SELECT id,step_id,status,output,created_at FROM jobs WHERE project_id=? AND step_id IN (?,?) AND status='done' ORDER BY created_at ASC,rowid ASC"
  ).bind(projectId,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR).all();
  const jobs=rows.results||[],declarations=[];
+ const sourceChecked=typeof sourceSrt==='string'&&sourceSrt.trim().length>0;
  for(const job of jobs){
   let payload;
   try{payload=JSON.parse(job.output||'null')}catch{continue}
@@ -156,16 +158,17 @@ export async function auditCarD1Evidence(env,projectId,priorOutputs,loadAccepted
   for(const entry of (Array.isArray(payload?.unresolvedSegments)?payload.unresolvedSegments:[])){
    if(!Number.isSafeInteger(entry?.segmentIndex))continue;
    const id=language+':'+entry.segmentIndex;
-   if(base.unknownSegmentIds.includes(id))
+   if(base.unknownSegmentIds.includes(id)&&sourceChecked&&
+      verifyCarSourceSrt(sourceSrt,{sourceCueIds:entry.sourceCueIds,evidenceQuote:entry.sourceCueQuote}).verified)
     declarations.push({id,status:'unresolved',sourceJobId:job.id,snapshotVersion:base.snapshotVersion});
   }
  }
  const result=verifyCarMuseEvidence(base,jobs,declarations);
  return {source:'d1_read_only',projectId,inventory:base,
-  declaredCount:declarations.length,verifiedCount:result.verified?result.evidence.length:0,
-  verifiedSegmentIds:result.verified?result.evidence.map(item=>item.id):[],
-  evidenceStatus:result.verified?'verified':'not_verified',
-  reason:result.verified?null:result.reason,mutationPermitted:false};
+  declaredCount:declarations.length,verifiedCount:sourceChecked&&result.verified?result.evidence.length:0,
+  verifiedSegmentIds:sourceChecked&&result.verified?result.evidence.map(item=>item.id):[],
+  evidenceStatus:sourceChecked&&result.verified?'verified':'not_verified',
+  reason:!sourceChecked?'original_source_srt_required':result.verified?null:result.reason,mutationPermitted:false};
 }
 export async function collectCarD1Inventory(env,projectId,priorOutputs,loadAccepted){
  const [english,urdu,jobResult]=await Promise.all([

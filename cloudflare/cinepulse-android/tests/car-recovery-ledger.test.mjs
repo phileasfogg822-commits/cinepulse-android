@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints} from '../src/car-recovery-ledger.mjs';
+import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness} from '../src/car-recovery-ledger.mjs';
 const id='fed941ad-ff7f-4b0f-8439-25cfda24d187';
 const good=()=>({enabled:true,projectId:id,targetId:'english:81',inventory:{source:'d1_authoritative',complete:true,mutationPermitted:true,snapshotVersion:8,acceptedSegmentIds:[],recoveredSegmentIds:[],eligibility:{verified:true,unresolvedSegmentIds:['english:81']}},decision:{anchorMethod:'context',visualVerified:false,sourceCueIds:[480],museRequestId:'muse-123'}});
 test('disabled by default',()=>assert.equal(checkCarRecoveryWrite({...good(),enabled:false}).reason,'feature_disabled'));
@@ -131,4 +131,29 @@ test('CAR scoped write rejects changed Muse provenance before D1 access',async()
   audit,decision,sourceSrt:'25\n00:01:00,000 --> 00:01:04,000\nThe dragon flies over village.\n',enabled:true});
  assert.equal(result.reason,'recovery_evidence_differs_from_muse');
  assert.equal(calls,0);
+});
+
+test('CAR consumption readiness rejects stale and accepted targets',()=>{
+ const audit={source:'d1_read_only',evidenceStatus:'verified',
+  inventory:{snapshotVersion:8,acceptedSegmentIds:['english:80'],unknownSegmentIds:['english:81']},
+  verifiedSegmentIds:['english:81'],verifiedProvenance:[{targetId:'english:81',
+   sourceJobId:'job-1',sourceCueIds:[25],sourceCueQuote:'dragon flies over village',
+   museRequestId:'muse-123'}]};
+ const decision={anchorMethod:'context',visualVerified:false,sourceCueIds:[25],
+  evidenceQuote:'dragon flies over village',museRequestId:'muse-123'};
+ const sourceSrt='25\n00:01:00,000 --> 00:01:04,000\nThe dragon flies over village.\n';
+ const good=inspectScopedCarRecoveryReadiness({audit,sourceSrt,
+  checkpoints:[{targetId:'english:81',snapshotVersion:8,decision}]});
+ assert.equal(good.ready,true);assert.equal(good.resumeTriggered,false);
+ assert.equal(good.eligible[0].sourceJobId,'job-1');
+ const stale=inspectScopedCarRecoveryReadiness({audit,sourceSrt,
+  checkpoints:[{targetId:'english:81',snapshotVersion:7,decision}]});
+ assert.equal(stale.reason,'stale_or_colliding_checkpoint');
+ const accepted=inspectScopedCarRecoveryReadiness({audit,sourceSrt,
+  checkpoints:[{targetId:'english:80',snapshotVersion:8,decision}]});
+ assert.equal(accepted.ready,false);
+ const forged=inspectScopedCarRecoveryReadiness({audit,sourceSrt,
+  checkpoints:[{targetId:'english:81',snapshotVersion:8,
+   decision:{...decision,museRequestId:'different'}}]});
+ assert.equal(forged.reason,'source_provenance_mismatch');
 });

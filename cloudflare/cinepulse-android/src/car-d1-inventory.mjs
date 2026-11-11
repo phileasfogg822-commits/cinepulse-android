@@ -160,13 +160,18 @@ export async function auditCarD1Evidence(env,projectId,priorOutputs,loadAccepted
    const id=language+':'+entry.segmentIndex;
    if(base.unknownSegmentIds.includes(id)&&sourceChecked&&
       verifyCarSourceSrt(sourceSrt,{sourceCueIds:entry.sourceCueIds,evidenceQuote:entry.sourceCueQuote}).verified)
-    declarations.push({id,status:'unresolved',sourceJobId:job.id,snapshotVersion:base.snapshotVersion});
+    declarations.push({id,status:'unresolved',sourceJobId:job.id,snapshotVersion:base.snapshotVersion,
+      sourceCueIds:[...entry.sourceCueIds],sourceCueQuote:entry.sourceCueQuote,museRequestId:entry.museRequestId});
   }
  }
  const result=verifyCarMuseEvidence(base,jobs,declarations);
  return {source:'d1_read_only',projectId,inventory:base,
   declaredCount:declarations.length,verifiedCount:sourceChecked&&result.verified?result.evidence.length:0,
   verifiedSegmentIds:sourceChecked&&result.verified?result.evidence.map(item=>item.id):[],
+  verifiedProvenance:sourceChecked&&result.verified?declarations.map(item=>({
+   targetId:item.id,sourceJobId:item.sourceJobId,sourceCueIds:item.sourceCueIds,
+   sourceCueQuote:item.sourceCueQuote,museRequestId:item.museRequestId
+  })):[],
   evidenceStatus:sourceChecked&&result.verified?'verified':'not_verified',
   reason:!sourceChecked?'original_source_srt_required':result.verified?null:result.reason,mutationPermitted:false};
 }

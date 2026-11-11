@@ -9,4 +9,26 @@ test('D1 failure messages do not certify unresolved segments',()=>{const x=input
 test('missing Urdu measured SRT rejects instead of inferring coverage',()=>{const x=input();delete x.urduSrt;assert.throws(()=>assemble(x),/missing urdu/)});
 test('corrupt committed batch fails rather than silently skipping',()=>{const x=input();x.englishBatches=[{decisions:[{segmentIndex:2}]}];assert.throws(()=>assemble(x),/Corrupt|Incomplete/)});
 test('fully accepted D1 source is not eligible for recovery',()=>{const x=input();x.englishSrt=srt(5);x.urduBatches=[batch(2)];const i=assemble(x);assert.equal(i.complete,true);assert.equal(i.eligibility.verified,false);assert.equal(i.eligibility.reason,'no_unresolved')});
-test('collector queries D1 read-only and loads checkpoints for both languages',async()=>{const x=input(),queries=[];const db={prepare(sql){queries.push(sql);return{bind(...args){return{async all(){assert.equal(args.length,3);return{results:x.jobs}}}}}}}};const i=await collect({DB:db},'some-project',{srt_english:x.englishSrt,srt_urdu:x.urduSrt},async(_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[]);assert.equal(i.english.reviewed,5);assert.ok(queries.every(q=>/^SELECT /i.test(q)))});
+test('collector queries D1 read-only and loads checkpoints for both languages',async()=>{
+  const x=input(),queries=[];
+  const db={
+    prepare(sql){
+      queries.push(sql);
+      return {
+        bind(...args){
+          return {
+            async all(){
+              assert.equal(args.length,3);
+              return {results:x.jobs};
+            }
+          };
+        }
+      };
+    }
+  };
+  const i=await collect({DB:db},'some-project',
+    {srt_english:x.englishSrt,srt_urdu:x.urduSrt},
+    async (_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[]);
+  assert.equal(i.english.reviewed,5);
+  assert.ok(queries.every(q=>/^SELECT /i.test(q)));
+});

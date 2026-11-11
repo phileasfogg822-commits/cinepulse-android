@@ -121,6 +121,28 @@ export function reconcileCarEvidence(base,evidence=[]){
  * discovers declarations from D1 itself, not from a caller-provided list.
  * It cannot grant write access and does not alter ordinary Muse processing.
  */
+/**
+ * A narrowly scoped recovery candidate may be inspected without requiring
+ * the rest of the movie to finish. This is diagnostic only, never write
+ * authorization: atomic persistence and source-SRT validation are separate.
+ */
+export function inspectCarRecoveryCandidate(audit,targetId){
+ const base=audit?.inventory;
+ if(!base||base.source!=='d1_read_only'||!Array.isArray(base.unknownSegmentIds)||
+    typeof targetId!=='string'||! /^(english|urdu):[1-9][0-9]*$/.test(targetId))
+   return {eligible:false,reason:'invalid_candidate'};
+ if(base.acceptedSegmentIds?.includes(targetId))
+   return {eligible:false,reason:'already_accepted'};
+ if(!base.unknownSegmentIds.includes(targetId))
+   return {eligible:false,reason:'not_unknown'};
+ if(audit.evidenceStatus!=='verified'||!Array.isArray(audit.verifiedSegmentIds)||
+    !audit.verifiedSegmentIds.includes(targetId))
+   return {eligible:false,reason:'no_verified_muse_evidence'};
+ if(audit.verifiedSegmentIds.length>3)
+   return {eligible:false,reason:'recovery_limit_exceeded'};
+ return {eligible:true,reason:'candidate_only',mutationPermitted:false,
+  targetId,unrelatedUnknownCount:base.unknownSegmentIds.length-audit.verifiedSegmentIds.length};
+}
 export async function auditCarD1Evidence(env,projectId,priorOutputs,loadAccepted){
  const base=await collectCarD1Inventory(env,projectId,priorOutputs,loadAccepted);
  const rows=await env.DB.prepare(
@@ -141,6 +163,7 @@ export async function auditCarD1Evidence(env,projectId,priorOutputs,loadAccepted
  const result=verifyCarMuseEvidence(base,jobs,declarations);
  return {source:'d1_read_only',projectId,inventory:base,
   declaredCount:declarations.length,verifiedCount:result.verified?result.evidence.length:0,
+  verifiedSegmentIds:result.verified?result.evidence.map(item=>item.id):[],
   evidenceStatus:result.verified?'verified':'not_verified',
   reason:result.verified?null:result.reason,mutationPermitted:false};
 }

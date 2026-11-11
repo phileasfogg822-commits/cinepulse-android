@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt} from '../src/car-recovery-ledger.mjs';
+import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint} from '../src/car-recovery-ledger.mjs';
 const id='fed941ad-ff7f-4b0f-8439-25cfda24d187';
 const good=()=>({enabled:true,projectId:id,targetId:'english:81',inventory:{source:'d1_authoritative',complete:true,mutationPermitted:true,snapshotVersion:8,acceptedSegmentIds:[],recoveredSegmentIds:[],eligibility:{verified:true,unresolvedSegmentIds:['english:81']}},decision:{anchorMethod:'context',visualVerified:false,sourceCueIds:[480],museRequestId:'muse-123'}});
 test('disabled by default',()=>assert.equal(checkCarRecoveryWrite({...good(),enabled:false}).reason,'feature_disabled'));
@@ -69,4 +69,31 @@ test('CAR source verifier rejects missing or duplicate cue evidence',()=>{
  const source='25\n00:01:00,000 --> 00:01:04,000\nThe dragon is flying over the village.\n';
  assert.equal(verifyCarSourceSrt(source,{sourceCueIds:[],evidenceQuote:'dragon is flying'}).reason,'missing_source_provenance');
  assert.equal(verifyCarSourceSrt(source+ '\n'+source,{sourceCueIds:[25],evidenceQuote:'dragon is flying'}).reason,'duplicate_source_cue');
+});
+
+test('scoped CAR checkpoint rejects unverified candidate without D1 mutation',async()=>{
+ let calls=0;
+ const env={DB:{prepare(){calls++;throw Error('unexpected database write')}}};
+ const audit={projectId:id,source:'d1_read_only',mutationPermitted:false,
+  inventory:{source:'d1_read_only',readOnly:true,snapshotVersion:100,acceptedSegmentIds:[],unknownSegmentIds:['english:81']},
+  evidenceStatus:'not_verified',verifiedSegmentIds:[]};
+ const result=await insertScopedCarRecoveryCheckpoint(env,{projectId:id,targetId:'english:81',audit,enabled:true});
+ assert.equal(result.saved,false);assert.equal(result.reason,'candidate_not_verified');assert.equal(calls,0);
+});
+test('scoped CAR checkpoint performs single conditional CAR-only insert',async()=>{
+ const queries=[],bindings=[];
+ const env={DB:{prepare(sql){queries.push(sql);return {bind(...args){bindings.push(args);return {async run(){return {meta:{changes:1}}}}}}}}};
+ const audit={projectId:id,source:'d1_read_only',mutationPermitted:false,
+  inventory:{source:'d1_read_only',readOnly:true,snapshotVersion:100,acceptedSegmentIds:[],unknownSegmentIds:['english:81']},
+  evidenceStatus:'verified',verifiedSegmentIds:['english:81']};
+ const decision={anchorMethod:'context',visualVerified:false,sourceCueIds:[25],
+  evidenceQuote:'dragon flies over village',museRequestId:'muse-123'};
+ const result=await insertScopedCarRecoveryCheckpoint(env,{projectId:id,targetId:'english:81',
+  audit,decision,sourceSrt:'25\n00:01:00,000 --> 00:01:04,000\nThe dragon flies over village.\n',enabled:true});
+ assert.equal(result.saved,true);assert.equal(queries.length,1);
+ assert.match(queries[0],/INSERT INTO car_recovery_checkpoints/);
+ assert.match(queries[0],/COUNT\(\*\)/);
+ assert.match(queries[0],/MAX\(created_at\)/);
+ assert.doesNotMatch(queries[0],/UPDATE jobs|DELETE FROM jobs/);
+ assert.equal(bindings[0][9],100);
 });

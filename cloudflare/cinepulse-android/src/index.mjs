@@ -7,6 +7,7 @@ import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { carEligibility } from './context-anchor-recovery.mjs';
 import { verifyCarLiveInventory } from './car-live-inventory.mjs';
 import { collectCarD1Inventory,auditCarD1Evidence,inspectCarRecoveryCandidate } from './car-d1-inventory.mjs';
+import { ensureCarRecoveryLedger,insertScopedCarRecoveryCheckpoint } from './car-recovery-ledger.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
 import { buildSceneLabV4Package,unwrapMeasuredSrt } from './scene-lab-package.mjs';
@@ -1392,6 +1393,62 @@ async function route(request,env){
     const audit=await auditCarD1Evidence(env,projectId,outputs,acceptedPermanentDeepBatches,await original.text());
     const target=url.searchParams.get('target');
     return json(target?{...audit,candidate:inspectCarRecoveryCandidate(audit,target)}:audit);
+  }
+
+  // CAR-only, administrator-authenticated checkpoint submission. Never mutates
+  // accepted V5 batches, jobs, project state or the normal movie queue.
+  const carCheckpointRoute=new RegExp('^/v1/projects/([a-f0-9-]{36})/car/checkpoint
+  if(method==='POST'&&carCheckpointRoute){
+    if(env.CAR_V1_1_ENABLED!=='true')fail(403,'CAR recovery is disabled');
+    const projectId=requireUUID(carCheckpointRoute[1]);
+    const project=await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR requires a V5 permanent Muse project');
+    const body=await getJson(request);
+    const targetId=body?.targetId,decision=body?.decision;
+    if(typeof targetId!=='string'||! /^(english|urdu):[1-9][0-9]*$/.test(targetId))
+      fail(422,'CAR targetId must be an English or Urdu segment');
+    const original=await env.FILES.get(project.source_srt_key||objectKey(projectId,'source_srt'));
+    if(!original)fail(409,'Original movie source SRT unavailable');
+    const sourceSrt=await original.text();
+    const outputs=await priorOutputs(env,projectId);
+    const audit=await auditCarD1Evidence(env,projectId,outputs,acceptedPermanentDeepBatches,sourceSrt);
+    const candidate=inspectCarRecoveryCandidate(audit,targetId);
+    if(!candidate.eligible)fail(409,'CAR target denied: '+candidate.reason);
+    await ensureCarRecoveryLedger(env);
+    const result=await insertScopedCarRecoveryCheckpoint(env,{
+      projectId,targetId,audit,decision,sourceSrt,enabled:true
+    });
+    if(!result.saved)fail(409,'CAR checkpoint denied: '+result.reason);
+    return json({projectId,targetId,status:'checkpoint_saved',resumeTriggered:false,
+      normalPipelineUnchanged:true,mutationScope:result.mutationScope},201);
+  }
+
+).exec(url.pathname);
+  if(method==='POST'&&carCheckpointRoute){
+    if(env.CAR_V1_1_ENABLED!=='true')fail(403,'CAR recovery is disabled');
+    const projectId=requireUUID(carCheckpointRoute[1]);
+    const project=await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR requires a V5 permanent Muse project');
+    const body=await getJson(request);
+    const targetId=body?.targetId,decision=body?.decision;
+    if(typeof targetId!=='string'||! /^(english|urdu):[1-9][0-9]*$/.test(targetId))
+      fail(422,'CAR targetId must be an English or Urdu segment');
+    const original=await env.FILES.get(project.source_srt_key||objectKey(projectId,'source_srt'));
+    if(!original)fail(409,'Original movie source SRT unavailable');
+    const sourceSrt=await original.text();
+    const outputs=await priorOutputs(env,projectId);
+    const audit=await auditCarD1Evidence(env,projectId,outputs,acceptedPermanentDeepBatches,sourceSrt);
+    const candidate=inspectCarRecoveryCandidate(audit,targetId);
+    if(!candidate.eligible)fail(409,'CAR target denied: '+candidate.reason);
+    await ensureCarRecoveryLedger(env);
+    const result=await insertScopedCarRecoveryCheckpoint(env,{
+      projectId,targetId,audit,decision,sourceSrt,enabled:true
+    });
+    if(!result.saved)fail(409,'CAR checkpoint denied: '+result.reason);
+    return json({projectId,targetId,status:'checkpoint_saved',resumeTriggered:false,
+      normalPipelineUnchanged:true,mutationScope:result.mutationScope},201);
   }
 
   if(method==='GET'&&url.pathname==='/v1/scene-lab/deep'){

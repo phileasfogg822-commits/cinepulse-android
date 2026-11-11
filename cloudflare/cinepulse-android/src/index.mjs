@@ -1397,8 +1397,8 @@ async function route(request,env){
 
   // CAR-only, administrator-authenticated checkpoint submission. Never mutates
   // accepted V5 batches, jobs, project state or the normal movie queue.
-  const carCheckpointRoute=new RegExp('^/v1/projects/([a-f0-9-]{36})/car/checkpoint
-  if(method==='POST'&&carCheckpointRoute){
+  const carCheckpointRoute=/^\/v1\/projects\/([a-f0-9-]{36})\/car\/checkpoint/.exec(url.pathname);
+  if(method==='POST'&&carCheckpointRoute&&url.pathname===carCheckpointRoute[0]){
     if(env.CAR_V1_1_ENABLED!=='true')fail(403,'CAR recovery is disabled');
     const projectId=requireUUID(carCheckpointRoute[1]);
     const project=await getProject(env,projectId);

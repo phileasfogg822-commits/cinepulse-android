@@ -153,3 +153,28 @@ export async function insertScopedCarRecoveryCheckpoint(env,{projectId,targetId,
   reason:(result.meta?.changes||0)===1?'inserted':'stale_duplicate_or_limit',
   mutationScope:'car_recovery_checkpoints_only'};
 }
+
+/**
+ * Load the bounded durable recovery ledger without changing V5 jobs or batches.
+ * Never promote a checkpoint into an accepted scene automatically.
+ */
+export async function loadScopedCarRecoveryCheckpoints(env,projectId){
+ if(!validId(projectId))throw Error('invalid_car_project');
+ const rows=await env.DB.prepare(
+  'SELECT target_id,snapshot_version,decision_json,created_at FROM car_recovery_checkpoints WHERE project_id=? ORDER BY created_at ASC,target_id ASC LIMIT 4'
+ ).bind(projectId).all();
+ const result=[];
+ for(const row of rows.results||[]){
+  if(!validTarget(row.target_id)||!Number.isSafeInteger(row.snapshot_version))
+   throw Error('corrupt_car_checkpoint');
+  let decision;
+  try{decision=JSON.parse(row.decision_json)}catch{throw Error('corrupt_car_checkpoint')}
+  if(!decision||decision.anchorMethod!=='context'||decision.visualVerified!==false||
+     !Array.isArray(decision.sourceCueIds)||!decision.sourceCueIds.length)
+   throw Error('corrupt_car_checkpoint');
+  result.push({targetId:row.target_id,snapshotVersion:row.snapshot_version,
+   decision,createdAt:row.created_at});
+ }
+ if(result.length>3)throw Error('car_recovery_limit_exceeded');
+ return result;
+}

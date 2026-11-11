@@ -131,7 +131,7 @@ export async function auditCarD1Evidence(env,projectId,priorOutputs,loadAccepted
   let payload;
   try{payload=JSON.parse(job.output||'null')}catch{continue}
   const language=job.step_id===PERMANENT_DEEP_MATCH_EN?'english':'urdu';
-  for(const entry of payload?.unresolvedSegments||[]){
+  for(const entry of (Array.isArray(payload?.unresolvedSegments)?payload.unresolvedSegments:[])){
    if(!Number.isSafeInteger(entry?.segmentIndex))continue;
    const id=language+':'+entry.segmentIndex;
    if(base.unknownSegmentIds.includes(id))

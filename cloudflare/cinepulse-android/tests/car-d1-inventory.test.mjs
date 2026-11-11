@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {assembleCarD1Inventory as assemble,collectCarD1Inventory as collect,reconcileCarEvidence,verifyCarMuseEvidence,auditCarD1Evidence} from '../src/car-d1-inventory.mjs';
+import {assembleCarD1Inventory as assemble,collectCarD1Inventory as collect,reconcileCarEvidence,verifyCarMuseEvidence,auditCarD1Evidence,inspectCarRecoveryCandidate} from '../src/car-d1-inventory.mjs';
 const srt=(n)=>Array.from({length:n},(_,i)=>String(i+1)+'\n00:00:'+String(i*2).padStart(2,'0')+',000 --> 00:00:'+String(i*2+1).padStart(2,'0')+',000\nNarration '+(i+1)+'\n').join('\n');
 const batch=(n)=>({decisions:Array.from({length:n},(_,i)=>({segmentIndex:i+1}))});
 const input=()=>({englishSrt:srt(6),urduSrt:srt(2),englishBatches:[batch(5)],urduBatches:[],jobs:[{id:'a',step_id:'deep_match_english',status:'done',created_at:100}]});
@@ -116,4 +116,24 @@ test('operational D1 audit does not invent declarations from error jobs',async()
  assert.equal(result.declaredCount,0);
  assert.equal(result.verifiedCount,0);
  assert.equal(result.mutationPermitted,false);
+});
+
+test('bounded CAR candidate does not wait for unrelated unfinished segments',()=>{
+ const base=assemble(input());
+ const audit={inventory:base,evidenceStatus:'verified',verifiedSegmentIds:['english:6']};
+ const result=inspectCarRecoveryCandidate(audit,'english:6');
+ assert.equal(result.eligible,true);
+ assert.equal(result.unrelatedUnknownCount,2);
+ assert.equal(result.mutationPermitted,false);
+});
+test('bounded CAR candidate rejects unknown segment without durable evidence',()=>{
+ const base=assemble(input());
+ const audit={inventory:base,evidenceStatus:'verified',verifiedSegmentIds:['english:6']};
+ assert.equal(inspectCarRecoveryCandidate(audit,'urdu:1').reason,'no_verified_muse_evidence');
+ assert.equal(inspectCarRecoveryCandidate(audit,'english:1').reason,'already_accepted');
+});
+test('bounded CAR candidate enforces three-segment cap without touching production',()=>{
+ const base=assemble(input());
+ const audit={inventory:base,evidenceStatus:'verified',verifiedSegmentIds:['english:6','urdu:1','urdu:2','english:7']};
+ assert.equal(inspectCarRecoveryCandidate(audit,'english:6').reason,'recovery_limit_exceeded');
 });

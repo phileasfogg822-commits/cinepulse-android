@@ -38,6 +38,34 @@ export async function ensureCarRecoveryLedger(env){
   PRIMARY KEY(project_id,target_id)
  )`).run();
 }
+/**
+ * Prepare an authorization envelope from a fully reconciled D1 snapshot.
+ * This function NEVER promotes unknown segments into unresolved ones.
+ * The inventory must have been checked by verifyCarLiveInventory upstream.
+ */
+export function authorizeCarD1Inventory(snapshot,verified){
+ if(!snapshot||snapshot.source!=='d1_read_only'||snapshot.readOnly!==true||
+    snapshot.mutationPermitted!==false||snapshot.complete!==true||
+    !verified||verified.verified!==true||
+    verified.snapshotVersion!==snapshot.snapshotVersion||
+    !Array.isArray(snapshot.unknownSegmentIds)||snapshot.unknownSegmentIds.length!==0||
+    !Array.isArray(snapshot.acceptedSegmentIds)||
+    !Array.isArray(snapshot.recoveredSegmentIds)||
+    !Array.isArray(verified.unresolvedSegmentIds)||
+    verified.unresolvedSegmentIds.length<1||verified.lifetimeCount>3)
+   return {authorized:false,reason:'unverified_d1_snapshot'};
+ const unresolved=new Set(verified.unresolvedSegmentIds);
+ if(snapshot.acceptedSegmentIds.some(id=>unresolved.has(id))||
+    snapshot.recoveredSegmentIds.some(id=>unresolved.has(id)))
+   return {authorized:false,reason:'checkpoint_collision'};
+ return {authorized:true,inventory:{
+  source:'d1_authoritative',snapshotVersion:snapshot.snapshotVersion,
+  complete:true,mutationPermitted:true,
+  acceptedSegmentIds:[...snapshot.acceptedSegmentIds],
+  recoveredSegmentIds:[...snapshot.recoveredSegmentIds],
+  eligibility:{verified:true,unresolvedSegmentIds:[...verified.unresolvedSegmentIds]}
+ }};
+}
 export async function insertCarRecoveryCheckpoint(env,args){
  const check=checkCarRecoveryWrite(args);
  if(!check.ok)return {saved:false,reason:check.reason};

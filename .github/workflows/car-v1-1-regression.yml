@@ -5,8 +5,11 @@ on:
     branches: [fix/car-v1-1-isolated-recovery-20261111]
     paths:
       - 'cloudflare/cinepulse-android/src/context-anchor-recovery.mjs'
+      - 'cloudflare/cinepulse-android/src/car-live-inventory.mjs'
+      - 'cloudflare/cinepulse-android/src/index.mjs'
       - 'cloudflare/cinepulse-android/src/car-six-film-diagnostics.mjs'
       - 'cloudflare/cinepulse-android/tests/context-anchor-recovery.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/car-live-inventory.test.mjs'
       - 'cloudflare/cinepulse-android/tests/car-six-film-diagnostics.test.mjs'
       - '.github/workflows/car-v1-1-regression.yml'
 jobs:
@@ -19,4 +22,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test cloudflare/cinepulse-android/tests/context-anchor-recovery.test.mjs cloudflare/cinepulse-android/tests/car-six-film-diagnostics.test.mjs
+      - run: node --test cloudflare/cinepulse-android/tests/context-anchor-recovery.test.mjs cloudflare/cinepulse-android/tests/car-six-film-diagnostics.test.mjs cloudflare/cinepulse-android/tests/car-live-inventory.test.mjs

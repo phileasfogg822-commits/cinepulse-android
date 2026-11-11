@@ -28,6 +28,35 @@ export function checkCarRecoveryWrite({projectId,targetId,inventory,decision,ena
    return {ok:false,reason:'unverified_recovery_decision'};
  return {ok:true};
 }
+/**
+ * Check literal source-cue provenance against the original movie SRT.
+ * Does not modify or bypass the normal V5 batch validator.
+ */
+export function verifyCarSourceSrt(sourceSrt,decision){
+ if(typeof sourceSrt!=='string'||!sourceSrt.trim()||
+    !decision||!Array.isArray(decision.sourceCueIds)||!decision.sourceCueIds.length||
+    typeof decision.evidenceQuote!=='string'||!decision.evidenceQuote.trim())
+  return {verified:false,reason:'missing_source_provenance'};
+ const cues=new Map();
+ for(const block of sourceSrt.replace(/\r/g,'').split(/\n\s*\n/)){
+  const lines=block.trim().split('\n');
+  if(lines.length<3||!/^\d+$/.test(lines[0].trim())||!lines[1].includes('-->'))continue;
+  const id=Number(lines[0].trim());
+  if(cues.has(id))return {verified:false,reason:'duplicate_source_cue'};
+  cues.set(id,lines.slice(2).join(' '));
+ }
+ const selected=[];
+ for(const id of decision.sourceCueIds){
+  if(!Number.isSafeInteger(id)||id<1||!cues.has(id))
+   return {verified:false,reason:'source_cue_not_found'};
+  selected.push(cues.get(id));
+ }
+ const normalize=t=>t.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g,' ').trim();
+ const quote=normalize(decision.evidenceQuote);
+ if(quote.length<8||!normalize(selected.join(' ')).includes(quote))
+  return {verified:false,reason:'source_quote_mismatch'};
+ return {verified:true,sourceCueCount:selected.length};
+}
 export async function ensureCarRecoveryLedger(env){
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS car_recovery_checkpoints (
   project_id TEXT NOT NULL,

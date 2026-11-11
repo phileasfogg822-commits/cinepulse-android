@@ -220,3 +220,30 @@ export function inspectScopedCarRecoveryReadiness({audit,checkpoints,sourceSrt}=
  return {ready:eligible.length>0,reason:eligible.length?'verified_read_only':'no_checkpoints',
   eligible,resumeTriggered:false};
 }
+
+/**
+ * Project-scoped, immutable recovery handoff plan. A handoff is not a queue
+ * operation and cannot be treated as authorization to alter accepted V5 jobs.
+ */
+export function buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints}={}){
+ if(!validId(projectId)||readiness?.ready!==true||
+    !Array.isArray(readiness.eligible)||!readiness.eligible.length||
+    readiness.eligible.length>3||!Array.isArray(checkpoints))
+  return {authorized:false,reason:'recovery_not_ready',targets:[]};
+ const byId=new Map(checkpoints.map(row=>[row.targetId,row]));
+ if(byId.size!==checkpoints.length)return {authorized:false,reason:'duplicate_checkpoints',targets:[]};
+ const targets=[];
+ for(const item of readiness.eligible){
+  const row=byId.get(item.targetId);
+  if(!row||!validTarget(item.targetId)||row.snapshotVersion!==item.snapshotVersion||
+     !item.sourceJobId||!row.decision||row.decision.visualVerified!==false)
+   return {authorized:false,reason:'handoff_checkpoint_mismatch',targets:[]};
+  targets.push({targetId:item.targetId,sourceJobId:item.sourceJobId,
+   snapshotVersion:item.snapshotVersion,anchorMethod:'context',
+   visualVerified:false,requiresIndependentProductionValidation:true});
+ }
+ if(new Set(targets.map(t=>t.targetId)).size!==targets.length)
+  return {authorized:false,reason:'duplicate_targets',targets:[]};
+ return {authorized:true,reason:'read_only_handoff',projectId,targets,
+  enqueueAllowed:false,acceptedJobsMutable:false,resumeTriggered:false};
+}

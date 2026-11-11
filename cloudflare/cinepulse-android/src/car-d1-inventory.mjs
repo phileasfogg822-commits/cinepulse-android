@@ -116,6 +116,34 @@ export function reconcileCarEvidence(base,evidence=[]){
  copy.readOnly=true;
  return copy;
 }
+/**
+ * Operational read-only evidence audit. Unlike the earlier helpers this
+ * discovers declarations from D1 itself, not from a caller-provided list.
+ * It cannot grant write access and does not alter ordinary Muse processing.
+ */
+export async function auditCarD1Evidence(env,projectId,priorOutputs,loadAccepted){
+ const base=await collectCarD1Inventory(env,projectId,priorOutputs,loadAccepted);
+ const rows=await env.DB.prepare(
+  "SELECT id,step_id,status,output,created_at FROM jobs WHERE project_id=? AND step_id IN (?,?) AND status='done' ORDER BY created_at ASC,rowid ASC"
+ ).bind(projectId,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR).all();
+ const jobs=rows.results||[],declarations=[];
+ for(const job of jobs){
+  let payload;
+  try{payload=JSON.parse(job.output||'null')}catch{continue}
+  const language=job.step_id===PERMANENT_DEEP_MATCH_EN?'english':'urdu';
+  for(const entry of payload?.unresolvedSegments||[]){
+   if(!Number.isSafeInteger(entry?.segmentIndex))continue;
+   const id=language+':'+entry.segmentIndex;
+   if(base.unknownSegmentIds.includes(id))
+    declarations.push({id,status:'unresolved',sourceJobId:job.id,snapshotVersion:base.snapshotVersion});
+  }
+ }
+ const result=verifyCarMuseEvidence(base,jobs,declarations);
+ return {source:'d1_read_only',projectId,inventory:base,
+  declaredCount:declarations.length,verifiedCount:result.verified?result.evidence.length:0,
+  evidenceStatus:result.verified?'verified':'not_verified',
+  reason:result.verified?null:result.reason,mutationPermitted:false};
+}
 export async function collectCarD1Inventory(env,projectId,priorOutputs,loadAccepted){
  const [english,urdu,jobResult]=await Promise.all([
   loadAccepted(env,projectId,PERMANENT_DEEP_MATCH_EN),

@@ -7,7 +7,7 @@ import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { carEligibility } from './context-anchor-recovery.mjs';
 import { verifyCarLiveInventory } from './car-live-inventory.mjs';
 import { collectCarD1Inventory,auditCarD1Evidence,inspectCarRecoveryCandidate } from './car-d1-inventory.mjs';
-import { ensureCarRecoveryLedger,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness } from './car-recovery-ledger.mjs';
+import { ensureCarRecoveryLedger,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff } from './car-recovery-ledger.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
 import { buildSceneLabV4Package,unwrapMeasuredSrt } from './scene-lab-package.mjs';
@@ -1400,7 +1400,8 @@ async function route(request,env){
     const readiness=inspectScopedCarRecoveryReadiness({
       audit,checkpoints,sourceSrt:await original.text()
     });
-    return json({...audit,checkpoints,readiness,
+    const handoff=buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints});
+    return json({...audit,checkpoints,readiness,handoff,
       candidate:target?inspectCarRecoveryCandidate(audit,target):null,
       resumeTriggered:false,acceptedCheckpointsUnchanged:true});
   }

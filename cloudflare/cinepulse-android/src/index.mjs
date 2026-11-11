@@ -6,7 +6,7 @@ import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANE
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { carEligibility } from './context-anchor-recovery.mjs';
 import { verifyCarLiveInventory } from './car-live-inventory.mjs';
-import { collectCarD1Inventory } from './car-d1-inventory.mjs';
+import { collectCarD1Inventory,auditCarD1Evidence,inspectCarRecoveryCandidate } from './car-d1-inventory.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
 import { buildSceneLabV4Package,unwrapMeasuredSrt } from './scene-lab-package.mjs';
@@ -1376,6 +1376,22 @@ async function route(request,env){
     if(!policy.permanentDeep)fail(403,'CAR D1 inventory requires a V5 permanent Muse project');
     const outputs=await priorOutputs(env,projectId);
     return json({projectId,...await collectCarD1Inventory(env,projectId,outputs,acceptedPermanentDeepBatches)});
+  }
+
+  // Administrator-only, read-only operational CAR audit. This route does not
+  // advance, lease, pause or alter any normal movie job.
+  const carAuditRoute=/^\\/v1\\/projects\\/([a-f0-9-]{36})\\/car\\/audit$/.exec(url.pathname);
+  if(method==='GET'&&carAuditRoute){
+    const projectId=requireUUID(carAuditRoute[1]);
+    const project=await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR audit requires a V5 permanent Muse project');
+    const original=await env.FILES.get(project.source_srt_key||objectKey(projectId,'source_srt'));
+    if(!original)fail(409,'Original movie source SRT unavailable for CAR audit');
+    const outputs=await priorOutputs(env,projectId);
+    const audit=await auditCarD1Evidence(env,projectId,outputs,acceptedPermanentDeepBatches,await original.text());
+    const target=url.searchParams.get('target');
+    return json(target?{...audit,candidate:inspectCarRecoveryCandidate(audit,target)}:audit);
   }
 
   if(method==='GET'&&url.pathname==='/v1/scene-lab/deep'){

@@ -4,6 +4,7 @@ import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATC
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
+import { carEligibility } from './context-anchor-recovery.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
 import { buildSceneLabV4Package,unwrapMeasuredSrt } from './scene-lab-package.mjs';
@@ -852,6 +853,22 @@ async function acceptPermanentDeepStage(env,job,output){
    const accepted=await acceptedPermanentDeepBatches(env,job.project_id,job.step_id);
    const source=await env.FILES.get(movie.source_srt_key);
    if(!source)throw Error('Original movie subtitles missing');
+   // CAR v1.1 integration guard: normal Muse submissions are unchanged.
+   // Recovery is never inferred from a 422 or a partial five-segment batch.
+   // A future recovery submission must provide a complete independently verified
+   // movie-wide unresolved inventory, and must not replace accepted decisions.
+   if(output?.carRecovery){
+     const inventory=output.carRecovery.liveUnresolvedSegmentIds;
+     const check=carEligibility({
+       enabled:env.CAR_V1_1_ENABLED==='true' && output.carRecovery.inventoryVerified===true,
+       unresolvedSegmentIds:inventory,
+       acceptedSegmentIds:[
+         ...accepted.flatMap(batch=>batch.decisions||[]).map(d=>language+':'+d.segmentIndex)
+       ]
+     });
+     if(!check.eligible)throw Error('CAR recovery denied: '+check.reason);
+     throw Error('CAR recovery persistence not yet authorized: atomic checkpoint integration required');
+   }
    const verified=validateProductionDeepBatch(language,cues,await source.text(),accepted,output);
    const now=nowSeconds();
    const updated=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")

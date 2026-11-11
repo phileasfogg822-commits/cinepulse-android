@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness} from '../src/car-recovery-ledger.mjs';
+import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff} from '../src/car-recovery-ledger.mjs';
 const id='fed941ad-ff7f-4b0f-8439-25cfda24d187';
 const good=()=>({enabled:true,projectId:id,targetId:'english:81',inventory:{source:'d1_authoritative',complete:true,mutationPermitted:true,snapshotVersion:8,acceptedSegmentIds:[],recoveredSegmentIds:[],eligibility:{verified:true,unresolvedSegmentIds:['english:81']}},decision:{anchorMethod:'context',visualVerified:false,sourceCueIds:[480],museRequestId:'muse-123'}});
 test('disabled by default',()=>assert.equal(checkCarRecoveryWrite({...good(),enabled:false}).reason,'feature_disabled'));
@@ -156,4 +156,22 @@ test('CAR consumption readiness rejects stale and accepted targets',()=>{
   checkpoints:[{targetId:'english:81',snapshotVersion:8,
    decision:{...decision,museRequestId:'different'}}]});
  assert.equal(forged.reason,'source_provenance_mismatch');
+});
+
+test('CAR handoff is project scoped, immutable and cannot enqueue jobs',()=>{
+ const checkpoints=[{targetId:'english:81',snapshotVersion:12,
+  decision:{visualVerified:false,anchorMethod:'context'}}];
+ const readiness={ready:true,eligible:[{targetId:'english:81',
+  snapshotVersion:12,sourceJobId:'muse-job-1'}]};
+ const result=buildScopedCarRecoveryHandoff({projectId:id,readiness,checkpoints});
+ assert.equal(result.authorized,true);
+ assert.equal(result.projectId,id);
+ assert.equal(result.targets.length,1);
+ assert.equal(result.enqueueAllowed,false);
+ assert.equal(result.acceptedJobsMutable,false);
+ assert.equal(result.resumeTriggered,false);
+ const stale=buildScopedCarRecoveryHandoff({projectId:id,readiness:{
+  ready:true,eligible:[{...readiness.eligible[0],snapshotVersion:13}]},checkpoints});
+ assert.equal(stale.authorized,false);
+ assert.equal(stale.reason,'handoff_checkpoint_mismatch');
 });

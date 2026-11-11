@@ -9,12 +9,18 @@ const validTarget=x=>typeof x==='string'&&/^(english|urdu):[1-9][0-9]*$/.test(x)
 export function checkCarRecoveryWrite({projectId,targetId,inventory,decision,enabled=false}={}){
  if(!enabled)return {ok:false,reason:'feature_disabled'};
  if(!validId(projectId)||!validTarget(targetId))return {ok:false,reason:'invalid_target'};
- if(!inventory||inventory.eligibility?.verified!==true||inventory.complete!==true||
-    inventory.mutationPermitted!==true||!Number.isSafeInteger(inventory.snapshotVersion))
+ if(!inventory||inventory.source!=='d1_authoritative'||inventory.eligibility?.verified!==true||
+    inventory.complete!==true||inventory.mutationPermitted!==true||
+    !Number.isSafeInteger(inventory.snapshotVersion))
    return {ok:false,reason:'inventory_not_authoritative'};
  if(!Array.isArray(inventory.eligibility.unresolvedSegmentIds)||
     !inventory.eligibility.unresolvedSegmentIds.includes(targetId)||
-    inventory.eligibility.unresolvedSegmentIds.length>3)
+    inventory.eligibility.unresolvedSegmentIds.length>3||
+    !Array.isArray(inventory.acceptedSegmentIds)||
+    inventory.acceptedSegmentIds.includes(targetId)||
+    !Array.isArray(inventory.recoveredSegmentIds)||
+    inventory.recoveredSegmentIds.includes(targetId)||
+    inventory.eligibility.unresolvedSegmentIds.length+inventory.recoveredSegmentIds.length>3)
    return {ok:false,reason:'target_not_unresolved'};
  if(!decision||decision.visualVerified!==false||decision.anchorMethod!=='context'||
     !Array.isArray(decision.sourceCueIds)||decision.sourceCueIds.length<1||

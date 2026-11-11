@@ -85,7 +85,9 @@ test('scoped CAR checkpoint performs single conditional CAR-only insert',async()
  const env={DB:{prepare(sql){queries.push(sql);return {bind(...args){bindings.push(args);return {async run(){return {meta:{changes:1}}}}}}}}};
  const audit={projectId:id,source:'d1_read_only',mutationPermitted:false,
   inventory:{source:'d1_read_only',readOnly:true,snapshotVersion:100,acceptedSegmentIds:[],unknownSegmentIds:['english:81']},
-  evidenceStatus:'verified',verifiedSegmentIds:['english:81']};
+  evidenceStatus:'verified',verifiedSegmentIds:['english:81'],verifiedProvenance:[{
+   targetId:'english:81',sourceJobId:'job-123',sourceCueIds:[25],
+   sourceCueQuote:'dragon flies over village',museRequestId:'muse-123'}]};
  const decision={anchorMethod:'context',visualVerified:false,sourceCueIds:[25],
   evidenceQuote:'dragon flies over village',museRequestId:'muse-123'};
  const result=await insertScopedCarRecoveryCheckpoint(env,{projectId:id,targetId:'english:81',
@@ -112,4 +114,21 @@ test('durable CAR reader fails closed on corrupt stored decisions',async()=>{
  const env={DB:{prepare(){return {bind(){return {async all(){return {results:[
   {target_id:'urdu:4',snapshot_version:9,decision_json:'not-json',created_at:1}]}}}}}}}};
  await assert.rejects(loadScopedCarRecoveryCheckpoints(env,id),/corrupt_car_checkpoint/);
+});
+
+test('CAR scoped write rejects changed Muse provenance before D1 access',async()=>{
+ let calls=0;
+ const env={DB:{prepare(){calls++;throw Error('unexpected database access')}}};
+ const audit={projectId:id,source:'d1_read_only',mutationPermitted:false,
+  inventory:{source:'d1_read_only',readOnly:true,snapshotVersion:100,
+   acceptedSegmentIds:[],unknownSegmentIds:['english:81']},
+  evidenceStatus:'verified',verifiedSegmentIds:['english:81'],
+  verifiedProvenance:[{targetId:'english:81',sourceJobId:'job-123',
+   sourceCueIds:[25],sourceCueQuote:'dragon flies over village',museRequestId:'muse-123'}]};
+ const decision={anchorMethod:'context',visualVerified:false,sourceCueIds:[25],
+  evidenceQuote:'dragon flies over village',museRequestId:'forged-456'};
+ const result=await insertScopedCarRecoveryCheckpoint(env,{projectId:id,targetId:'english:81',
+  audit,decision,sourceSrt:'25\n00:01:00,000 --> 00:01:04,000\nThe dragon flies over village.\n',enabled:true});
+ assert.equal(result.reason,'recovery_evidence_differs_from_muse');
+ assert.equal(calls,0);
 });

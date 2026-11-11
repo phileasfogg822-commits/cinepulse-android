@@ -26,4 +26,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test cloudflare/cinepulse-android/tests/context-anchor-recovery.test.mjs cloudflare/cinepulse-android/tests/car-six-film-diagnostics.test.mjs cloudflare/cinepulse-android/tests/car-live-inventory.test.mjs cloudflare/cinepulse-android/tests/car-d1-inventory.test.mjs cloudflare/cinepulse-android/tests/car-recovery-ledger.test.mjs
+      - name: Check backend and CAR module syntax
+        run: |
+          node --check cloudflare/cinepulse-android/src/index.mjs
+          node --check cloudflare/cinepulse-android/src/car-d1-inventory.mjs
+          node --check cloudflare/cinepulse-android/src/car-recovery-ledger.mjs
+      - name: Install backend test dependencies
+        working-directory: cloudflare/cinepulse-android
+        run: npm install --no-audit --no-fund
+      - name: Run full Cloudflare backend regression suite
+        working-directory: cloudflare/cinepulse-android
+        run: npm test

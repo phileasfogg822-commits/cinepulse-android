@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory} from '../src/car-recovery-ledger.mjs';
+import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt} from '../src/car-recovery-ledger.mjs';
 const id='fed941ad-ff7f-4b0f-8439-25cfda24d187';
 const good=()=>({enabled:true,projectId:id,targetId:'english:81',inventory:{source:'d1_authoritative',complete:true,mutationPermitted:true,snapshotVersion:8,acceptedSegmentIds:[],recoveredSegmentIds:[],eligibility:{verified:true,unresolvedSegmentIds:['english:81']}},decision:{anchorMethod:'context',visualVerified:false,sourceCueIds:[480],museRequestId:'muse-123'}});
 test('disabled by default',()=>assert.equal(checkCarRecoveryWrite({...good(),enabled:false}).reason,'feature_disabled'));
@@ -57,4 +57,16 @@ test('D1 authorization refuses unresolved collision with accepted decisions',()=
   complete:true,snapshotVersion:12,unknownSegmentIds:[],acceptedSegmentIds:['english:81'],recoveredSegmentIds:[]};
  const verified={verified:true,snapshotVersion:12,unresolvedSegmentIds:['english:81'],lifetimeCount:1};
  assert.equal(authorizeCarD1Inventory(snapshot,verified).reason,'checkpoint_collision');
+});
+
+test('CAR source quote must occur in the original source cue',()=>{
+ const source='25\n00:01:00,000 --> 00:01:04,000\nThe dragon is flying over the village.\n\n26\n00:01:05,000 --> 00:01:08,000\nThe villagers run away.\n';
+ assert.equal(verifyCarSourceSrt(source,{sourceCueIds:[25],evidenceQuote:'dragon is flying over the village'}).verified,true);
+ assert.equal(verifyCarSourceSrt(source,{sourceCueIds:[25],evidenceQuote:'the hero defeats the villain'}).reason,'source_quote_mismatch');
+ assert.equal(verifyCarSourceSrt(source,{sourceCueIds:[999],evidenceQuote:'dragon is flying'}).reason,'source_cue_not_found');
+});
+test('CAR source verifier rejects missing or duplicate cue evidence',()=>{
+ const source='25\n00:01:00,000 --> 00:01:04,000\nThe dragon is flying over the village.\n';
+ assert.equal(verifyCarSourceSrt(source,{sourceCueIds:[],evidenceQuote:'dragon is flying'}).reason,'missing_source_provenance');
+ assert.equal(verifyCarSourceSrt(source+ '\n'+source,{sourceCueIds:[25],evidenceQuote:'dragon is flying'}).reason,'duplicate_source_cue');
 });

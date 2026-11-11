@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {assembleCarD1Inventory as assemble,collectCarD1Inventory as collect,reconcileCarEvidence} from '../src/car-d1-inventory.mjs';
+import {assembleCarD1Inventory as assemble,collectCarD1Inventory as collect,reconcileCarEvidence,verifyCarMuseEvidence} from '../src/car-d1-inventory.mjs';
 const srt=(n)=>Array.from({length:n},(_,i)=>String(i+1)+'\n00:00:'+String(i*2).padStart(2,'0')+',000 --> 00:00:'+String(i*2+1).padStart(2,'0')+',000\nNarration '+(i+1)+'\n').join('\n');
 const batch=(n)=>({decisions:Array.from({length:n},(_,i)=>({segmentIndex:i+1}))});
 const input=()=>({englishSrt:srt(6),urduSrt:srt(2),englishBatches:[batch(5)],urduBatches:[],jobs:[{id:'a',step_id:'deep_match_english',status:'done',created_at:100}]});
@@ -69,4 +69,29 @@ test('more than three lifetime unresolved segments are rejected',()=>{
  const extra={...base,unknownSegmentIds:['english:6','urdu:1','urdu:2','english:7'],
  english:{...base.english,segments:[...base.english.segments,{index:7,status:'unknown'}],total:7}};
  assert.equal(extra.unknownSegmentIds.length,4);
+});
+
+test('failed Muse job text never certifies a segment as unresolved',()=>{
+ const base=assemble(input()),row={id:'j1',step_id:'deep_match_english',status:'error',output:'{"unresolvedSegments":[{"segmentIndex":6}]}'};const e=[{id:'english:6',sourceJobId:'j1',status:'unresolved',snapshotVersion:100}];
+ assert.equal(verifyCarMuseEvidence(base,[row],e).verified,false);
+});
+test('client-provided verified flag cannot replace durable Muse evidence',()=>{
+ const base=assemble(input()),row={id:'j1',step_id:'deep_match_english',status:'done',output:'{}'};const e=[{id:'english:6',sourceJobId:'j1',status:'unresolved',snapshotVersion:100,verifiedByProduction:true}];
+ assert.equal(verifyCarMuseEvidence(base,[row],e).reason,'missing_explicit_muse_segment_evidence');
+});
+test('valid explicit completed Muse segment evidence is reconciled but remains read-only',()=>{
+ const base=assemble(input()),row={id:'j1',step_id:'deep_match_english',status:'done',output:JSON.stringify({unresolvedSegments:[{segmentIndex:6,status:'unresolved',reviewedByMuse:true,sourceCueQuote:'quoted original movie',sourceCueIds:[25],museRequestId:'muse-123'}]})};
+ const e=[{id:'english:6',sourceJobId:'j1',status:'unresolved',snapshotVersion:100}];
+ const verified=verifyCarMuseEvidence(base,[row],e);
+ assert.equal(verified.verified,true);
+ const result=reconcileCarEvidence(base,verified.evidence);
+ assert.equal(result.mutationPermitted,false);
+ assert.deepEqual(result.unknownSegmentIds,['urdu:1','urdu:2']);
+});
+test('wrong language and stale version reject otherwise complete evidence',()=>{
+ const base=assemble(input()),row={id:'j1',step_id:'deep_match_urdu',status:'done',output:JSON.stringify({unresolvedSegments:[{segmentIndex:6,status:'unresolved',reviewedByMuse:true,sourceCueQuote:'source',sourceCueIds:[25],museRequestId:'muse-123'}]})};
+ const e=[{id:'english:6',sourceJobId:'j1',status:'unresolved',snapshotVersion:100}];
+ assert.equal(verifyCarMuseEvidence(base,[row],e).verified,false);
+ row.step_id='deep_match_english';e[0].snapshotVersion=99;
+ assert.equal(verifyCarMuseEvidence(base,[row],e).verified,false);
 });

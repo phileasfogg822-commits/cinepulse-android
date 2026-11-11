@@ -99,13 +99,15 @@ test('wrong language and stale version reject otherwise complete evidence',()=>{
 test('operational D1 audit reads durable declarations without mutating ordinary jobs',async()=>{
  const x=input(),sql=[];
  const jobs=[{id:'j1',step_id:'deep_match_english',status:'done',created_at:100,
- output:JSON.stringify({unresolvedSegments:[{segmentIndex:6,status:'unresolved',reviewedByMuse:true,sourceCueQuote:'source',sourceCueIds:[25],museRequestId:'muse-123'}]})}];
+ output:JSON.stringify({unresolvedSegments:[{segmentIndex:6,status:'unresolved',reviewedByMuse:true,sourceCueQuote:'dragon flies over village',sourceCueIds:[25],museRequestId:'muse-123'}]})}];
  const db={prepare(query){sql.push(query);return {bind(){return {async all(){return {results:query.includes('status=\'done\'')?jobs:x.jobs}}}}}}};
  const result=await auditCarD1Evidence({DB:db},'project',{srt_english:x.englishSrt,srt_urdu:x.urduSrt},
-  async (_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[]);
+  async (_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[],
+  '25\n00:01:00,000 --> 00:01:04,000\nThe dragon flies over village.\n');
  assert.equal(result.declaredCount,1);
  assert.equal(result.verifiedCount,1);
  assert.equal(result.mutationPermitted,false);
+ assert.equal(result.evidenceStatus,'verified');
  assert.ok(sql.every(q=>q.trim().startsWith('SELECT ')));
 });
 test('operational D1 audit does not invent declarations from error jobs',async()=>{
@@ -136,4 +138,16 @@ test('bounded CAR candidate enforces three-segment cap without touching producti
  const base=assemble(input());
  const audit={inventory:base,evidenceStatus:'verified',verifiedSegmentIds:['english:6','urdu:1','urdu:2','english:7']};
  assert.equal(inspectCarRecoveryCandidate(audit,'english:6').reason,'recovery_limit_exceeded');
+});
+
+test('D1 audit rejects fabricated quotes even from completed Muse jobs',async()=>{
+ const x=input();
+ const jobs=[{id:'j1',step_id:'deep_match_english',status:'done',created_at:100,
+ output:JSON.stringify({unresolvedSegments:[{segmentIndex:6,status:'unresolved',reviewedByMuse:true,sourceCueQuote:'fabricated movie dialogue',sourceCueIds:[25],museRequestId:'muse-123'}]})}];
+ const db={prepare(query){return {bind(){return {async all(){return {results:query.includes("status='done'")?jobs:x.jobs}}}}}}};
+ const result=await auditCarD1Evidence({DB:db},'project',{srt_english:x.englishSrt,srt_urdu:x.urduSrt},
+  async (_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[],
+  '25\n00:01:00,000 --> 00:01:04,000\nThe dragon flies over village.\n');
+ assert.equal(result.verifiedCount,0);
+ assert.equal(result.mutationPermitted,false);
 });

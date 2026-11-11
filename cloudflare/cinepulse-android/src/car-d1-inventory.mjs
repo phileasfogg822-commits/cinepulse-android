@@ -46,6 +46,41 @@ export function assembleCarD1Inventory({englishSrt,urduSrt,englishBatches=[],urd
  * are not evidence. This is an opt-in pure reconciler; the read-only endpoint
  * deliberately continues to use assembleCarD1Inventory until evidence exists.
  */
+/**
+ * Validate a per-segment unresolved declaration against the actual D1 job row.
+ * This never trusts a client's verifiedByProduction boolean. A failed job is
+ * only diagnostic; it cannot certify a segment by itself.
+ */
+export function verifyCarMuseEvidence(base,jobRows,evidence){
+ if(!base||base.source!=='d1_read_only'||!Array.isArray(base.unknownSegmentIds)||
+    !Array.isArray(jobRows)||!Array.isArray(evidence))
+   return {verified:false,reason:'missing_d1_evidence'};
+ const jobs=new Map(jobRows.map(row=>[row.id,row]));
+ const seen=new Set(),verified=[];
+ for(const item of evidence){
+  const job=jobs.get(item?.sourceJobId);
+  const language=String(item?.id||'').split(':')[0];
+  const expectedStage=language==='english'?PERMANENT_DEEP_MATCH_EN:PERMANENT_DEEP_MATCH_UR;
+  if(!job||!base.unknownSegmentIds.includes(item.id)||seen.has(item.id)||
+     job.step_id!==expectedStage||job.status!=='done'||
+     !Number.isSafeInteger(item.snapshotVersion)||item.snapshotVersion!==base.snapshotVersion||
+     item.status!=='unresolved')
+   return {verified:false,reason:'unverified_or_stale_job_evidence'};
+  let payload;
+  try{payload=typeof job.output==='string'?JSON.parse(job.output):job.output}catch{return {verified:false,reason:'corrupt_muse_evidence'}}
+  const index=Number(item.id.split(':')[1]);
+  const entry=payload?.unresolvedSegments?.find(x=>x?.segmentIndex===index);
+  if(!entry||entry.status!=='unresolved'||entry.reviewedByMuse!==true||
+     typeof entry.sourceCueQuote!=='string'||!entry.sourceCueQuote.trim()||
+     !Array.isArray(entry.sourceCueIds)||entry.sourceCueIds.length===0||
+     typeof entry.museRequestId!=='string'||entry.museRequestId.length<6)
+   return {verified:false,reason:'missing_explicit_muse_segment_evidence'};
+  seen.add(item.id);
+  verified.push({id:item.id,status:'unresolved',sourceJobId:job.id,
+   snapshotVersion:base.snapshotVersion,verifiedByProduction:true});
+ }
+ return {verified:true,evidence:verified};
+}
 export function reconcileCarEvidence(base,evidence=[]){
  if(!base||base.source!=='d1_read_only'||!Array.isArray(base.unknownSegmentIds))
    throw Error('CAR requires live D1 base inventory');

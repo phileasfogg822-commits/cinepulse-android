@@ -250,6 +250,9 @@ export function buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints}=
  // Never combine recovery decisions audited against different D1 snapshots.
  if(new Set(targets.map(t=>t.snapshotVersion)).size!==1)
   return {authorized:false,reason:'mixed_snapshot_versions',targets:[]};
+ // Job identity must be one-to-one with the verified recovery targets.
+ if(new Set(targets.map(t=>t.sourceJobId)).size!==targets.length)
+  return {authorized:false,reason:'duplicate_source_jobs',targets:[]};
  return {authorized:true,reason:'read_only_handoff',projectId,targets,
   enqueueAllowed:false,acceptedJobsMutable:false,resumeTriggered:false};
 }

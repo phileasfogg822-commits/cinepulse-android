@@ -430,6 +430,7 @@ test('real SQLite CAR production enqueue creates one job and blocks concurrent d
  try{
   db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY,worker_id TEXT,status TEXT);
    CREATE TABLE workers(id TEXT PRIMARY KEY,enabled INTEGER,paused INTEGER);
+    CREATE TABLE cinepulse_movie_controls(project_id TEXT PRIMARY KEY,paused INTEGER NOT NULL DEFAULT 0,stopped INTEGER NOT NULL DEFAULT 0);
    CREATE TABLE jobs(id TEXT PRIMARY KEY,project_id TEXT,worker_id TEXT,
     step_id TEXT,status TEXT,prompt TEXT,created_at INTEGER,output TEXT);
    CREATE TABLE car_recovery_dispatch_claims(project_id TEXT,target_id TEXT,
@@ -474,6 +475,7 @@ test('real SQLite CAR enqueue refuses wrong worker and existing active movie job
  try{
   db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY,worker_id TEXT,status TEXT);
    CREATE TABLE workers(id TEXT PRIMARY KEY,enabled INTEGER,paused INTEGER);
+    CREATE TABLE cinepulse_movie_controls(project_id TEXT PRIMARY KEY,paused INTEGER NOT NULL DEFAULT 0,stopped INTEGER NOT NULL DEFAULT 0);
    CREATE TABLE jobs(id TEXT PRIMARY KEY,project_id TEXT,worker_id TEXT,
     step_id TEXT,status TEXT,prompt TEXT,created_at INTEGER);
    CREATE TABLE car_recovery_dispatch_claims(project_id TEXT,target_id TEXT,
@@ -500,6 +502,13 @@ test('real SQLite CAR enqueue refuses wrong worker and existing active movie job
    .reason,'queue_guard_rejected');
   assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n,1);
   db.prepare('DELETE FROM jobs WHERE id=?').run('active');
+  db.prepare('INSERT INTO cinepulse_movie_controls VALUES(?,?,?)').run(projectId,1,0);
+  assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,workerId:'worker-1'}))
+   .reason,'queue_guard_rejected','paused movie must not enqueue');
+  db.prepare('UPDATE cinepulse_movie_controls SET paused=0,stopped=1 WHERE project_id=?').run(projectId);
+  assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,workerId:'worker-1'}))
+   .reason,'queue_guard_rejected','stopped movie must not enqueue');
+  db.prepare('UPDATE cinepulse_movie_controls SET stopped=0 WHERE project_id=?').run(projectId);
   for(const status of ['processing','paused','ready','done']){
    db.prepare('UPDATE projects SET status=? WHERE id=?').run(status,projectId);
    assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,workerId:'worker-1'}))
@@ -578,11 +587,11 @@ test('real SQLite CAR outbox refuses changed claims before writing rows',async()
 });
 
 test('CAR dispatch inspection rejects non-review movies, active jobs and paused workers',async()=>{
- const inspect=async({status='needs_review',active=0,enabled=1,paused=0}={})=>{
+ const inspect=async({status='needs_review',active=0,enabled=1,paused=0,moviePaused=0,movieStopped=0}={})=>{
   const env={DB:{prepare(sql){
    return {bind(){
     return {first:async()=>{
-     if(sql.includes('FROM projects'))return {id:projectId,worker_id:'worker-1',status};
+     if(sql.includes('FROM projects'))return {id:projectId,worker_id:'worker-1',status,control_paused:moviePaused,control_stopped:movieStopped};
      if(sql.includes('FROM jobs'))return {n:active};
      if(sql.includes('FROM workers'))return {enabled,paused};
      throw Error('unexpected query');
@@ -598,4 +607,6 @@ test('CAR dispatch inspection rejects non-review movies, active jobs and paused 
  assert.equal((await inspect({active:1})).reason,'movie_has_active_jobs');
  assert.equal((await inspect({paused:1})).reason,'worker_unavailable_or_paused');
  assert.equal((await inspect({enabled:0})).reason,'worker_unavailable_or_paused');
+ assert.equal((await inspect({moviePaused:1})).reason,'movie_control_blocks_recovery');
+ assert.equal((await inspect({movieStopped:1})).reason,'movie_control_blocks_recovery');
 });

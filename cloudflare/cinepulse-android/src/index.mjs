@@ -1062,7 +1062,8 @@ async function route(request,env){
     const tail='/'+parts.slice(3).join('/');
     // CAR worker audit: existing worker token, own movie only, D1/R2 through
     // backend bindings. No Cloudflare D1 REST token or mutation authorization.
-    const carWorkerAudit=/^\\/projects\\/([a-f0-9-]{36})\\/car\\/audit$/.exec(tail);
+    const carWorkerParts=tail.split('/');
+    const carWorkerAudit=carWorkerParts.length===5 && carWorkerParts[1]==='projects' && carWorkerParts[3]==='car' && carWorkerParts[4]==='audit' ? [tail,carWorkerParts[2]] : null;
     if(method==='GET'&&carWorkerAudit){
       const pid=requireUUID(carWorkerAudit[1]);
       const movie=await getProject(env,pid);

@@ -113,7 +113,12 @@ export async function stageCarRecoveryReservations(env,{
        AND (snapshot_version<>? OR target_id NOT IN
          (SELECT json_extract(value,'$.targetId') FROM json_each(?))))
      AND NOT EXISTS (SELECT 1 FROM car_recovery_checkpoints WHERE project_id=?
-       AND json_extract(decision_json,'$.museRequestId') IS NULL)
+       AND (json_type(decision_json,'$.museRequestId')<>'text'
+         OR length(trim(json_extract(decision_json,'$.museRequestId')))<6
+         OR json_type(decision_json,'$.sourceCueIds')<>'array'
+         OR json_array_length(decision_json,'$.sourceCueIds')<1
+         OR json_extract(decision_json,'$.anchorMethod')<>'context'
+         OR json_extract(decision_json,'$.visualVerified')<>0))
      AND (SELECT COALESCE(MAX(created_at),0) FROM jobs
           WHERE project_id=? AND step_id IN ('deep_match_english','deep_match_urdu'))<=?`;
   const result=await env.DB.prepare(sql).bind(

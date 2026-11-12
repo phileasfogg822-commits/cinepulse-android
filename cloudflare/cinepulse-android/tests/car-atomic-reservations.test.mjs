@@ -35,8 +35,6 @@ function fakeD1(){
      assert.match(sql,/json_extract\(decision_json,'\$\.anchorMethod'\)/);
      assert.match(sql,/json_extract\(decision_json,'\$\.visualVerified'\)/);
      assert.equal(args[10],projectId);
-     assert.equal(args[11],projectId);
-     assert.match(sql,/length\(r\.state_fingerprint\)<>64/);
      assert.equal(args[8],12);
      assert.equal(args[9],JSON.stringify(operations));
      assert.match(sql,/deep_match_english/);

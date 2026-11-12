@@ -54,3 +54,41 @@ export async function validateCarStableD1Window({readFingerprint,validateProduct
  return {validated:true,reason:'stable_read_only_validation',
   fingerprint:before,enqueueAllowed:false,resumeTriggered:false};
 }
+
+/**
+ * Validate a prospective recovery batch before any transactional write.
+ * The executor must still re-check all invariants inside its D1 transaction.
+ */
+export function planAtomicCarRecovery({handoff,proof,productionResults}={}){
+ const deny=reason=>({prepared:false,reason,operations:[],enqueueAllowed:false});
+ if(handoff?.authorized!==true||handoff.enqueueAllowed!==false||
+    handoff.acceptedJobsMutable!==false||handoff.resumeTriggered!==false||
+    !Array.isArray(handoff.targets)||handoff.targets.length<1||
+    handoff.targets.length>3||proof?.verified!==true||
+    proof.projectId!==handoff.projectId||
+    proof.acceptedJobsUnchanged!==true||proof.unresolvedTargetsVerified!==true||
+    !Array.isArray(productionResults))
+  return deny('unverified_atomic_recovery_input');
+ const byTarget=new Map();
+ for(const r of productionResults){
+  if(typeof r?.targetId!=='string'||byTarget.has(r.targetId))
+   return deny('duplicate_production_result');
+  byTarget.set(r.targetId,r);
+ }
+ if(byTarget.size!==handoff.targets.length)return deny('incomplete_production_coverage');
+ const operations=[],seenJobs=new Set();
+ for(const t of handoff.targets){
+  const r=byTarget.get(t.targetId);
+  if(!r||r.valid!==true||r.productionValidated!==true||
+     r.targetId!==t.targetId||r.sourceJobId!==t.sourceJobId||
+     r.snapshotVersion!==t.snapshotVersion||
+     proof.snapshotVersion!==t.snapshotVersion||
+     seenJobs.has(t.sourceJobId))
+   return deny('invalid_production_target');
+  seenJobs.add(t.sourceJobId);
+  operations.push(Object.freeze({targetId:t.targetId,sourceJobId:t.sourceJobId,
+   snapshotVersion:t.snapshotVersion}));
+ }
+ return {prepared:true,reason:'transaction_required',operations,
+  projectId:handoff.projectId,enqueueAllowed:false,resumeTriggered:false};
+}

@@ -461,7 +461,7 @@ export async function inspectCarMovieDispatchControls(env,{projectId}={}){
    'SELECT p.id,p.worker_id,p.status FROM projects p WHERE p.id=?'
   ).bind(projectId).first();
   if(!project?.worker_id)return reject('project_or_worker_missing');
-  if(['stopped','paused','cancelled','canceled'].includes(String(project.status||'').toLowerCase()))
+  if(String(project.status||'').toLowerCase()!=='needs_review')
    return reject('movie_control_blocks_recovery');
   const active=await env.DB.prepare(
    "SELECT COUNT(*) AS n FROM jobs WHERE project_id=? AND status IN ('queued','working')"

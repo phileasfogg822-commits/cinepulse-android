@@ -1,0 +1,30 @@
+name: CinePulse Muse worker CAR read-only audit regression
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/car-muse-worker-audit-20261112
+      - feature/scene-intelligence-v3828-staging
+    paths:
+      - '.github/workflows/car-muse-worker-audit-regression.yml'
+      - 'cloudflare/cinepulse-android/src/index.mjs'
+      - 'cloudflare/cinepulse-android/tests/car-worker-audit-route.test.mjs'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Backend source syntax and CAR route uniqueness
+        run: |
+          node --check cloudflare/cinepulse-android/src/index.mjs
+          node --check cloudflare/cinepulse-android/tests/car-worker-audit-route.test.mjs
+      - name: Full backend regression including authenticated D1/R2 audit
+        working-directory: cloudflare/cinepulse-android
+        run: |
+          npm install --no-audit --no-fund
+          npm test

@@ -200,6 +200,17 @@ export function inspectScopedCarRecoveryReadiness({audit,checkpoints,sourceSrt}=
  const accepted=new Set(audit.inventory.acceptedSegmentIds||[]);
  const unknown=new Set(audit.inventory.unknownSegmentIds||[]);
  const verified=new Set(audit.verifiedSegmentIds||[]);
+ // Every unknown movie segment must have independent Muse evidence; otherwise
+ // a partial job can masquerade as a complete <=3-segment recovery inventory.
+ if(unknown.size!==audit.inventory.unknownSegmentIds?.length||
+    verified.size!==audit.verifiedSegmentIds?.length||
+    unknown.size!==verified.size||verified.size<1||verified.size>3||
+    [...unknown].some(id=>!verified.has(id)||accepted.has(id)))
+  return {ready:false,reason:'incomplete_movie_unresolved_coverage',eligible:[]};
+ // Do not silently hand off one checkpoint while other unresolved segments
+ // are still awaiting a checkpoint. Recovery must cover the full set.
+ if(checkpoints.length!==verified.size)
+  return {ready:false,reason:'incomplete_recovery_checkpoint_coverage',eligible:[]};
  const seen=new Set(),eligible=[];
  for(const checkpoint of checkpoints){
   const target=checkpoint?.targetId,decision=checkpoint?.decision;

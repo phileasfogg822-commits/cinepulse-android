@@ -30,7 +30,10 @@ function fakeD1(){
      assert.match(sql,/car_recovery_checkpoints/);
      assert.match(sql,/snapshot_version<>\?/);
      assert.match(sql,/target_id NOT IN/);
-     assert.match(sql,/json_extract\(decision_json,'\$\.museRequestId'\) IS NULL/);
+     assert.match(sql,/json_type\(decision_json,'\$\.museRequestId'\)/);
+     assert.match(sql,/json_array_length\(decision_json,'\$\.sourceCueIds'\)/);
+     assert.match(sql,/json_extract\(decision_json,'\$\.anchorMethod'\)/);
+     assert.match(sql,/json_extract\(decision_json,'\$\.visualVerified'\)/);
      assert.equal(args[10],projectId);
      assert.equal(args[8],12);
      assert.equal(args[9],JSON.stringify(operations));

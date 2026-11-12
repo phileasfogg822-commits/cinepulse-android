@@ -28,6 +28,10 @@ function fakeD1(){
      assert.match(sql,/FROM json_each\(\?\)/);
      assert.match(sql,/NOT EXISTS \(SELECT 1 FROM car_recovery_reservations/);
      assert.match(sql,/car_recovery_checkpoints/);
+     assert.match(sql,/snapshot_version<>\?/);
+     assert.match(sql,/target_id NOT IN/);
+     assert.equal(args[8],12);
+     assert.equal(args[9],JSON.stringify(operations));
      assert.match(sql,/deep_match_english/);
      const ops=JSON.parse(args[3]);
      if(rows.length)return {meta:{changes:0}};

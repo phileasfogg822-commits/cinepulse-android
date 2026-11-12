@@ -135,6 +135,9 @@ test('CAR execution intent exact retry is idempotent and conflict fails closed',
    return {async all(){return {results:rows.map(r=>({...r}))};},
     async run(){
      if(!sql.includes('INSERT INTO car_recovery_execution_intents'))throw Error('unexpected write');
+     assert.match(sql,/car_recovery_checkpoints c/);
+     assert.match(sql,/c\.snapshot_version=r\.snapshot_version/);
+     assert.equal(args[8],projectId);
      if(rows.length)return {meta:{changes:0}};
      for(const op of JSON.parse(args[2]))rows.push({
       target_id:op.targetId,source_job_id:op.sourceJobId,

@@ -1060,6 +1060,44 @@ async function route(request,env){
   if(parts[1]==='w'&&parts.length>=4){
     const wid=parts[2],worker=await authWorker(request,env,wid);
     const tail='/'+parts.slice(3).join('/');
+    // CAR worker audit: existing worker token, own movie only, D1/R2 through
+    // backend bindings. No Cloudflare D1 REST token or mutation authorization.
+    const carWorkerParts=tail.split('/');
+    const carWorkerAudit=carWorkerParts.length===5 && carWorkerParts[1]==='projects' && carWorkerParts[3]==='car' && carWorkerParts[4]==='audit' ? [tail,carWorkerParts[2]] : null;
+    if(method==='GET'&&carWorkerAudit){
+      const pid=requireUUID(carWorkerAudit[1]);
+      const movie=await getProject(env,pid);
+      if(movie.worker_id!==wid)fail(403,'This movie belongs to a different worker');
+      if(!(await projectPolicy(env,pid)).permanentDeep)
+        fail(403,'CAR evidence audit requires a permanent V5 Muse movie');
+      const original=await env.FILES.get(movie.source_srt_key||objectKey(pid,'source_srt'));
+      if(!original)fail(409,'Original movie SRT missing for CAR audit');
+      const outputs=await priorOutputs(env,pid);
+      const audit=await auditCarD1Evidence(env,pid,outputs,acceptedPermanentDeepBatches,await original.text());
+      const unknown=audit.inventory?.unknownSegmentIds||[];
+      const verified=audit.verifiedSegmentIds||[];
+      const exact=verified.length>0&&verified.length<=3&&
+        unknown.length===verified.length&&unknown.every(id=>verified.includes(id));
+      const eligible=exact&&audit.evidenceStatus==='verified'&&
+        !Number(movie.control_paused)&&!Number(movie.control_stopped);
+      return json({projectId:pid,workerId:wid,projectStatus:movie.status,
+        moviePaused:!!Number(movie.control_paused),movieStopped:!!Number(movie.control_stopped),
+        snapshotVersion:audit.inventory?.snapshotVersion,
+        sourceSrtAvailable:true,englishSegments:audit.inventory?.english?.total||0,
+        urduSegments:audit.inventory?.urdu?.total||0,
+        acceptedCount:audit.inventory?.acceptedSegmentIds?.length||0,
+        unknownCount:unknown.length,verifiedCount:verified.length,
+        verifiedTargets:verified.slice(0,3),
+        evidenceStatus:audit.evidenceStatus,
+        evidenceReason:audit.reason||null,candidateReady:eligible,
+        reason:eligible?'verified_bounded_candidates_only':
+          audit.evidenceStatus!=='verified'?'unverified_source_provenance':
+          !exact?'unresolved_inventory_incomplete_or_over_limit':
+          'movie_paused_or_stopped',
+        readOnly:true,recoveryDispatchEnabled:false,
+        recoveryResultAcceptanceEnabled:false,
+        acceptedJobsUnchanged:true,resumeTriggered:false});
+    }
     const urduVoiceRescue=/^\/projects\/([a-f0-9-]{36})\/audio\/urdu-devanagari\/resume$/.exec(tail);
     if(method==='POST'&&urduVoiceRescue)
       return json(await resumeControlledUrduPronunciation(env,requireUUID(urduVoiceRescue[1]),wid),201);

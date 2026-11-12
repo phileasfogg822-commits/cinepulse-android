@@ -323,3 +323,45 @@ test('dispatch claims are disabled without a verified handoff and never authoriz
  assert.equal((await stageCarDispatchClaims(env,{enabled:true,
   handoff:{...handoff,enqueueAllowed:true}})).reason,'unverified_dispatch_handoff');
 });
+
+test('real SQLite stages dispatch claims exactly once after reservations and intents',async()=>{
+ const {DatabaseSync}=await import('node:sqlite');
+ const db=new DatabaseSync(':memory:');
+ try{
+  db.exec(`CREATE TABLE jobs(id TEXT PRIMARY KEY,project_id TEXT,step_id TEXT,created_at INTEGER,output TEXT);
+   CREATE TABLE car_recovery_checkpoints(project_id TEXT,target_id TEXT,snapshot_version INTEGER,
+    decision_json TEXT,created_at INTEGER,PRIMARY KEY(project_id,target_id));`);
+  const decision=JSON.stringify({museRequestId:'muse-request-123',
+   sourceCueIds:[1],anchorMethod:'context',visualVerified:false});
+  for(const op of operations){
+   db.prepare('INSERT INTO jobs VALUES(?,?,?,?,?)').run(op.sourceJobId,projectId,
+    op.targetId.startsWith('english:')?'deep_match_english':'deep_match_urdu',
+    12,'accepted-original');
+   db.prepare('INSERT INTO car_recovery_checkpoints VALUES(?,?,?,?,?)').run(
+    projectId,op.targetId,12,decision,12);
+  }
+  const env={DB:{prepare(sql){
+   const stmt=db.prepare(sql);
+   return {run:async()=>({meta:{changes:Number(stmt.run().changes)}}),
+    bind(...args){return {
+     run:async()=>({meta:{changes:Number(stmt.run(...args).changes)}}),
+     all:async()=>({results:stmt.all(...args)})
+    };}};
+  }}};
+  assert.equal((await stageCarRecoveryReservations(env,{manifest,stateFingerprint:hash,
+   enabled:true,validateFreshProduction:validProof})).reserved,true);
+  assert.equal((await stageCarExecutionIntents(env,{projectId,operations,enabled:true})).staged,true);
+  const handoff=await inspectCarDispatchHandoff(env,{projectId,operations});
+  assert.equal(handoff.ready,true);
+  const first=await stageCarDispatchClaims(env,{handoff,enabled:true});
+  assert.equal(first.claimed,true);
+  assert.equal(first.count,2);
+  assert.equal(first.enqueueAllowed,false);
+  const retry=await stageCarDispatchClaims(env,{handoff,enabled:true});
+  assert.equal(retry.claimed,true);
+  assert.equal(retry.idempotent,true);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_dispatch_claims').get().n,2);
+  assert.deepEqual(db.prepare('SELECT output FROM jobs ORDER BY id').all().map(r=>r.output),
+   ['accepted-original','accepted-original']);
+ }finally{db.close();}
+});

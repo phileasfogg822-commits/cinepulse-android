@@ -1,0 +1,26 @@
+name: CAR live recovery integration
+on:
+  push:
+    branches: [fix/car-live-recovery-20261112]
+  pull_request:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - 'cloudflare/cinepulse-android/**'
+      - '.github/workflows/car-live-recovery.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax and complete backend regression
+        working-directory: cloudflare/cinepulse-android
+        run: |
+          node --check src/index.mjs
+          node --check src/car-live-recovery.mjs
+          npm test

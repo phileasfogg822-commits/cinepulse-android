@@ -97,3 +97,12 @@ test('CAR worker audit reads D1/R2 using existing Worker bindings with no recove
  assert.ok(queries.every(sql=>!/\b(?:INSERT|UPDATE|DELETE|DROP|ALTER)\b/i.test(sql)));
  assert.ok(!JSON.stringify(body).includes('One source movie cue'));
 });
+
+test('controlled recovery POST rejects unauthenticated, other-worker and unenabled projects',async()=>{
+ const url=endpoint.replace('/audit','/recover');
+ for(const [options,bearer,expected] of [[{},null,401],[{owner:false},token,403],[{},token,403]]){
+  const {env}=await fixture(options);
+  const response=await worker.fetch(new Request(url,{method:'POST',headers:{'Content-Type':'application/json',...(bearer?{Authorization:'Bearer '+bearer}:{})},body:'{}'}),env,{});
+  assert.equal(response.status,expected);
+ }
+});

@@ -1,3 +1,4 @@
+import {CAR_LIVE_BUILD,CAR_LIVE_MARKER,carLiveEnabled,verifyFailedCarTargets,validateCarRecoveryBatch,carLiveRecord,completedCarSnapshot,dispatchCarLiveBatch,acceptCarLiveBatch,readCarLiveAudit,retryCarLiveBatch} from './car-live-recovery.mjs';
 import {inspectCarMovieDispatchControls} from './car-atomic-reservations.mjs';
 import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAGARI_BUILD,URDU_DEVANAGARI_METHOD,validateDevanagariUrduVoiceReceipt,urduDevanagariInstructions,urduDevanagariSrtInstructions} from './urdu-devanagari-voice.mjs';
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
@@ -5,8 +6,6 @@ import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATC
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
-import { carEligibility } from './context-anchor-recovery.mjs';
-import { verifyCarLiveInventory } from './car-live-inventory.mjs';
 import { collectCarD1Inventory,auditCarD1Evidence,inspectCarRecoveryCandidate } from './car-d1-inventory.mjs';
 import { ensureCarRecoveryLedger,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff,verifyFreshCarD1Snapshot } from './car-recovery-ledger.mjs';
 import {fingerprintCarD1State} from './car-d1-preflight.mjs';
@@ -256,6 +255,12 @@ async function taskDetail(env,job) {
       const file=await env.FILES.get(movie.source_srt_key);
       if(!file)fail(409,'Original source SRT unavailable for full-movie Muse matching');
       const evidence=productionDeepPrompt(language,null,cues,await file.text(),accepted);
+      const recovery=job.prompt?.startsWith(CAR_LIVE_MARKER)?await carLiveRecord(env,job.id):null;
+      if(recovery){
+       if(!carLiveEnabled(env,movie.id))fail(403,'CAR rollout disabled');
+       evidence.prompt+='\nCONTROLLED CAR RECOVERY: '+recovery.targets_json+
+        '\nRetry this unfinished batch only. Return carRecovery:true. Only declared targets may use anchorMethod:context. Choose one real unused source cue within five cue IDs of its rejected literal cue, quote its COMPLETE text exactly, and keep source start/end inside that cue. Never reuse a cue or overlapping span from either language. Preserve all earlier accepted batches. Other decisions in this batch use normal matching. If no supported context exists, return error; do not fabricate evidence.';
+      }
       return {...publicJob(job),lease:job.lease,prompt:evidence.prompt+
         (job.prompt?.startsWith('RETRY REQUIRED:')?'\n'+job.prompt:''),
        movie:{id:movie.id,title:movie.title,workerId:movie.worker_id},
@@ -868,27 +873,18 @@ async function acceptPermanentDeepStage(env,job,output){
    const accepted=await acceptedPermanentDeepBatches(env,job.project_id,job.step_id);
    const source=await env.FILES.get(movie.source_srt_key);
    if(!source)throw Error('Original movie subtitles missing');
-   // CAR v1.1 integration guard: normal Muse submissions are unchanged.
-   // Recovery is never inferred from a 422 or a partial five-segment batch.
-   // A future recovery submission must provide a complete independently verified
-   // movie-wide unresolved inventory, and must not replace accepted decisions.
-   if(output?.carRecovery){
-     // Client-supplied inventories are not trusted. Reconcile both languages
-     // against this project's live D1 checkpoints before any CAR decision.
-     const d1Inventory=await collectCarD1Inventory(env,job.project_id,outputs,acceptedPermanentDeepBatches);
-     if(!d1Inventory.eligibility.verified)
-       throw Error('CAR live D1 inventory denied: '+d1Inventory.eligibility.reason);
-     const verifiedInventory=verifyCarLiveInventory(d1Inventory);
-     const check=carEligibility({
-       enabled:env.CAR_V1_1_ENABLED==='true',
-       unresolvedSegmentIds:verifiedInventory.unresolvedSegmentIds,
-       acceptedSegmentIds:[
-         ...accepted.flatMap(batch=>batch.decisions||[]).map(d=>language+':'+d.segmentIndex)
-       ]
-     });
-     if(!check.eligible)throw Error('CAR recovery denied: '+check.reason);
-     throw Error('CAR recovery persistence not yet authorized: atomic checkpoint integration required');
+   if(job.prompt?.startsWith(CAR_LIVE_MARKER)){
+     const record=await carLiveRecord(env,job.id);
+     if(!record)throw Error('Recovery job registration missing');
+     const sourceSrt=await source.text();
+     const otherAccepted=await acceptedPermanentDeepBatches(env,job.project_id,language==='english'?PERMANENT_DEEP_MATCH_UR:PERMANENT_DEEP_MATCH_EN);
+     const verified=validateCarRecoveryBatch({record,language,cues,sourceSrt,accepted,otherAccepted,payload:output});
+     const progress=deepProductionProgress(cues,[...accepted,verified]);
+     const nextStep=progress.complete?(language==='english'?PERMANENT_DEEP_MATCH_UR:PERMANENT_DEEP_CUTS):job.step_id;
+     return acceptCarLiveBatch(env,{record,job,verified,nextStep,sourceSrt,now:nowSeconds()});
    }
+   if(output?.carRecovery||output?.decisions?.some(d=>d.anchorMethod==='context'))
+     throw Error('Context recovery requires a registered controlled recovery task');
    const verified=validateProductionDeepBatch(language,cues,await source.text(),accepted,output);
    const now=nowSeconds();
    const updated=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
@@ -1052,7 +1048,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{carLiveBuild:CAR_LIVE_BUILD,carControlledProject:env.CAR_LIVE_PROJECT_ID||null,carMaxTargetsPerMovie:3,newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -1060,6 +1056,38 @@ async function route(request,env){
   if(parts[1]==='w'&&parts.length>=4){
     const wid=parts[2],worker=await authWorker(request,env,wid);
     const tail='/'+parts.slice(3).join('/');
+    const carRecover=/^\/projects\/([a-f0-9-]{36})\/car\/recover$/.exec(tail);
+    if(method==='POST'&&carRecover){
+      const pid=requireUUID(carRecover[1]),movie=await getProject(env,pid);
+      if(movie.worker_id!==wid)fail(403,'This movie belongs to another worker');
+      if(!carLiveEnabled(env,pid)||!(await projectPolicy(env,pid)).permanentDeep)
+        fail(403,'Controlled CAR rollout not enabled for this movie');
+      if(movie.control_paused||movie.control_stopped)fail(409,'Movie paused or stopped');
+      const body=await getJson(request,MAX_JSON);
+      if(body.retryJobId){
+        const record=await carLiveRecord(env,requireUUID(body.retryJobId));
+        if(!record||record.project_id!==pid||record.worker_id!==wid)fail(403,'Recovery task belongs to another movie or worker');
+        const source=await env.FILES.get(movie.source_srt_key);
+        if(!source)fail(409,'Original source missing');
+        try{return json(await retryCarLiveBatch(env,{record,sourceSrt:await source.text(),now:nowSeconds()}),201);}
+        catch(error){fail(409,String(error.message));}
+      }
+      const failed=await env.DB.prepare('SELECT * FROM jobs WHERE id=? AND project_id=? AND worker_id=?').bind(requireUUID(body.failedJobId),pid,wid).first();
+      const language=deepLanguage(failed?.step_id);
+      if(!language||failed?.status!=='error')fail(409,'Failed matching job required');
+      const snapshot=await completedCarSnapshot(env,pid);
+      const outputs=await priorOutputs(env,pid);
+      const accepted=await acceptedPermanentDeepBatches(env,pid,failed.step_id);
+      const file=await env.FILES.get(movie.source_srt_key);
+      if(!file)fail(409,'Original source missing');
+      const sourceSrt=await file.text();
+      try{
+        const targets=verifyFailedCarTargets({failed,language,cues:loadProductionCues(outputs['srt_'+language]),accepted,sourceSrt,targets:body.targets});
+        if(snapshot!==await completedCarSnapshot(env,pid))fail(409,'Completed movie state changed during verification');
+        return json(await dispatchCarLiveBatch(env,{projectId:pid,workerId:wid,failed,targets,sourceSrt,
+          snapshot,jobId:newId(),nextJobId:newId(),now:nowSeconds()}),201);
+      }catch(error){if(error instanceof HttpError)throw error;fail(409,String(error.message));}
+    }
     // CAR worker audit: existing worker token, own movie only, D1/R2 through
     // backend bindings. No Cloudflare D1 REST token or mutation authorization.
     const carWorkerParts=tail.split('/');
@@ -1075,9 +1103,9 @@ async function route(request,env){
       const outputs=await priorOutputs(env,pid);
       const audit=await auditCarD1Evidence(env,pid,outputs,acceptedPermanentDeepBatches,await original.text());
       const unknown=audit.inventory?.unknownSegmentIds||[];
-      const verified=audit.verifiedSegmentIds||[];
-      const exact=verified.length>0&&verified.length<=3&&
-        unknown.length===verified.length&&unknown.every(id=>verified.includes(id));
+      const live=carLiveEnabled(env,pid)?await readCarLiveAudit(env,pid):null;
+      const verified=[...new Set([...(audit.verifiedSegmentIds||[]),...(live?.pendingTargets||[])])];
+      const exact=verified.length>0&&verified.length<=3;
       const eligible=exact&&audit.evidenceStatus==='verified'&&
         !Number(movie.control_paused)&&!Number(movie.control_stopped);
       return json({projectId:pid,workerId:wid,projectStatus:movie.status,
@@ -1088,14 +1116,19 @@ async function route(request,env){
         acceptedCount:audit.inventory?.acceptedSegmentIds?.length||0,
         unknownCount:unknown.length,verifiedCount:verified.length,
         verifiedTargets:verified.slice(0,3),
+        liveRecovery:live,
         evidenceStatus:audit.evidenceStatus,
         evidenceReason:audit.reason||null,candidateReady:eligible,
         reason:eligible?'verified_bounded_candidates_only':
           audit.evidenceStatus!=='verified'?'unverified_source_provenance':
           !exact?'unresolved_inventory_incomplete_or_over_limit':
           'movie_paused_or_stopped',
-        readOnly:true,recoveryDispatchEnabled:false,
-        recoveryResultAcceptanceEnabled:false,
+        readOnly:true,recoveryDispatchEnabled:carLiveEnabled(env,pid),
+        recoveryResultAcceptanceEnabled:carLiveEnabled(env,pid),
+        unprocessedOrUnverifiedCount:unknown.length-verified.length,
+        failureDeclarationRequired:verified.length===0,
+        failureDeclarationEndpoint:'/w/'+wid+'/projects/'+pid+'/car/recover',
+        failedJobs:audit.inventory?.failedJobEvidence||[],
         acceptedJobsUnchanged:true,resumeTriggered:false});
     }
     const urduVoiceRescue=/^\/projects\/([a-f0-9-]{36})\/audio\/urdu-devanagari\/resume$/.exec(tail);
@@ -1215,7 +1248,7 @@ async function route(request,env){
             if(error instanceof HttpError)throw error;
             const reason=String(error.message||error).slice(0,1100);
             await env.DB.prepare("UPDATE jobs SET prompt=? WHERE id=? AND lease=? AND status='working'")
-              .bind('RETRY REQUIRED: '+reason,job.id,job.lease).run();
+              .bind((job.prompt?.startsWith(CAR_LIVE_MARKER)?CAR_LIVE_MARKER+' ':'')+'RETRY REQUIRED: '+reason,job.id,job.lease).run();
             fail(422,'Muse Deep production stage rejected; retry same lease: '+reason);
           }
         }

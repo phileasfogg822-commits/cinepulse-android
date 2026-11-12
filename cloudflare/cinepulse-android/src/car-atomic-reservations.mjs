@@ -409,7 +409,9 @@ export async function stageCarRecoveryOutbox(env,{plan,enabled=false}={}){
  * Atomically enqueue one CAR outbox item to the production jobs table.
  * Disabled by default. Only a single queued job per movie is permitted,
  * preserving the existing worker's sequential processing contract.
- * Existing accepted jobs are never updated or deleted.
+ * Existing accepted jobs are never updated or deleted. The queued prompt
+ * must begin with the exact durable outbox idempotency key, so a caller
+ * cannot dispatch a different target's instructions under this target.
  */
 export async function enqueueCarRecoveryOutboxJob(env,{
  projectId,targetId,jobId,workerId,prompt,enabled=false
@@ -435,6 +437,18 @@ export async function enqueueCarRecoveryOutboxJob(env,{
    JOIN workers w ON w.id=p.worker_id AND w.enabled=1 AND w.paused=0
    LEFT JOIN cinepulse_movie_controls mc ON mc.project_id=p.id
    WHERE o.project_id=? AND o.target_id=?
+    AND substr(?,1,length('[CAR-V1.1-RECOVERY] '||o.idempotency_key||' '))=
+      '[CAR-V1.1-RECOVERY] '||o.idempotency_key||' '
+    -- Revalidate mutable outbox metadata in the same INSERT statement.
+    AND o.step_id=CASE WHEN substr(o.target_id,1,8)='english:'
+      THEN 'deep_match_english' ELSE 'deep_match_urdu' END
+    AND o.idempotency_key='car-v1.1:'||o.project_id||':'||o.target_id||':'||o.snapshot_version
+    -- The accepted source batch must still be completed, in this movie
+    -- and language, with nonempty output. A forged outbox cannot replace it.
+    AND EXISTS(SELECT 1 FROM jobs source WHERE source.id=o.source_job_id
+      AND source.project_id=o.project_id AND source.step_id=o.step_id
+      AND source.status='done' AND source.output IS NOT NULL
+      AND length(trim(source.output))>0)
     AND COALESCE(mc.paused,0)=0 AND COALESCE(mc.stopped,0)=0
     AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=o.project_id
      AND j.status IN ('queued','working'))
@@ -444,7 +458,7 @@ export async function enqueueCarRecoveryOutboxJob(env,{
       WHERE project_id=o.project_id)
      AND j.step_id IN ('deep_match_english','deep_match_urdu'))`;
   const result=await env.DB.prepare(sql).bind(
-   jobId,prompt,now,workerId,projectId,targetId,jobId).run();
+   jobId,prompt,now,workerId,projectId,targetId,prompt,jobId).run();
   if(result.meta?.changes!==1)return reject('queue_guard_rejected');
   return {enqueued:true,jobId,projectId,targetId,
    reason:'production_job_queued',resumeTriggered:false};

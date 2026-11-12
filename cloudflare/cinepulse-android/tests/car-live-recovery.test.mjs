@@ -1,0 +1,132 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {verifyFailedCarTargets,validateCarRecoveryBatch,ensureCarLiveTable,completedCarSnapshot,dispatchCarLiveBatch,acceptCarLiveBatch,carLiveRecord,retryCarLiveBatch,readCarLiveAudit} from '../src/car-live-recovery.mjs';
+const pid='11111111-1111-4111-8111-111111111111',wid='22222222-2222-4222-8222-222222222222';
+const cue=(i)=>({segmentIndex:i,sourceStartSeconds:i*10,sourceEndSeconds:i*10+2,sourceCueIds:[i],evidenceQuote:'Original source line '+i,reason:'Specific character event and story rationale.',alternatives:[{cueId:20,reason:'Different event elsewhere'}],confidence:.8,museRequestId:'muse-actual-'+i});
+const sourceSrt=Array.from({length:30},(_,i)=>`${i+1}\n00:${String(Math.floor((i+1)*10/60)).padStart(2,'0')}:${String((i+1)*10%60).padStart(2,'0')},000 --> 00:${String(Math.floor(((i+1)*10+2)/60)).padStart(2,'0')}:${String(((i+1)*10+2)%60).padStart(2,'0')},000\nOriginal source line ${i+1}`).join('\n\n');
+const cues=Array.from({length:12},(_,i)=>({startSeconds:i*3,endSeconds:i*3+3,text:'Measured narration '+(i+1)}));
+const accepted=[{decisions:[1,2,3,4,5].map(cue)}];
+const failed={id:'33333333-3333-4333-8333-333333333333',project_id:pid,worker_id:wid,step_id:'deep_match_english',status:'error',error:'Source anchor reused at segment 6'};
+const targets=[{segmentIndex:6,rejectedDecision:{...cue(5),segmentIndex:6}}];
+const verifiedTargets=()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets});
+const payload=()=>({carRecovery:true,decisions:[6,7,8,9,10].map(i=>({...cue(i),...(i===6?{anchorMethod:'context'}:{})}))});
+function fixture(){
+ const db=new DatabaseSync(':memory:');
+ db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY,worker_id TEXT,status TEXT,updated_at INTEGER);
+ CREATE TABLE workers(id TEXT PRIMARY KEY,enabled INTEGER,paused INTEGER);
+ CREATE TABLE cinepulse_movie_controls(project_id TEXT PRIMARY KEY,paused INTEGER,stopped INTEGER);
+ CREATE TABLE jobs(id TEXT PRIMARY KEY,project_id TEXT,worker_id TEXT,step_id TEXT,status TEXT,prompt TEXT,output TEXT,error TEXT,created_at INTEGER,finished_at INTEGER,lease TEXT,lease_until INTEGER);
+ INSERT INTO workers VALUES('22222222-2222-4222-8222-222222222222',1,0); INSERT INTO projects VALUES('11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','needs_review',1);
+ INSERT INTO cinepulse_movie_controls VALUES('11111111-1111-4111-8111-111111111111',0,0);`);
+ db.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,output,created_at) VALUES('accepted','11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','deep_match_english','done',?,1)").run(JSON.stringify(accepted[0]));
+ db.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,error,created_at) VALUES('33333333-3333-4333-8333-333333333333','11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','deep_match_english','error',?,2)").run(failed.error);
+ const wrap=(sql,args=[])=>({bind(...a){return wrap(sql,a)},async run(){const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}}},async first(){return db.prepare(sql).get(...args)||null},async all(){return {results:db.prepare(sql).all(...args)}}});
+ const env={CAR_LIVE_PROJECT_ID:pid,DB:{prepare:sql=>wrap(sql),async batch(statements){db.exec('BEGIN');try{const out=[];for(const s of statements)out.push(await s.run());db.exec('COMMIT');return out}catch(e){db.exec('ROLLBACK');throw e}}}};
+ return {db,env};
+}
+async function dispatch(f,extra={}){return dispatchCarLiveBatch(f.env,{projectId:pid,workerId:wid,failed,targets:verifiedTargets(),snapshot:await completedCarSnapshot(f.env,pid),sourceSrt,jobId:'recovery',nextJobId:'next',now:10,...extra});}
+async function prepareResult(f){
+ await dispatch(f);
+ f.db.exec("UPDATE jobs SET status='working',lease='lease',lease_until=100 WHERE id='recovery'");
+ const record=await carLiveRecord(f.env,'recovery');
+ const verified=validateCarRecoveryBatch({record,language:'english',cues,sourceSrt,accepted,otherAccepted:[],payload:payload()});
+ return {record,job:{id:'recovery',project_id:pid,worker_id:wid,step_id:'deep_match_english',lease:'lease'},verified,nextStep:'deep_match_english',sourceSrt,now:20};
+}
+test('unprocessed segments do not count as failed; only current failed batch targets accepted',()=>{
+ assert.equal(verifiedTargets().length,1);
+ for(const bad of [[{...targets[0],segmentIndex:5}],[...targets,...targets],[],Array(4).fill(targets[0])])
+ assert.throws(()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets:bad}));
+ assert.throws(()=>verifyFailedCarTargets({failed:{...failed,status:'done'},language:'english',cues,accepted,sourceSrt,targets}));
+ assert.throws(()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets:[{segmentIndex:6,rejectedDecision:cue(6)}]}),/reuse/);
+});
+test('context recovery uses production validator, exact nearby source and cross-language uniqueness',()=>{
+ const record={targets_json:JSON.stringify(verifiedTargets()),failed_job_id:'33333333-3333-4333-8333-333333333333'};
+ const args={record,language:'english',cues,sourceSrt,accepted,otherAccepted:[]};
+ assert.equal(validateCarRecoveryBatch({...args,payload:payload()}).decisions.length,5);
+ const bad=payload();bad.decisions[0].evidenceQuote='Original source';assert.throws(()=>validateCarRecoveryBatch({...args,payload:bad}));
+ const undeclared=payload();undeclared.decisions[1].anchorMethod='context';assert.throws(()=>validateCarRecoveryBatch({...args,payload:undeclared}),/Undeclared/);
+ assert.throws(()=>validateCarRecoveryBatch({...args,otherAccepted:[{decisions:[cue(6)]}],payload:payload()}),/unused/);
+ const missing=payload();missing.decisions.pop();assert.throws(()=>validateCarRecoveryBatch({...args,payload:missing}),/One Muse/);
+});
+test('dispatch is idempotent and completion atomically accepts batch and queues continuation',async()=>{
+ const f=fixture(),before=f.db.prepare("SELECT output FROM jobs WHERE id='accepted'").get().output;
+ const args=await prepareResult(f);
+ assert.equal((await dispatch(f)).alreadyDispatched,true);
+ const result=await acceptCarLiveBatch(f.env,args);assert.equal(result.nextJobId,'next');
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id='recovery'").get().status,'done');
+ assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE id='next'").get().n,1);
+ assert.equal(f.db.prepare("SELECT output FROM jobs WHERE id='accepted'").get().output,before);
+ await assert.rejects(acceptCarLiveBatch(f.env,args),/stale/);
+ assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE id='next'").get().n,1);
+});
+test('stale accepted output, paused worker/movie, stopped movie and expired lease deny result and continuation',async()=>{
+ for(const sql of ["UPDATE jobs SET output='changed' WHERE id='accepted'","UPDATE workers SET paused=1","UPDATE cinepulse_movie_controls SET paused=1","UPDATE cinepulse_movie_controls SET stopped=1","UPDATE jobs SET lease_until=19 WHERE id='recovery'"]){
+  const f=fixture(),args=await prepareResult(f);f.db.exec(sql);
+  await assert.rejects(acceptCarLiveBatch(f.env,args));
+  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id='recovery'").get().status,'working');
+  assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE id='next'").get().n,0);
+ }
+});
+test('continuation insert failure rolls back accepted result',async()=>{
+ const f=fixture(),args=await prepareResult(f);
+ f.db.exec("CREATE TRIGGER fail_next BEFORE INSERT ON jobs WHEN NEW.id='next' BEGIN SELECT RAISE(ABORT,'simulated failure'); END");
+ await assert.rejects(acceptCarLiveBatch(f.env,args),/simulated failure/);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id='recovery'").get().status,'working');
+});
+test('dispatch enforces stale state, ownership, controls and three targets across both languages',async()=>{
+ for(const sql of ["UPDATE workers SET enabled=0","UPDATE cinepulse_movie_controls SET stopped=1","UPDATE projects SET worker_id='other'","UPDATE jobs SET status='working' WHERE id='33333333-3333-4333-8333-333333333333'"]){
+  const f=fixture();f.db.exec(sql);await assert.rejects(dispatch(f));
+  assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE id='recovery'").get().n,0);
+ }
+ const f=fixture();await ensureCarLiveTable(f.env);
+ f.db.prepare("INSERT INTO car_live_batches VALUES('old','11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','older','deep_match_urdu',?,'[]','hash','old-next',0)").run(JSON.stringify([{segmentIndex:1},{segmentIndex:2},{segmentIndex:3}]));
+ await assert.rejects(dispatch(f),/lifetime/);
+});
+test('source change and rollout disabled block acceptance',async()=>{
+ const f=fixture(),args=await prepareResult(f);
+ await assert.rejects(acceptCarLiveBatch(f.env,{...args,sourceSrt:sourceSrt+'changed'}),/source changed/);
+ f.env.CAR_LIVE_PROJECT_ID='other';await assert.rejects(acceptCarLiveBatch(f.env,args),/flag/);
+});
+
+test('failed recovery retries the same reservation and audit distinguishes reserved and recovered',async()=>{
+ const f=fixture(),args=await prepareResult(f);
+ f.db.exec("UPDATE jobs SET status='error',lease=NULL WHERE id='recovery'; UPDATE projects SET status='needs_review'");
+ const retry=await retryCarLiveBatch(f.env,{record:args.record,sourceSrt,now:30});
+ assert.equal(retry.jobId,'recovery');
+ const audit=await readCarLiveAudit(f.env,pid);
+ assert.equal(audit.reservedCount,1);assert.equal(audit.recoveredCount,0);assert.deepEqual(audit.pendingTargets,['english:6']);
+ f.db.exec("UPDATE jobs SET status='working',lease='lease',lease_until=100 WHERE id='recovery'");
+ await acceptCarLiveBatch(f.env,{...args,now:40});
+ assert.equal((await readCarLiveAudit(f.env,pid)).recoveredCount,1);
+ assert.equal(f.db.prepare('SELECT count(*) n FROM car_live_batches').get().n,1);
+});
+
+test('authenticated HTTP declaration, leased result, audit and continuation work together',async()=>{
+ const {default:worker}=await import('../src/index.mjs');
+ const {hashWorkerToken}=await import('../src/helpers.mjs');
+ const f=fixture(),token='real-test-worker-token';
+ f.db.exec('ALTER TABLE workers ADD COLUMN token_hash TEXT; ALTER TABLE projects ADD COLUMN source_srt_key TEXT');
+ f.db.prepare('UPDATE workers SET token_hash=?').run(await hashWorkerToken(token));
+ f.db.exec("UPDATE projects SET source_srt_key='source'");
+ const measured=cues.map((c,i)=>`${i+1}\n00:00:${String(c.startSeconds).padStart(2,'0')},000 --> 00:00:${String(c.endSeconds).padStart(2,'0')},000\n${c.text}`).join('\n\n');
+ for(const [id,step,output,prompt] of [['digest','digest','real digest','[CINEPULSE-V5-PERMANENT-DEEP-MUSE]'],['en','srt_english',measured,''],['ur','srt_urdu',measured,'']])
+  f.db.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,output,prompt,created_at) VALUES(?,?,?,?,'done',?,?,0)").run(id,pid,wid,step,output,prompt);
+ Object.assign(f.env,{ADMIN_TOKEN:'a'.repeat(48),DOWNLOAD_SIGNING_KEY:'b'.repeat(64),FILES:{get:async()=>({text:async()=>sourceSrt})}});
+ const post=async(path,body)=>{
+  const r=await worker.fetch(new Request('https://test/w/'+wid+path,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body)}),f.env,{});
+  return {status:r.status,body:await r.json()};
+ };
+ const start=await post('/projects/'+pid+'/car/recover',{failedJobId:failed.id,targets});
+ assert.equal(start.status,201,JSON.stringify(start.body));
+ const id=start.body.jobId;
+ f.db.prepare("UPDATE jobs SET status='working',lease='lease',lease_until=? WHERE id=?").run(Math.floor(Date.now()/1000)+900,id);
+ const result=await post('/tasks/'+id+'/result',{lease:'lease',output:payload()});
+ assert.equal(result.status,201,JSON.stringify(result.body));
+ assert.equal(result.body.status,'done');
+ assert.equal(f.db.prepare('SELECT status FROM jobs WHERE id=?').get(result.body.nextJobId).status,'queued');
+ const audit=await worker.fetch(new Request('https://test/w/'+wid+'/projects/'+pid+'/car/audit',{headers:{Authorization:'Bearer '+token}}),f.env,{});
+ assert.equal(audit.status,200);const report=await audit.json();
+ assert.equal(report.liveRecovery.recoveredCount,1);assert.equal(report.acceptedCount,10);
+ assert.equal(report.recoveryDispatchEnabled,true);assert.equal(report.unknownCount,14);
+});

@@ -144,6 +144,8 @@ test('CAR execution intent exact retry is idempotent and conflict fails closed',
      assert.match(sql,/MIN\(snapshot_version\)/);
      assert.equal(args[9],projectId);
      assert.equal(args[10],projectId);
+     assert.equal(args[11],projectId);
+     assert.match(sql,/length\(r\.state_fingerprint\)<>64/);
      if(rows.length)return {meta:{changes:0}};
      for(const op of JSON.parse(args[2]))rows.push({
       target_id:op.targetId,source_job_id:op.sourceJobId,

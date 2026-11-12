@@ -428,7 +428,7 @@ test('real SQLite CAR production enqueue creates one job and blocks concurrent d
  const {DatabaseSync}=await import('node:sqlite');
  const db=new DatabaseSync(':memory:');
  try{
-  db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY,worker_id TEXT);
+  db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY,worker_id TEXT,status TEXT);
    CREATE TABLE jobs(id TEXT PRIMARY KEY,project_id TEXT,worker_id TEXT,
     step_id TEXT,status TEXT,prompt TEXT,created_at INTEGER,output TEXT);
    CREATE TABLE car_recovery_dispatch_claims(project_id TEXT,target_id TEXT,
@@ -436,7 +436,7 @@ test('real SQLite CAR production enqueue creates one job and blocks concurrent d
    CREATE TABLE car_recovery_job_outbox(project_id TEXT,target_id TEXT,
     source_job_id TEXT,snapshot_version INTEGER,step_id TEXT,
     idempotency_key TEXT,created_at INTEGER,PRIMARY KEY(project_id,target_id));`);
-  db.prepare('INSERT INTO projects VALUES(?,?)').run(projectId,'worker-1');
+  db.prepare('INSERT INTO projects VALUES(?,?,?)').run(projectId,'worker-1','needs_review');
   const op=operations[0];
   db.prepare('INSERT INTO car_recovery_dispatch_claims VALUES(?,?,?,?)').run(
    projectId,op.targetId,op.sourceJobId,op.snapshotVersion);
@@ -470,7 +470,7 @@ test('real SQLite CAR enqueue refuses wrong worker and existing active movie job
  const {DatabaseSync}=await import('node:sqlite');
  const db=new DatabaseSync(':memory:');
  try{
-  db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY,worker_id TEXT);
+  db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY,worker_id TEXT,status TEXT);
    CREATE TABLE jobs(id TEXT PRIMARY KEY,project_id TEXT,worker_id TEXT,
     step_id TEXT,status TEXT,prompt TEXT,created_at INTEGER);
    CREATE TABLE car_recovery_dispatch_claims(project_id TEXT,target_id TEXT,
@@ -479,7 +479,7 @@ test('real SQLite CAR enqueue refuses wrong worker and existing active movie job
     source_job_id TEXT,snapshot_version INTEGER,step_id TEXT,
     idempotency_key TEXT,created_at INTEGER);`);
   const op=operations[0];
-  db.prepare('INSERT INTO projects VALUES(?,?)').run(projectId,'worker-1');
+  db.prepare('INSERT INTO projects VALUES(?,?,?)').run(projectId,'worker-1','needs_review');
   db.prepare('INSERT INTO car_recovery_dispatch_claims VALUES(?,?,?,?)').run(
    projectId,op.targetId,op.sourceJobId,op.snapshotVersion);
   db.prepare('INSERT INTO car_recovery_job_outbox VALUES(?,?,?,?,?,?,?)').run(
@@ -494,6 +494,17 @@ test('real SQLite CAR enqueue refuses wrong worker and existing active movie job
    'worker-1','deep_match_urdu','working','active job',11);
   assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,workerId:'worker-1'}))
    .reason,'queue_guard_rejected');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n,1);
+  db.prepare('DELETE FROM jobs WHERE id=?').run('active');
+  for(const status of ['processing','paused','ready','done']){
+   db.prepare('UPDATE projects SET status=? WHERE id=?').run(status,projectId);
+   assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,workerId:'worker-1'}))
+    .reason,'queue_guard_rejected','status '+status+' must fail closed');
+   assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n,0);
+  }
+  db.prepare('UPDATE projects SET status=? WHERE id=?').run('needs_review',projectId);
+  assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,workerId:'worker-1'}))
+   .enqueued,true);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n,1);
  }finally{db.close();}
 });

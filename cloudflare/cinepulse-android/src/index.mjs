@@ -7,7 +7,8 @@ import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { carEligibility } from './context-anchor-recovery.mjs';
 import { verifyCarLiveInventory } from './car-live-inventory.mjs';
 import { collectCarD1Inventory,auditCarD1Evidence,inspectCarRecoveryCandidate } from './car-d1-inventory.mjs';
-import { ensureCarRecoveryLedger,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff } from './car-recovery-ledger.mjs';
+import { ensureCarRecoveryLedger,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff,verifyFreshCarD1Snapshot } from './car-recovery-ledger.mjs';
+import {fingerprintCarD1State} from './car-d1-preflight.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
 import { buildSceneLabV4Package,unwrapMeasuredSrt } from './scene-lab-package.mjs';
@@ -135,6 +136,16 @@ async function acceptedPermanentDeepBatches(env,projectId,stage){
  });
  return stage===PERMANENT_DEEP_MATCH_UR?
    applyAcceptedUrduRepairs(original,await acceptedUrduRepairOutputs(env,projectId)):original;
+}
+// Read all relevant job states, not just completed batches: accepted outputs
+// and late status changes must invalidate an older CAR audit handoff.
+async function readCarD1Fingerprint(env,projectId,audit,checkpoints,sourceSrt,outputs){
+ const rows=await env.DB.prepare(
+  "SELECT id,step_id,status,output,created_at,finished_at FROM jobs WHERE project_id=? AND step_id IN (?,?) ORDER BY created_at ASC,rowid ASC"
+ ).bind(projectId,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR).all();
+ return fingerprintCarD1State({projectId,audit,checkpoints,sourceSrt,
+  englishSrt:outputs.srt_english,urduSrt:outputs.srt_urdu,
+  jobRows:rows.results||[]});
 }
 async function priorOutputs(env,projectId) {
  const result=await env.DB.prepare("SELECT step_id,output FROM jobs WHERE project_id=? AND status='done' ORDER BY created_at ASC,rowid ASC").bind(projectId).all();
@@ -1389,21 +1400,53 @@ async function route(request,env){
     if(!policy.permanentDeep)fail(403,'CAR audit requires a V5 permanent Muse project');
     const original=await env.FILES.get(project.source_srt_key||objectKey(projectId,'source_srt'));
     if(!original)fail(409,'Original movie source SRT unavailable for CAR audit');
+    const sourceSrt=await original.text();
     const outputs=await priorOutputs(env,projectId);
-    const audit=await auditCarD1Evidence(env,projectId,outputs,acceptedPermanentDeepBatches,await original.text());
+    const audit=await auditCarD1Evidence(env,projectId,outputs,acceptedPermanentDeepBatches,sourceSrt);
     const target=url.searchParams.get('target');
     // Read the isolated checkpoint ledger only after the live evidence audit.
     // Existing accepted V5 decisions remain authoritative; no auto-resume.
     const checkpoints=env.CAR_V1_1_ENABLED==='true'
       ?await (async()=>{await ensureCarRecoveryLedger(env);return loadScopedCarRecoveryCheckpoints(env,projectId)})()
       :[];
-    const readiness=inspectScopedCarRecoveryReadiness({
-      audit,checkpoints,sourceSrt:await original.text()
-    });
-    const handoff=buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints});
+    const readiness=inspectScopedCarRecoveryReadiness({audit,checkpoints,sourceSrt});
+    const plan=buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints});
+    const handoff=plan.authorized?{...plan,stateFingerprint:await readCarD1Fingerprint(
+      env,projectId,audit,checkpoints,sourceSrt,outputs)}:plan;
     return json({...audit,checkpoints,readiness,handoff,
       candidate:target?inspectCarRecoveryCandidate(audit,target):null,
       resumeTriggered:false,acceptedCheckpointsUnchanged:true});
+  }
+
+  // Read-only live D1 preflight. An administrator submits the previously
+  // audited handoff; the server re-queries source evidence and all deep-match
+  // job states before comparing its accepted-state SHA-256 fingerprint.
+  // This is NOT atomic with a future enqueue and never resumes a movie.
+  const carPreflightRoute=/^\\/v1\\/projects\\/([a-f0-9-]{36})\\/car\\/preflight$/.exec(url.pathname);
+  if(method==='POST'&&carPreflightRoute){
+    if(env.CAR_V1_1_ENABLED!=='true')fail(403,'CAR recovery is disabled');
+    const projectId=requireUUID(carPreflightRoute[1]);
+    const body=await getJson(request);
+    const handoff=body?.handoff;
+    if(handoff?.projectId!==projectId||handoff?.authorized!==true)
+      fail(422,'A project-matched audited CAR handoff is required');
+    const project=await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR preflight requires a V5 permanent Muse project');
+    const original=await env.FILES.get(project.source_srt_key||objectKey(projectId,'source_srt'));
+    if(!original)fail(409,'Original movie source SRT unavailable');
+    const sourceSrt=await original.text();
+    const outputs=await priorOutputs(env,projectId);
+    const audit=await auditCarD1Evidence(env,projectId,outputs,acceptedPermanentDeepBatches,sourceSrt);
+    // No CREATE TABLE here: an absent ledger is a failure, not permission
+    // to mutate D1 as part of a read-only preflight.
+    const checkpoints=await loadScopedCarRecoveryCheckpoints(env,projectId);
+    const freshFingerprint=await readCarD1Fingerprint(env,projectId,audit,checkpoints,sourceSrt,outputs);
+    const proof=verifyFreshCarD1Snapshot({
+      projectId,handoff,audit,checkpoints,sourceSrt,freshFingerprint
+    });
+    return json({...proof,readOnly:true,productionValidated:false,
+      enqueueAllowed:false,resumeTriggered:false});
   }
 
   // CAR-only, administrator-authenticated checkpoint submission. Never mutates

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff,stageCarDispatchClaims,planCarRecoveryJobs,stageCarRecoveryOutbox}
+import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff,stageCarDispatchClaims,planCarRecoveryJobs,stageCarRecoveryOutbox,enqueueCarRecoveryOutboxJob}
  from '../src/car-atomic-reservations.mjs';
 
 const projectId='fed941ad-ff7f-4b0f-8439-25cfda24d187';
@@ -410,4 +410,16 @@ test('CAR recovery outbox remains disabled and rejects forged job plans before D
   enabled:true})).reason,'unverified_job_plan');
  assert.equal((await stageCarRecoveryOutbox(env,{plan:{...plan,
   jobs:[{...job,idempotencyKey:'forged'}]},enabled:true})).reason,'invalid_outbox_job');
+});
+
+test('CAR production enqueue is disabled by default and rejects unsafe requests',async()=>{
+ const env={DB:{prepare(){throw Error('must not touch production jobs');}}};
+ const args={projectId,targetId:operations[0].targetId,
+  jobId:'recovery-job-1',workerId:'worker-1',
+  prompt:'[CAR-V1.1-RECOVERY] Review only the missing target'};
+ assert.equal((await enqueueCarRecoveryOutboxJob(env,args)).reason,'feature_disabled');
+ assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,enabled:true,
+  prompt:'unverified prompt'})).reason,'invalid_enqueue_request');
+ assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,enabled:true,
+  targetId:'not-a-target'})).reason,'invalid_enqueue_request');
 });

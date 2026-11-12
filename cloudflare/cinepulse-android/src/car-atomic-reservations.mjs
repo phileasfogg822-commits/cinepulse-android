@@ -76,7 +76,21 @@ export async function stageCarRecoveryReservations(env,{
  catch{return deny('production_validation_error');}
  if(proof?.valid!==true||proof.productionValidated!==true||
     proof.fingerprint!==plan.stateFingerprint||
-    proof.projectId!==plan.projectId)return deny('production_validation_failed');
+    proof.projectId!==plan.projectId||
+    !Array.isArray(proof.targets)||proof.targets.length!==plan.operations.length)
+  return deny('production_validation_failed');
+ const attestations=new Map();
+ for(const target of proof.targets){
+  if(typeof target?.targetId!=='string'||attestations.has(target.targetId))
+   return deny('duplicate_production_attestation');
+  attestations.set(target.targetId,target);
+ }
+ if(plan.operations.some(op=>{
+  const attestation=attestations.get(op.targetId);
+  return attestation?.valid!==true||attestation.productionValidated!==true||
+   attestation.sourceJobId!==op.sourceJobId||
+   attestation.snapshotVersion!==op.snapshotVersion;
+ }))return deny('production_target_mismatch');
  try{
   await ensureCarReservationTable(env);
   const prior=await env.DB.prepare(SELECT_RESERVATIONS).bind(plan.projectId).all();

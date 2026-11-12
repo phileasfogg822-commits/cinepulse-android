@@ -497,3 +497,67 @@ test('real SQLite CAR enqueue refuses wrong worker and existing active movie job
   assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n,1);
  }finally{db.close();}
 });
+
+test('real SQLite CAR outbox stages exact claims atomically and retries without duplicate rows',async()=>{
+ const {DatabaseSync}=await import('node:sqlite');
+ const db=new DatabaseSync(':memory:');
+ try{
+  db.exec(`CREATE TABLE car_recovery_dispatch_claims(project_id TEXT,target_id TEXT,
+   source_job_id TEXT,snapshot_version INTEGER,PRIMARY KEY(project_id,target_id));`);
+  for(const op of operations)db.prepare(
+   'INSERT INTO car_recovery_dispatch_claims VALUES(?,?,?,?)'
+  ).run(projectId,op.targetId,op.sourceJobId,op.snapshotVersion);
+  const jobs=operations.map(op=>({projectId,targetId:op.targetId,
+   sourceJobId:op.sourceJobId,snapshotVersion:op.snapshotVersion,
+   stepId:op.targetId.startsWith('english:')?'deep_match_english':'deep_match_urdu',
+   idempotencyKey:'car-v1.1:'+projectId+':'+op.targetId+':'+op.snapshotVersion}));
+  const plan={planned:true,enqueueAllowed:false,resumeTriggered:false,jobs};
+  const env={DB:{prepare(sql){const stmt=db.prepare(sql);return {
+   run:async()=>({meta:{changes:Number(stmt.run().changes)}}),
+   bind(...args){return {
+    run:async()=>({meta:{changes:Number(stmt.run(...args).changes)}}),
+    all:async()=>({results:stmt.all(...args)})
+   };}
+  };}}};
+  const first=await stageCarRecoveryOutbox(env,{plan,enabled:true});
+  assert.equal(first.staged,true);
+  assert.equal(first.count,2);
+  const retry=await stageCarRecoveryOutbox(env,{plan,enabled:true});
+  assert.equal(retry.staged,true);
+  assert.equal(retry.idempotent,true);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_job_outbox').get().n,2);
+  const conflict=await stageCarRecoveryOutbox(env,{plan:{...plan,
+   jobs:[{...jobs[0],sourceJobId:'changed'},jobs[1]]},enabled:true});
+  assert.equal(conflict.staged,false);
+  assert.equal(conflict.reason,'conflicting_outbox');
+ }finally{db.close();}
+});
+
+test('real SQLite CAR outbox refuses changed claims before writing rows',async()=>{
+ const {DatabaseSync}=await import('node:sqlite');
+ const db=new DatabaseSync(':memory:');
+ try{
+  db.exec(`CREATE TABLE car_recovery_dispatch_claims(project_id TEXT,target_id TEXT,
+   source_job_id TEXT,snapshot_version INTEGER,PRIMARY KEY(project_id,target_id));`);
+  const jobs=operations.map(op=>({projectId,targetId:op.targetId,
+   sourceJobId:op.sourceJobId,snapshotVersion:op.snapshotVersion,
+   stepId:op.targetId.startsWith('english:')?'deep_match_english':'deep_match_urdu',
+   idempotencyKey:'car-v1.1:'+projectId+':'+op.targetId+':'+op.snapshotVersion}));
+  for(const op of operations)db.prepare(
+   'INSERT INTO car_recovery_dispatch_claims VALUES(?,?,?,?)'
+  ).run(projectId,op.targetId,op.sourceJobId,op.snapshotVersion);
+  db.prepare('UPDATE car_recovery_dispatch_claims SET source_job_id=? WHERE project_id=? AND target_id=?')
+   .run('tampered',projectId,operations[0].targetId);
+  const env={DB:{prepare(sql){const stmt=db.prepare(sql);return {
+   run:async()=>({meta:{changes:Number(stmt.run().changes)}}),
+   bind(...args){return {
+    run:async()=>({meta:{changes:Number(stmt.run(...args).changes)}}),
+    all:async()=>({results:stmt.all(...args)})
+   };}
+  };}}};
+  const result=await stageCarRecoveryOutbox(env,{plan:{
+   planned:true,enqueueAllowed:false,resumeTriggered:false,jobs},enabled:true});
+  assert.equal(result.staged,false);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_job_outbox').get().n,0);
+ }finally{db.close();}
+});

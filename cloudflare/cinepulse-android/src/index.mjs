@@ -1,3 +1,4 @@
+import {inspectCarMovieDispatchControls} from './car-atomic-reservations.mjs';
 import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAGARI_BUILD,URDU_DEVANAGARI_METHOD,validateDevanagariUrduVoiceReceipt,urduDevanagariInstructions,urduDevanagariSrtInstructions} from './urdu-devanagari-voice.mjs';
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
 import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
@@ -1377,6 +1378,20 @@ async function route(request,env){
   }
   if(!url.pathname.startsWith('/v1/'))fail(404,'Route not found');
   await administrator(request,env);
+
+  // CAR v1.1 administrator-only dispatch readiness inspection.
+  // Explicitly read-only: no claim, outbox, production job or movie mutation.
+  const carDispatchReadinessRoute=/^\\/v1\\/projects\\/([a-f0-9-]{36})\\/car\\/dispatch-readiness$/.exec(url.pathname);
+  if(method==='GET'&&carDispatchReadinessRoute){
+    const projectId=requireUUID(carDispatchReadinessRoute[1]);
+    if(env.CAR_V1_1_ENABLED!=='true')fail(403,'CAR recovery is disabled');
+    const project=await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR dispatch requires a V5 permanent Muse project');
+    const controls=await inspectCarMovieDispatchControls(env,{projectId});
+    return json({...controls,projectStatus:project.status,readOnly:true,
+      enqueueAllowed:false,resumeTriggered:false});
+  }
 
   // Read-only, administrator-authenticated CAR coverage diagnostic.
   // No stage is resumed and no D1/R2 record is modified by this endpoint.

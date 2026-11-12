@@ -232,6 +232,9 @@ export function buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints}=
   return {authorized:false,reason:'recovery_not_ready',targets:[]};
  const byId=new Map(checkpoints.map(row=>[row.targetId,row]));
  if(byId.size!==checkpoints.length)return {authorized:false,reason:'duplicate_checkpoints',targets:[]};
+ // A partial handoff would silently ignore an existing checkpoint. Refuse it.
+ if(byId.size!==readiness.eligible.length)
+  return {authorized:false,reason:'incomplete_handoff_coverage',targets:[]};
  const targets=[];
  for(const item of readiness.eligible){
   const row=byId.get(item.targetId);

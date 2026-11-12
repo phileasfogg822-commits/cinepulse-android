@@ -431,6 +431,7 @@ export async function enqueueCarRecoveryOutboxJob(env,{
     ON c.project_id=o.project_id AND c.target_id=o.target_id
     AND c.source_job_id=o.source_job_id AND c.snapshot_version=o.snapshot_version
    JOIN projects p ON p.id=o.project_id AND p.worker_id=?
+    AND p.status='needs_review'
    WHERE o.project_id=? AND o.target_id=?
     AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=o.project_id
      AND j.status IN ('queued','working'))

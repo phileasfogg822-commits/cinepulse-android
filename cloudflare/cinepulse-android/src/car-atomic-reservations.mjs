@@ -439,6 +439,16 @@ export async function enqueueCarRecoveryOutboxJob(env,{
    WHERE o.project_id=? AND o.target_id=?
     AND substr(?,1,length('[CAR-V1.1-RECOVERY] '||o.idempotency_key||' '))=
       '[CAR-V1.1-RECOVERY] '||o.idempotency_key||' '
+    -- Revalidate mutable outbox metadata in the same INSERT statement.
+    AND o.step_id=CASE WHEN substr(o.target_id,1,8)='english:'
+      THEN 'deep_match_english' ELSE 'deep_match_urdu' END
+    AND o.idempotency_key='car-v1.1:'||o.project_id||':'||o.target_id||':'||o.snapshot_version
+    -- The accepted source batch must still be completed, in this movie
+    -- and language, with nonempty output. A forged outbox cannot replace it.
+    AND EXISTS(SELECT 1 FROM jobs source WHERE source.id=o.source_job_id
+      AND source.project_id=o.project_id AND source.step_id=o.step_id
+      AND source.status='done' AND source.output IS NOT NULL
+      AND length(trim(source.output))>0)
     AND COALESCE(mc.paused,0)=0 AND COALESCE(mc.stopped,0)=0
     AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=o.project_id
      AND j.status IN ('queued','working'))

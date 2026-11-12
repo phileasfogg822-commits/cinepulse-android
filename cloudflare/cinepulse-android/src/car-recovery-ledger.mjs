@@ -285,7 +285,8 @@ export async function validateScopedCarRecoveryExecution({handoff,validateTarget
   let result;
   try{result=await validateTarget(Object.freeze({...target}));}
   catch{return {validated:false,reason:'production_validation_error',targets:[],resumeTriggered:false};}
-  if(result?.valid!==true||result.targetId!==target.targetId||
+  if(result?.valid!==true||result.productionValidated!==true||
+     result.targetId!==target.targetId||
      result.sourceJobId!==target.sourceJobId||
      result.snapshotVersion!==target.snapshotVersion)
    return {validated:false,reason:'production_validation_failed',targets:[],resumeTriggered:false};

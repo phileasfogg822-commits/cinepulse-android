@@ -262,3 +262,39 @@ export function buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints}=
  return {authorized:true,reason:'read_only_handoff',projectId,targets,
   enqueueAllowed:false,acceptedJobsMutable:false,resumeTriggered:false};
 }
+
+/**
+ * Pre-execution gate for CAR recovery. Independent production validation is
+ * mandatory for every target. This is intentionally side-effect-free: no D1
+ * mutation, queue insertion or automatic resumption is permitted here.
+ */
+export async function validateScopedCarRecoveryExecution({handoff,validateTarget}={}){
+ if(handoff?.authorized!==true||handoff.enqueueAllowed!==false||
+    handoff.acceptedJobsMutable!==false||handoff.resumeTriggered!==false||
+    !validId(handoff.projectId)||!Array.isArray(handoff.targets)||
+    handoff.targets.length<1||handoff.targets.length>3||
+    typeof validateTarget!=='function')
+  return {validated:false,reason:'execution_preconditions_failed',targets:[],resumeTriggered:false};
+ const validated=[];
+ for(const target of handoff.targets){
+  if(!validTarget(target?.targetId)||typeof target.sourceJobId!=='string'||
+     !target.sourceJobId.trim()||!Number.isSafeInteger(target.snapshotVersion)||
+     target.snapshotVersion<=0||target.anchorMethod!=='context'||
+     target.visualVerified!==false||target.requiresIndependentProductionValidation!==true)
+   return {validated:false,reason:'invalid_execution_target',targets:[],resumeTriggered:false};
+  let result;
+  try{result=await validateTarget(Object.freeze({...target}));}
+  catch{return {validated:false,reason:'production_validation_error',targets:[],resumeTriggered:false};}
+  if(result?.valid!==true||result.targetId!==target.targetId||
+     result.sourceJobId!==target.sourceJobId||
+     result.snapshotVersion!==target.snapshotVersion)
+   return {validated:false,reason:'production_validation_failed',targets:[],resumeTriggered:false};
+  validated.push({...target});
+ }
+ if(new Set(validated.map(t=>t.targetId)).size!==validated.length||
+    new Set(validated.map(t=>t.sourceJobId)).size!==validated.length||
+    new Set(validated.map(t=>t.snapshotVersion)).size!==1)
+  return {validated:false,reason:'execution_identity_collision',targets:[],resumeTriggered:false};
+ return {validated:true,reason:'validated_no_enqueue',targets:validated,
+  enqueueAllowed:false,resumeTriggered:false};
+}

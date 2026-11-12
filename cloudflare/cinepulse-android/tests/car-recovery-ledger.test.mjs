@@ -188,3 +188,18 @@ test('CAR handoff rejects partial checkpoint coverage rather than silently dropp
  assert.equal(result.reason,'incomplete_handoff_coverage');
  assert.deepEqual(result.targets,[]);
 });
+
+test('CAR handoff rejects mixed D1 snapshots even when each checkpoint matches its target',()=>{
+ const checkpoints=[
+  {targetId:'english:81',snapshotVersion:12,decision:{visualVerified:false}},
+  {targetId:'urdu:41',snapshotVersion:13,decision:{visualVerified:false}}
+ ];
+ const readiness={ready:true,eligible:[
+  {targetId:'english:81',snapshotVersion:12,sourceJobId:'job-1'},
+  {targetId:'urdu:41',snapshotVersion:13,sourceJobId:'job-2'}
+ ]};
+ const result=buildScopedCarRecoveryHandoff({projectId:id,readiness,checkpoints});
+ assert.equal(result.authorized,false);
+ assert.equal(result.reason,'mixed_snapshot_versions');
+ assert.deepEqual(result.targets,[]);
+});

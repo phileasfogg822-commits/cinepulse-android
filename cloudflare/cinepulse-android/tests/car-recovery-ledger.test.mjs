@@ -175,3 +175,16 @@ test('CAR handoff is project scoped, immutable and cannot enqueue jobs',()=>{
  assert.equal(stale.authorized,false);
  assert.equal(stale.reason,'handoff_checkpoint_mismatch');
 });
+
+test('CAR handoff rejects partial checkpoint coverage rather than silently dropping a target',()=>{
+ const checkpoints=[
+  {targetId:'english:81',snapshotVersion:12,decision:{visualVerified:false}},
+  {targetId:'urdu:41',snapshotVersion:12,decision:{visualVerified:false}}
+ ];
+ const readiness={ready:true,eligible:[{targetId:'english:81',
+  snapshotVersion:12,sourceJobId:'job-1'}]};
+ const result=buildScopedCarRecoveryHandoff({projectId:id,readiness,checkpoints});
+ assert.equal(result.authorized,false);
+ assert.equal(result.reason,'incomplete_handoff_coverage');
+ assert.deepEqual(result.targets,[]);
+});

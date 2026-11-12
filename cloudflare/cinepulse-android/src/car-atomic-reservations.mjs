@@ -203,3 +203,38 @@ export async function stageCarExecutionIntents(env,{projectId,operations,enabled
    enqueueAllowed:false,resumeTriggered:false};
  }catch{return fail('intent_transaction_failed');}
 }
+
+/**
+ * Read-only dispatcher handoff: return a complete, exact-match set of intents.
+ * This is NOT a queue insertion, a permission to enqueue, or a movie resume.
+ * The production dispatcher must perform its own transactional validation.
+ */
+export async function inspectCarDispatchHandoff(env,{projectId,operations}={}){
+ const reject=reason=>({ready:false,reason,enqueueAllowed:false,resumeTriggered:false});
+ if(!validProject(projectId)||!Array.isArray(operations)||
+    operations.length<1||operations.length>3)return reject('invalid_dispatch_batch');
+ const targetIds=new Set(),jobIds=new Set(),snapshots=new Set();
+ for(const op of operations){
+  if(!validTarget(op?.targetId)||typeof op.sourceJobId!=='string'||
+     !op.sourceJobId.trim()||!Number.isSafeInteger(op.snapshotVersion)||
+     op.snapshotVersion<=0||targetIds.has(op.targetId)||jobIds.has(op.sourceJobId))
+   return reject('invalid_dispatch_identity');
+  targetIds.add(op.targetId);jobIds.add(op.sourceJobId);snapshots.add(op.snapshotVersion);
+ }
+ if(snapshots.size!==1)return reject('mixed_dispatch_snapshot');
+ try{
+  const [reservations,intents]=await Promise.all([
+   env.DB.prepare('SELECT target_id,source_job_id,snapshot_version FROM car_recovery_reservations WHERE project_id=? ORDER BY target_id').bind(projectId).all(),
+   env.DB.prepare('SELECT target_id,source_job_id,snapshot_version FROM car_recovery_execution_intents WHERE project_id=? ORDER BY target_id').bind(projectId).all()
+  ]);
+  const matches=rows=>Array.isArray(rows)&&rows.length===operations.length&&
+   rows.every(row=>operations.some(op=>op.targetId===row.target_id&&
+    op.sourceJobId===row.source_job_id&&op.snapshotVersion===row.snapshot_version));
+  if(!matches(reservations.results)||!matches(intents.results))
+   return reject('dispatch_handoff_mismatch');
+  return {ready:true,reason:'isolated_dispatch_handoff_verified',
+   projectId,operations:operations.map(op=>Object.freeze({
+    targetId:op.targetId,sourceJobId:op.sourceJobId,snapshotVersion:op.snapshotVersion
+   })),enqueueAllowed:false,resumeTriggered:false};
+ }catch{return reject('dispatch_handoff_unavailable');}
+}

@@ -182,9 +182,13 @@ export async function stageCarExecutionIntents(env,{projectId,operations,enabled
      AND NOT EXISTS(SELECT 1 FROM json_each(?) j WHERE
       json_extract(j.value,'$.targetId')=car_recovery_reservations.target_id
       AND json_extract(j.value,'$.sourceJobId')=car_recovery_reservations.source_job_id
-      AND json_extract(j.value,'$.snapshotVersion')=car_recovery_reservations.snapshot_version))`;
+      AND json_extract(j.value,'$.snapshotVersion')=car_recovery_reservations.snapshot_version))
+    AND NOT EXISTS(SELECT 1 FROM car_recovery_reservations r WHERE r.project_id=?
+      AND NOT EXISTS(SELECT 1 FROM car_recovery_checkpoints c
+        WHERE c.project_id=r.project_id AND c.target_id=r.target_id
+         AND c.snapshot_version=r.snapshot_version))`;
   const result=await env.DB.prepare(sql).bind(projectId,Math.floor(Date.now()/1000),
-   payload,projectId,operations.length,projectId,projectId,payload).run();
+   payload,projectId,operations.length,projectId,projectId,payload,projectId).run();
   if(result.meta?.changes!==operations.length)return fail('intent_conflict_or_stale_reservation');
   const readback=await env.DB.prepare(
    'SELECT target_id,source_job_id,snapshot_version FROM car_recovery_execution_intents WHERE project_id=? ORDER BY target_id'

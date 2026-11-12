@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fingerprintCarD1State,validateCarStableD1Window} from '../src/car-d1-preflight.mjs';
+import {fingerprintCarD1State,validateCarStableD1Window,planAtomicCarRecovery} from '../src/car-d1-preflight.mjs';
 import {inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff,
  verifyFreshCarD1Snapshot} from '../src/car-recovery-ledger.mjs';
 
@@ -85,4 +85,21 @@ test('CAR D1 double-read accepts stable evidence but remains read-only',async()=
  assert.equal(result.validated,true);
  assert.equal(result.enqueueAllowed,false);
  assert.equal(result.resumeTriggered,false);
+});
+
+test('CAR atomic plan requires complete matching production attestation and never enqueues',()=>{
+ const target={targetId:'english:81',sourceJobId:'job-1',snapshotVersion:12};
+ const handoff={authorized:true,enqueueAllowed:false,acceptedJobsMutable:false,
+  resumeTriggered:false,projectId,targets:[target]};
+ const proof={verified:true,projectId,snapshotVersion:12,
+  acceptedJobsUnchanged:true,unresolvedTargetsVerified:true};
+ const missing=planAtomicCarRecovery({handoff,proof,productionResults:[]});
+ assert.equal(missing.prepared,false);
+ assert.equal(missing.reason,'incomplete_production_coverage');
+ const ready=planAtomicCarRecovery({handoff,proof,productionResults:[{
+  ...target,valid:true,productionValidated:true}]});
+ assert.equal(ready.prepared,true);
+ assert.equal(ready.reason,'transaction_required');
+ assert.equal(ready.enqueueAllowed,false);
+ assert.equal(ready.operations.length,1);
 });

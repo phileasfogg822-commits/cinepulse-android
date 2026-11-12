@@ -270,6 +270,7 @@ test('CAR execution preflight rejects a generic valid result without production 
   sourceJobId:'job-1',snapshotVersion:12,anchorMethod:'context',
   visualVerified:false,requiresIndependentProductionValidation:true}]};
  const result=await validateScopedCarRecoveryExecution({handoff,
+  validateFreshSnapshot:async()=>({verified:true,projectId:id,snapshotVersion:12,acceptedJobsUnchanged:true,unresolvedTargetsVerified:true}),
   validateTarget:async t=>({valid:true,targetId:t.targetId,
    sourceJobId:t.sourceJobId,snapshotVersion:t.snapshotVersion})});
  assert.equal(result.validated,false);

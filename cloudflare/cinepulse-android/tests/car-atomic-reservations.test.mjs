@@ -168,3 +168,83 @@ test('CAR execution intent exact retry is idempotent and conflict fails closed',
  assert.equal(rows.length,2);
  assert.equal(statements.filter(q=>q.includes('INSERT INTO car_recovery_execution_intents')).length,1);
 });
+
+/**
+ * Integration checks against real SQLite rather than a mocked D1 statement.
+ * The CAR tables are isolated; accepted V5 jobs must never be mutated.
+ */
+test('real SQLite stages both reservations and intents, retries without duplicate rows',async()=>{
+ const {DatabaseSync}=await import('node:sqlite');
+ const db=new DatabaseSync(':memory:');
+ try{
+  db.exec(`CREATE TABLE jobs (
+   id TEXT PRIMARY KEY,project_id TEXT NOT NULL,step_id TEXT NOT NULL,
+   status TEXT NOT NULL,created_at INTEGER NOT NULL,output TEXT
+  );
+  CREATE TABLE car_recovery_checkpoints (
+   project_id TEXT NOT NULL,target_id TEXT NOT NULL,snapshot_version INTEGER NOT NULL,
+   decision_json TEXT NOT NULL,created_at INTEGER NOT NULL,
+   PRIMARY KEY(project_id,target_id)
+  );`);
+  const decision=JSON.stringify({museRequestId:'muse-request-123',
+   sourceCueIds:[1],anchorMethod:'context',visualVerified:false});
+  for(const op of operations){
+   db.prepare('INSERT INTO jobs VALUES(?,?,?,?,?,?)').run(
+    op.sourceJobId,projectId,op.targetId.startsWith('english:')?
+     'deep_match_english':'deep_match_urdu','done',12,'accepted-original');
+   db.prepare('INSERT INTO car_recovery_checkpoints VALUES(?,?,?,?,?)').run(
+    projectId,op.targetId,12,decision,12);
+  }
+  const env={DB:{prepare(sql){
+   const stmt=db.prepare(sql);
+   const run=(args)=>async()=>({meta:{changes:Number(stmt.run(...args).changes)}});
+   return {run:run([]),bind(...args){return {
+    run:run(args),all:async()=>({results:stmt.all(...args)})
+   };}};
+  }}};
+  const reserve=()=>stageCarRecoveryReservations(env,{manifest,
+   stateFingerprint:hash,enabled:true,validateFreshProduction:validProof});
+  const intent=()=>stageCarExecutionIntents(env,{projectId,operations,enabled:true});
+  assert.equal((await reserve()).reserved,true);
+  assert.equal((await reserve()).idempotent,true);
+  assert.equal((await intent()).staged,true);
+  assert.equal((await intent()).idempotent,true);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_reservations').get().n,2);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_execution_intents').get().n,2);
+  assert.deepEqual(db.prepare('SELECT output FROM jobs ORDER BY id').all(),
+   [{output:'accepted-original'},{output:'accepted-original'}]);
+ }finally{db.close();}
+});
+
+test('real SQLite refuses stale deep-match jobs before any CAR write',async()=>{
+ const {DatabaseSync}=await import('node:sqlite');
+ const db=new DatabaseSync(':memory:');
+ try{
+  db.exec(`CREATE TABLE jobs (
+   id TEXT PRIMARY KEY,project_id TEXT,step_id TEXT,created_at INTEGER
+  );
+  CREATE TABLE car_recovery_checkpoints (
+   project_id TEXT,target_id TEXT,snapshot_version INTEGER,
+   decision_json TEXT,created_at INTEGER,PRIMARY KEY(project_id,target_id)
+  );`);
+  db.prepare('INSERT INTO jobs VALUES(?,?,?,?)').run(
+   'newer-job',projectId,'deep_match_english',13);
+  const decision=JSON.stringify({museRequestId:'muse-request-123',
+   sourceCueIds:[1],anchorMethod:'context',visualVerified:false});
+  for(const op of operations)db.prepare(
+   'INSERT INTO car_recovery_checkpoints VALUES(?,?,?,?,?)').run(
+    projectId,op.targetId,12,decision,12);
+  const env={DB:{prepare(sql){
+   const stmt=db.prepare(sql);
+   return {run:async()=>({meta:{changes:Number(stmt.run().changes)}}),
+    bind(...args){return {
+     run:async()=>({meta:{changes:Number(stmt.run(...args).changes)}}),
+     all:async()=>({results:stmt.all(...args)})
+    };}};
+  }}};
+  const result=await stageCarRecoveryReservations(env,{manifest,
+   stateFingerprint:hash,enabled:true,validateFreshProduction:validProof});
+  assert.equal(result.reserved,false);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_reservations').get().n,0);
+ }finally{db.close();}
+});

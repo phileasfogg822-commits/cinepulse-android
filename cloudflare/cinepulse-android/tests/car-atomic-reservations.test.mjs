@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff,stageCarDispatchClaims,planCarRecoveryJobs,stageCarRecoveryOutbox,enqueueCarRecoveryOutboxJob}
+import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff,stageCarDispatchClaims,planCarRecoveryJobs,stageCarRecoveryOutbox,enqueueCarRecoveryOutboxJob,inspectCarMovieDispatchControls}
  from '../src/car-atomic-reservations.mjs';
 
 const projectId='fed941ad-ff7f-4b0f-8439-25cfda24d187';
@@ -560,4 +560,22 @@ test('real SQLite CAR outbox refuses changed claims before writing rows',async()
   assert.equal(result.staged,false);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_job_outbox').get().n,0);
  }finally{db.close();}
+});
+
+test('CAR dispatch control inspection blocks stopped movies, busy movies and paused workers',async()=>{
+ const inspect=async({status='ready',active=0,enabled=1,paused=0}={})=>{
+  const env={DB:{prepare(sql){return {bind(){return {first:async()=>{
+   if(sql.includes('FROM projects'))return {id:projectId,worker_id:'worker-1',status};
+   if(sql.includes('FROM jobs'))return {n:active};
+   if(sql.includes('FROM workers'))return {enabled,paused};
+   throw Error('unexpected query');
+  }};}};}};
+  return inspectCarMovieDispatchControls(env,{projectId});
+ };
+ assert.equal((await inspect()).ready,true);
+ assert.equal((await inspect({status:'stopped'})).reason,'movie_control_blocks_recovery');
+ assert.equal((await inspect({status:'paused'})).reason,'movie_control_blocks_recovery');
+ assert.equal((await inspect({active:1})).reason,'movie_has_active_jobs');
+ assert.equal((await inspect({paused:1})).reason,'worker_unavailable_or_paused');
+ assert.equal((await inspect({enabled:0})).reason,'worker_unavailable_or_paused');
 });

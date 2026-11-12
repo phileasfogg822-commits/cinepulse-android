@@ -404,3 +404,45 @@ export async function stageCarRecoveryOutbox(env,{plan,enabled=false}={}){
    reason:'isolated_outbox_staged',enqueueAllowed:false,resumeTriggered:false};
  }catch{return reject('outbox_transaction_failed');}
 }
+
+/**
+ * Atomically enqueue one CAR outbox item to the production jobs table.
+ * Disabled by default. Only a single queued job per movie is permitted,
+ * preserving the existing worker's sequential processing contract.
+ * Existing accepted jobs are never updated or deleted.
+ */
+export async function enqueueCarRecoveryOutboxJob(env,{
+ projectId,targetId,jobId,workerId,prompt,enabled=false
+}={}){
+ const reject=reason=>({enqueued:false,reason,resumeTriggered:false});
+ if(!enabled)return reject('feature_disabled');
+ if(!validProject(projectId)||!validTarget(targetId)||
+    typeof jobId!=='string'||!jobId.trim()||
+    typeof workerId!=='string'||!workerId.trim()||
+    typeof prompt!=='string'||!prompt.startsWith('[CAR-V1.1-RECOVERY] ')||
+    prompt.length>12000)return reject('invalid_enqueue_request');
+ try{
+  const now=Math.floor(Date.now()/1000);
+  const sql=`INSERT INTO jobs
+   (id,project_id,worker_id,step_id,status,prompt,created_at)
+   SELECT ?,o.project_id,p.worker_id,o.step_id,'queued',?,?
+   FROM car_recovery_job_outbox o
+   JOIN car_recovery_dispatch_claims c
+    ON c.project_id=o.project_id AND c.target_id=o.target_id
+    AND c.source_job_id=o.source_job_id AND c.snapshot_version=o.snapshot_version
+   JOIN projects p ON p.id=o.project_id AND p.worker_id=?
+   WHERE o.project_id=? AND o.target_id=?
+    AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=o.project_id
+     AND j.status IN ('queued','working'))
+    AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.id=?)
+    AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=o.project_id
+     AND j.created_at>=(SELECT MIN(created_at) FROM car_recovery_job_outbox
+      WHERE project_id=o.project_id)
+     AND j.step_id IN ('deep_match_english','deep_match_urdu'))`;
+  const result=await env.DB.prepare(sql).bind(
+   jobId,prompt,now,workerId,projectId,targetId,jobId).run();
+  if(result.meta?.changes!==1)return reject('queue_guard_rejected');
+  return {enqueued:true,jobId,projectId,targetId,
+   reason:'production_job_queued',resumeTriggered:false};
+ }catch{return reject('queue_transaction_failed');}
+}

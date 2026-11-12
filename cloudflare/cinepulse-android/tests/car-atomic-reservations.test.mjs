@@ -536,7 +536,7 @@ test('real SQLite CAR enqueue refuses wrong worker and existing active movie job
     'car-v1.1:'+projectId+':'+op.targetId+':'+op.snapshotVersion+
     ' Target only',enabled:true};
   assert.equal((await enqueueCarRecoveryOutboxJob(env,args)).reason,'queue_guard_rejected');
-  db.prepare('INSERT INTO jobs VALUES(?,?,?,?,?,?,?)').run('active',projectId,
+  db.prepare('INSERT INTO jobs(id,project_id,worker_id,step_id,status,prompt,created_at) VALUES(?,?,?,?,?,?,?)').run('active',projectId,
    'worker-1','deep_match_urdu','working','active job',11);
   assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,workerId:'worker-1'}))
    .reason,'queue_guard_rejected');

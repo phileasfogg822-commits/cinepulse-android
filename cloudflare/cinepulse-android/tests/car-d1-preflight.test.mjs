@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fingerprintCarD1State} from '../src/car-d1-preflight.mjs';
+import {fingerprintCarD1State,validateCarStableD1Window} from '../src/car-d1-preflight.mjs';
 import {inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff,
  verifyFreshCarD1Snapshot} from '../src/car-recovery-ledger.mjs';
 
@@ -65,4 +65,24 @@ test('missing state fingerprint and cross-project audit fail closed',async()=>{
   freshFingerprint:fingerprint});
  assert.equal(cross.verified,false);
  assert.equal(cross.reason,'audit_project_mismatch');
+});
+
+test('CAR D1 double-read rejects concurrent state changes without enqueue',async()=>{
+ let n=0;
+ const result=await validateCarStableD1Window({
+  readFingerprint:async()=>++n===1?'a'.repeat(64):'b'.repeat(64),
+  validateProduction:async()=>({valid:true,productionValidated:true})
+ });
+ assert.equal(result.validated,false);
+ assert.equal(result.reason,'d1_changed_during_validation');
+ assert.equal(result.enqueueAllowed,false);
+});
+test('CAR D1 double-read accepts stable evidence but remains read-only',async()=>{
+ const result=await validateCarStableD1Window({
+  readFingerprint:async()=> 'a'.repeat(64),
+  validateProduction:async()=>({valid:true,productionValidated:true})
+ });
+ assert.equal(result.validated,true);
+ assert.equal(result.enqueueAllowed,false);
+ assert.equal(result.resumeTriggered,false);
 });

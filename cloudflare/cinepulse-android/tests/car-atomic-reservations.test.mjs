@@ -248,3 +248,42 @@ test('real SQLite refuses stale deep-match jobs before any CAR write',async()=>{
   assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_reservations').get().n,0);
  }finally{db.close();}
 });
+
+test('real SQLite rejects conflicting intent after reservations without touching accepted jobs',async()=>{
+ const {DatabaseSync}=await import('node:sqlite');
+ const db=new DatabaseSync(':memory:');
+ try{
+  db.exec(`CREATE TABLE jobs(id TEXT PRIMARY KEY,project_id TEXT,step_id TEXT,created_at INTEGER,output TEXT);
+   CREATE TABLE car_recovery_checkpoints(project_id TEXT,target_id TEXT,snapshot_version INTEGER,
+    decision_json TEXT,created_at INTEGER,PRIMARY KEY(project_id,target_id));`);
+  const decision=JSON.stringify({museRequestId:'muse-request-123',
+   sourceCueIds:[1],anchorMethod:'context',visualVerified:false});
+  for(const op of operations){
+   db.prepare('INSERT INTO jobs VALUES(?,?,?,?,?)').run(op.sourceJobId,projectId,
+    op.targetId.startsWith('english:')?'deep_match_english':'deep_match_urdu',
+    12,'accepted-original');
+   db.prepare('INSERT INTO car_recovery_checkpoints VALUES(?,?,?,?,?)').run(
+    projectId,op.targetId,12,decision,12);
+  }
+  const env={DB:{prepare(sql){
+   const stmt=db.prepare(sql);
+   return {run:async()=>({meta:{changes:Number(stmt.run().changes)}}),
+    bind(...args){return {
+     run:async()=>({meta:{changes:Number(stmt.run(...args).changes)}}),
+     all:async()=>({results:stmt.all(...args)})
+    };}};
+  }}};
+  const reservation=await stageCarRecoveryReservations(env,{manifest,
+   stateFingerprint:hash,enabled:true,validateFreshProduction:validProof});
+  assert.equal(reservation.reserved,true);
+  const first=await stageCarExecutionIntents(env,{projectId,operations,enabled:true});
+  assert.equal(first.staged,true);
+  const conflict=await stageCarExecutionIntents(env,{projectId,enabled:true,
+   operations:[{...operations[0],sourceJobId:'another-job'},operations[1]]});
+  assert.equal(conflict.staged,false);
+  assert.equal(conflict.reason,'conflicting_execution_intents');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_execution_intents').get().n,2);
+  assert.deepEqual(db.prepare('SELECT output FROM jobs ORDER BY id').all().map(r=>r.output),
+   ['accepted-original','accepted-original']);
+ }finally{db.close();}
+});

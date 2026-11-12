@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff,validateScopedCarRecoveryExecution} from '../src/car-recovery-ledger.mjs';
+import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff,validateScopedCarRecoveryExecution,verifyFreshCarD1Snapshot} from '../src/car-recovery-ledger.mjs';
 const id='fed941ad-ff7f-4b0f-8439-25cfda24d187';
 const good=()=>({enabled:true,projectId:id,targetId:'english:81',inventory:{source:'d1_authoritative',complete:true,mutationPermitted:true,snapshotVersion:8,acceptedSegmentIds:[],recoveredSegmentIds:[],eligibility:{verified:true,unresolvedSegmentIds:['english:81']}},decision:{anchorMethod:'context',visualVerified:false,sourceCueIds:[480],museRequestId:'muse-123'}});
 test('disabled by default',()=>assert.equal(checkCarRecoveryWrite({...good(),enabled:false}).reason,'feature_disabled'));
@@ -311,4 +311,18 @@ test('CAR execution preflight is all-or-nothing when second target fails product
  assert.equal(result.reason,'production_validation_failed');
  assert.deepEqual(result.targets,[]);
  assert.equal(result.resumeTriggered,false);
+});
+
+test('fresh D1 snapshot verifier refuses missing audit and invalid handoff without authorizing queue',()=>{
+ const handoff={authorized:true,projectId:id,targets:[{targetId:'english:81',
+  sourceJobId:'job-1',snapshotVersion:12}]};
+ const missing=verifyFreshCarD1Snapshot({projectId:id,handoff,audit:null,
+  checkpoints:[],sourceSrt:''});
+ assert.equal(missing.verified,false);
+ assert.equal(missing.reason,'fresh_audit_not_ready');
+ assert.equal(missing.acceptedJobsUnchanged,false);
+ const invalid=verifyFreshCarD1Snapshot({projectId:id,
+  handoff:{...handoff,projectId:'other'},audit:{},checkpoints:[],sourceSrt:''});
+ assert.equal(invalid.verified,false);
+ assert.equal(invalid.reason,'invalid_handoff');
 });

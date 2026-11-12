@@ -266,7 +266,8 @@ async function taskDetail(env,job) {
        movie:{id:movie.id,title:movie.title,workerId:movie.worker_id},
        productionMode:'stable',sceneMatchingMode:PERMANENT_DEEP_BUILD,
        sourceSrtAsset:readOnlyAsset,inputAsset:readOnlyAsset,
-       deepMuse:{language,batchIndex:evidence.progress.batchIndex,
+       deepMuse:{...(recovery?{carRecovery:{targets:JSON.parse(recovery.targets_json),
+        otherLanguageAcceptedDecisions:(await acceptedPermanentDeepBatches(env,movie.id,language==='english'?PERMANENT_DEEP_MATCH_UR:PERMANENT_DEEP_MATCH_EN)).flatMap(b=>b.decisions)}}:{}),language,batchIndex:evidence.progress.batchIndex,
         batchCount:evidence.progress.batchCount,reviewedSegments:evidence.progress.reviewedSegments,
         totalSegments:cues.length,segments:evidence.segments,rankedSourceCandidates:evidence.ranked.candidates,
         maxSourceEvidenceCharacters:evidence.ranked.budget,priorAcceptedDecisions:accepted.flatMap(x=>x.decisions),
@@ -1121,7 +1122,7 @@ async function route(request,env){
         evidenceReason:audit.reason||null,candidateReady:eligible,
         reason:eligible?'verified_bounded_candidates_only':
           audit.evidenceStatus!=='verified'?'unverified_source_provenance':
-          !exact?'unresolved_inventory_incomplete_or_over_limit':
+          !exact?(verified.length===0?'verified_failure_declaration_required':'recovery_limit_exceeded'):
           'movie_paused_or_stopped',
         readOnly:true,recoveryDispatchEnabled:carLiveEnabled(env,pid),
         recoveryResultAcceptanceEnabled:carLiveEnabled(env,pid),

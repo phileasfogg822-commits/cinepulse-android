@@ -130,3 +130,9 @@ test('authenticated HTTP declaration, leased result, audit and continuation work
  assert.equal(report.liveRecovery.recoveredCount,1);assert.equal(report.acceptedCount,10);
  assert.equal(report.recoveryDispatchEnabled,true);assert.equal(report.unknownCount,14);
 });
+
+test('an older failed job cannot authorize recovery after a newer matching attempt',async()=>{
+ const f=fixture();f.db.exec("INSERT INTO jobs(id,project_id,worker_id,step_id,status,error,created_at) SELECT 'newer',project_id,worker_id,step_id,'error','different failure',3 FROM jobs WHERE id='33333333-3333-4333-8333-333333333333'");
+ await assert.rejects(dispatch(f),/Dispatch rejected/);
+ assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE id='recovery'").get().n,0);
+});

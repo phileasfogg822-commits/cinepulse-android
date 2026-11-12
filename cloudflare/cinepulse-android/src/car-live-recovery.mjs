@@ -88,7 +88,8 @@ export async function dispatchCarLiveBatch(env,{projectId,workerId,failed,target
  const result=await env.DB.batch([
  env.DB.prepare(`INSERT INTO car_live_batches SELECT r.* FROM (SELECT ? job_id,? project_id,? worker_id,? failed_job_id,? step_id,? targets_json,? snapshot_json,? source_hash,? next_job_id,? created_at) r
  WHERE ${controlGuard} AND ${snapshotGuard}
- AND EXISTS(SELECT 1 FROM jobs f WHERE f.id=r.failed_job_id AND f.project_id=r.project_id AND f.worker_id=r.worker_id AND f.step_id=r.step_id AND f.status='error' AND f.error=?)
+ AND EXISTS(SELECT 1 FROM jobs f WHERE f.id=r.failed_job_id AND f.project_id=r.project_id AND f.worker_id=r.worker_id AND f.step_id=r.step_id AND f.status='error' AND f.error=?
+ AND f.rowid=(SELECT max(latest.rowid) FROM jobs latest WHERE latest.project_id=r.project_id AND latest.step_id=r.step_id))
  AND NOT EXISTS(SELECT 1 FROM jobs a WHERE a.project_id=r.project_id AND a.status IN ('queued','working'))
  AND COALESCE((SELECT sum(json_array_length(targets_json)) FROM car_live_batches WHERE project_id=r.project_id),0)+json_array_length(r.targets_json)<=3
  AND NOT EXISTS(SELECT 1 FROM car_live_batches b,json_each(b.targets_json) old,json_each(r.targets_json) fresh

@@ -433,7 +433,9 @@ export async function enqueueCarRecoveryOutboxJob(env,{
    JOIN projects p ON p.id=o.project_id AND p.worker_id=?
     AND p.status='needs_review'
    JOIN workers w ON w.id=p.worker_id AND w.enabled=1 AND w.paused=0
+   LEFT JOIN cinepulse_movie_controls mc ON mc.project_id=p.id
    WHERE o.project_id=? AND o.target_id=?
+    AND COALESCE(mc.paused,0)=0 AND COALESCE(mc.stopped,0)=0
     AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=o.project_id
      AND j.status IN ('queued','working'))
     AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.id=?)
@@ -459,10 +461,11 @@ export async function inspectCarMovieDispatchControls(env,{projectId}={}){
  if(!validProject(projectId))return reject('invalid_project');
  try{
   const project=await env.DB.prepare(
-   'SELECT p.id,p.worker_id,p.status FROM projects p WHERE p.id=?'
+   'SELECT p.id,p.worker_id,p.status,COALESCE(mc.paused,0) AS control_paused,COALESCE(mc.stopped,0) AS control_stopped FROM projects p LEFT JOIN cinepulse_movie_controls mc ON mc.project_id=p.id WHERE p.id=?'
   ).bind(projectId).first();
   if(!project?.worker_id)return reject('project_or_worker_missing');
-  if(String(project.status||'').toLowerCase()!=='needs_review')
+  if(String(project.status||'').toLowerCase()!=='needs_review'||
+     Number(project.control_paused)||Number(project.control_stopped))
    return reject('movie_control_blocks_recovery');
   const active=await env.DB.prepare(
    "SELECT COUNT(*) AS n FROM jobs WHERE project_id=? AND status IN ('queued','working')"

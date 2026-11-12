@@ -326,3 +326,39 @@ test('fresh D1 snapshot verifier refuses missing audit and invalid handoff witho
  assert.equal(invalid.verified,false);
  assert.equal(invalid.reason,'invalid_handoff');
 });
+
+test('CAR readiness blocks partial movie unresolved inventory even with a valid checkpoint',()=>{
+ const decision={anchorMethod:'context',visualVerified:false,sourceCueIds:[25],
+  evidenceQuote:'dragon flies over village',museRequestId:'muse-123'};
+ const audit={source:'d1_read_only',evidenceStatus:'verified',
+  inventory:{snapshotVersion:12,acceptedSegmentIds:['english:80'],
+   unknownSegmentIds:['english:81','urdu:41']},
+  verifiedSegmentIds:['english:81'],verifiedProvenance:[{
+   targetId:'english:81',sourceJobId:'job-1',sourceCueIds:[25],
+   sourceCueQuote:'dragon flies over village',museRequestId:'muse-123'}]};
+ const result=inspectScopedCarRecoveryReadiness({audit,checkpoints:[
+  {targetId:'english:81',snapshotVersion:12,decision}],
+  sourceSrt:'25\n00:01:00,000 --> 00:01:04,000\nThe dragon flies over village.\n'});
+ assert.equal(result.ready,false);
+ assert.equal(result.reason,'incomplete_movie_unresolved_coverage');
+ assert.deepEqual(result.eligible,[]);
+});
+
+test('CAR readiness blocks handoff until every verified unresolved segment has a checkpoint',()=>{
+ const decision={anchorMethod:'context',visualVerified:false,sourceCueIds:[25],
+  evidenceQuote:'dragon flies over village',museRequestId:'muse-123'};
+ const audit={source:'d1_read_only',evidenceStatus:'verified',
+  inventory:{snapshotVersion:12,acceptedSegmentIds:[],
+   unknownSegmentIds:['english:81','urdu:41']},
+  verifiedSegmentIds:['english:81','urdu:41'],verifiedProvenance:[
+   {targetId:'english:81',sourceJobId:'job-1',sourceCueIds:[25],
+    sourceCueQuote:'dragon flies over village',museRequestId:'muse-123'},
+   {targetId:'urdu:41',sourceJobId:'job-2',sourceCueIds:[25],
+    sourceCueQuote:'dragon flies over village',museRequestId:'muse-456'}]};
+ const result=inspectScopedCarRecoveryReadiness({audit,checkpoints:[
+  {targetId:'english:81',snapshotVersion:12,decision}],
+  sourceSrt:'25\n00:01:00,000 --> 00:01:04,000\nThe dragon flies over village.\n'});
+ assert.equal(result.ready,false);
+ assert.equal(result.reason,'incomplete_recovery_checkpoint_coverage');
+ assert.deepEqual(result.eligible,[]);
+});

@@ -17,6 +17,7 @@ on:
       - 'cloudflare/cinepulse-android/tests/car-d1-inventory.test.mjs'
       - 'cloudflare/cinepulse-android/tests/car-d1-preflight.test.mjs'
       - 'cloudflare/cinepulse-android/tests/car-atomic-reservations.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/car-dispatch-readiness-route.test.mjs'
       - 'cloudflare/cinepulse-android/tests/car-recovery-ledger.test.mjs'
       - 'cloudflare/cinepulse-android/tests/car-six-film-diagnostics.test.mjs'
       - '.github/workflows/car-v1-1-regression.yml'

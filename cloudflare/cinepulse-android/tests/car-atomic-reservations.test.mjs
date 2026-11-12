@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectCarReservationManifest,stageCarRecoveryReservations}
+import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents}
  from '../src/car-atomic-reservations.mjs';
 
 const projectId='fed941ad-ff7f-4b0f-8439-25cfda24d187';
@@ -112,5 +112,17 @@ test('CAR reservation refuses partial per-target production attestation',async()
     valid:true,productionValidated:true}]})});
  assert.equal(result.reserved,false);
  assert.equal(result.reason,'production_validation_failed');
+ assert.equal(env.statements.length,0);
+});
+
+test('CAR execution intents remain disabled and reject duplicate target identities',async()=>{
+ const env=fakeD1();
+ const disabled=await stageCarExecutionIntents(env,{projectId,operations});
+ assert.equal(disabled.staged,false);
+ assert.equal(disabled.reason,'feature_disabled');
+ const duplicate=await stageCarExecutionIntents(env,{projectId,enabled:true,
+  operations:[operations[0],operations[0]]});
+ assert.equal(duplicate.staged,false);
+ assert.equal(duplicate.reason,'invalid_or_duplicate_intent');
  assert.equal(env.statements.length,0);
 });

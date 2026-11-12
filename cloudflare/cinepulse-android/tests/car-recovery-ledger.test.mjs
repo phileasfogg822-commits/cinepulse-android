@@ -228,3 +228,15 @@ test('CAR handoff refuses blank source job identity',()=>{
  assert.equal(result.reason,'invalid_source_job_id');
  assert.deepEqual(result.targets,[]);
 });
+
+test('CAR handoff rejects missing and non-integer D1 snapshot versions',()=>{
+ for(const snapshotVersion of [undefined,0,-1,1.5,'12']){
+  const checkpoints=[{targetId:'english:81',snapshotVersion,decision:{visualVerified:false}}];
+  const readiness={ready:true,eligible:[{targetId:'english:81',
+   snapshotVersion,sourceJobId:'job-1'}]};
+  const result=buildScopedCarRecoveryHandoff({projectId:id,readiness,checkpoints});
+  assert.equal(result.authorized,false);
+  assert.equal(result.reason,'invalid_snapshot_version');
+  assert.deepEqual(result.targets,[]);
+ }
+});

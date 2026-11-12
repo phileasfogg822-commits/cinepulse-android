@@ -139,7 +139,7 @@ test('CAR execution intent exact retry is idempotent and conflict fails closed',
      assert.match(sql,/c\.snapshot_version=r\.snapshot_version/);
      assert.equal(args[8],projectId);
      assert.match(sql,/j\.created_at>/);
-     assert.match(sql,/MIN\(snapshot_version\)/);
+     assert.match(sql,/MAX\(created_at\)/);
      assert.equal(args[9],projectId);
      assert.equal(args[10],projectId);
      assert.equal(args[11],projectId);

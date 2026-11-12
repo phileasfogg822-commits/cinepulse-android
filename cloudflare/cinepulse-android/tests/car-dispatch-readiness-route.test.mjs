@@ -8,7 +8,7 @@ const adminToken='a'.repeat(48);
 const path='/v1/projects/'+projectId+'/car/dispatch-readiness';
 
 function fixture({enabledFlag=true,workerEnabled=1,workerPaused=0,
-  projectStatus='needs_review',v5=true,activeJobs=0}={}){
+  projectStatus='needs_review',v5=true,activeJobs=0,moviePaused=0,movieStopped=0}={}){
  const queries=[];
  const DB={prepare(sql){
   queries.push(sql);
@@ -20,9 +20,9 @@ function fixture({enabledFlag=true,workerEnabled=1,workerPaused=0,
    throw Error('Readiness route attempted a database write');
   return {bind(...args){return {async first(){
    if(sql.includes('SELECT p.id,p.worker_id,p.status FROM projects p'))
-    return {id:projectId,worker_id:'worker-1',status:projectStatus};
+    return {id:projectId,worker_id:'worker-1',status:projectStatus,control_paused:moviePaused,control_stopped:movieStopped};
    if(sql.includes('FROM projects p'))
-    return {id:projectId,worker_id:'worker-1',status:projectStatus};
+    return {id:projectId,worker_id:'worker-1',status:projectStatus,control_paused:moviePaused,control_stopped:movieStopped};
    if(sql.includes("step_id='digest'"))
     return {prompt:v5?'[CINEPULSE-V5-PERMANENT-DEEP-MUSE] enabled':'legacy digest'};
    if(sql.includes('FROM jobs'))return {n:activeJobs};
@@ -85,7 +85,7 @@ test('CAR readiness denies legacy projects and paused workers without writes',as
 });
 
 test('CAR readiness denies in-progress and stopped movies and active jobs',async()=>{
- for(const options of [{projectStatus:'processing'},{projectStatus:'stopped'},{activeJobs:2}]){
+ for(const options of [{projectStatus:'processing'},{projectStatus:'stopped'},{activeJobs:2},{moviePaused:1},{movieStopped:1}]){
   const {env}=fixture(options);
   const response=await request(env);
   assert.equal(response.status,200,JSON.stringify(response.body));

@@ -203,3 +203,18 @@ test('CAR handoff rejects mixed D1 snapshots even when each checkpoint matches i
  assert.equal(result.reason,'mixed_snapshot_versions');
  assert.deepEqual(result.targets,[]);
 });
+
+test('CAR handoff refuses multiple targets tied to the same source job',()=>{
+ const checkpoints=[
+  {targetId:'english:81',snapshotVersion:12,decision:{visualVerified:false}},
+  {targetId:'urdu:41',snapshotVersion:12,decision:{visualVerified:false}}
+ ];
+ const readiness={ready:true,eligible:[
+  {targetId:'english:81',snapshotVersion:12,sourceJobId:'same-job'},
+  {targetId:'urdu:41',snapshotVersion:12,sourceJobId:'same-job'}
+ ]};
+ const result=buildScopedCarRecoveryHandoff({projectId:id,readiness,checkpoints});
+ assert.equal(result.authorized,false);
+ assert.equal(result.reason,'duplicate_source_jobs');
+ assert.deepEqual(result.targets,[]);
+});

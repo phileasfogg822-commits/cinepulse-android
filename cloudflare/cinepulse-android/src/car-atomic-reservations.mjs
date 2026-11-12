@@ -189,7 +189,7 @@ export async function stageCarExecutionIntents(env,{projectId,operations,enabled
          AND c.snapshot_version=r.snapshot_version))
     AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=?
       AND j.step_id IN ('deep_match_english','deep_match_urdu')
-      AND j.created_at>(SELECT MIN(snapshot_version) FROM car_recovery_reservations WHERE project_id=?))
+      AND j.created_at>(SELECT MAX(created_at) FROM car_recovery_reservations WHERE project_id=?))
     AND NOT EXISTS(SELECT 1 FROM car_recovery_reservations r WHERE r.project_id=?
       AND (r.state_fingerprint IS NULL OR length(r.state_fingerprint)<>64))`;
   const result=await env.DB.prepare(sql).bind(projectId,Math.floor(Date.now()/1000),
@@ -289,7 +289,7 @@ export async function stageCarDispatchClaims(env,{handoff,enabled=false}={}){
      AND (r.state_fingerprint IS NULL OR length(r.state_fingerprint)<>64))
     AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=?
      AND j.step_id IN ('deep_match_english','deep_match_urdu')
-     AND j.created_at>(SELECT MIN(snapshot_version) FROM car_recovery_reservations
+     AND j.created_at>(SELECT MAX(created_at) FROM car_recovery_reservations
       WHERE project_id=?))`).bind(
     projectId,Math.floor(Date.now()/1000),payload,projectId,
     operations.length,projectId,projectId,payload,

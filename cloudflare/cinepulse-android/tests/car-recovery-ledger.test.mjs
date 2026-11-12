@@ -292,3 +292,23 @@ test('CAR execution preflight refuses missing or stale D1 snapshot and does not 
  assert.equal(result.reason,'fresh_snapshot_mismatch');
  assert.equal(calls,0);
 });
+
+test('CAR execution preflight is all-or-nothing when second target fails production validation',async()=>{
+ const target=(targetId,sourceJobId)=>({targetId,sourceJobId,snapshotVersion:12,
+  anchorMethod:'context',visualVerified:false,requiresIndependentProductionValidation:true});
+ const handoff={authorized:true,enqueueAllowed:false,acceptedJobsMutable:false,
+  resumeTriggered:false,projectId:id,targets:[target('english:81','job-1'),target('urdu:41','job-2')]};
+ const validated=[];
+ const result=await validateScopedCarRecoveryExecution({handoff,
+  validateFreshSnapshot:async()=>({verified:true,projectId:id,snapshotVersion:12,
+   acceptedJobsUnchanged:true,unresolvedTargetsVerified:true}),
+  validateTarget:async t=>{validated.push(t.targetId);return {
+   valid:t.targetId==='english:81',productionValidated:true,
+   targetId:t.targetId,sourceJobId:t.sourceJobId,snapshotVersion:t.snapshotVersion
+  }}});
+ assert.deepEqual(validated,['english:81','urdu:41']);
+ assert.equal(result.validated,false);
+ assert.equal(result.reason,'production_validation_failed');
+ assert.deepEqual(result.targets,[]);
+ assert.equal(result.resumeTriggered,false);
+});

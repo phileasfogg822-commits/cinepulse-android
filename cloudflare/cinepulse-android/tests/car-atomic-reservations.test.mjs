@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff,stageCarDispatchClaims}
+import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff,stageCarDispatchClaims,planCarRecoveryJobs}
  from '../src/car-atomic-reservations.mjs';
 
 const projectId='fed941ad-ff7f-4b0f-8439-25cfda24d187';
@@ -364,4 +364,27 @@ test('real SQLite stages dispatch claims exactly once after reservations and int
   assert.deepEqual(db.prepare('SELECT output FROM jobs ORDER BY id').all().map(r=>r.output),
    ['accepted-original','accepted-original']);
  }finally{db.close();}
+});
+
+test('job specifications are deterministic and require complete matching dispatch claims',async()=>{
+ const handoff={ready:true,enqueueAllowed:false,resumeTriggered:false,projectId,operations};
+ const env={DB:{prepare(sql){
+  return {bind(id){
+   assert.equal(id,projectId);
+   return {all:async()=>({results:operations.map(op=>({
+    target_id:op.targetId,source_job_id:op.sourceJobId,
+    snapshot_version:op.snapshotVersion
+   }))})};
+  }};
+ }}};
+ assert.equal((await planCarRecoveryJobs(env,{handoff})).reason,'feature_disabled');
+ const first=await planCarRecoveryJobs(env,{handoff,enabled:true});
+ assert.equal(first.planned,true);
+ assert.equal(first.jobs.length,2);
+ assert.deepEqual(first.jobs.map(j=>j.stepId),['deep_match_english','deep_match_urdu']);
+ assert.equal(first.enqueueAllowed,false);
+ const second=await planCarRecoveryJobs(env,{handoff,enabled:true});
+ assert.deepEqual(first.jobs,second.jobs);
+ const invalid=await planCarRecoveryJobs(env,{handoff:{...handoff,ready:false},enabled:true});
+ assert.equal(invalid.reason,'unverified_dispatch_handoff');
 });

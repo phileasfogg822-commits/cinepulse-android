@@ -124,7 +124,7 @@ test('failed recovery retries the same reservation and audit distinguishes reser
  assert.equal(f.db.prepare('SELECT count(*) n FROM car_live_batches').get().n,1);
 });
 
-test('authenticated HTTP declaration, leased result, audit and continuation work together',async()=>{
+test('authenticated HTTP recovery rejects 19 unclassified bilingual segments without mutating V5',async()=>{
  const {default:worker}=await import('../src/index.mjs');
  const {hashWorkerToken}=await import('../src/helpers.mjs');
  const f=fixture(),token='real-test-worker-token';
@@ -139,20 +139,18 @@ test('authenticated HTTP declaration, leased result, audit and continuation work
   const r=await worker.fetch(new Request('https://test/w/'+wid+path,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body)}),f.env,{});
   return {status:r.status,body:await r.json()};
  };
+ const before=f.db.prepare("SELECT output FROM jobs WHERE id='accepted'").get().output;
  const start=await post('/projects/'+pid+'/car/recover',{failedJobId:failed.id,targets});
- assert.equal(start.status,201,JSON.stringify(start.body));
- const id=start.body.jobId;
- f.db.prepare("UPDATE jobs SET status='working',lease='lease',lease_until=? WHERE id=?").run(Math.floor(Date.now()/1000)+900,id);
- const result=await post('/tasks/'+id+'/result',{lease:'lease',output:payload()});
- assert.equal(result.status,201,JSON.stringify(result.body));
- assert.equal(result.body.status,'done');
- assert.equal(f.db.prepare('SELECT status FROM jobs WHERE id=?').get(result.body.nextJobId).status,'queued');
+ assert.equal(start.status,409,JSON.stringify(start.body));
+ assert.match(JSON.stringify(start.body),/inventory/i);
+ assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE status='queued'").get().n,0);
+ assert.equal(f.db.prepare("SELECT output FROM jobs WHERE id='accepted'").get().output,before);
  const audit=await worker.fetch(new Request('https://test/w/'+wid+'/projects/'+pid+'/car/audit',{headers:{Authorization:'Bearer '+token}}),f.env,{});
  assert.equal(audit.status,200);const report=await audit.json();
- assert.equal(report.liveRecovery.recoveredCount,1);assert.equal(report.acceptedCount,10);
- assert.equal(report.recoveryDispatchEnabled,true);assert.equal(report.unknownCount,14);
+ assert.equal(report.liveRecovery.reservedCount,0);assert.equal(report.acceptedCount,5);
+ assert.equal(report.recoveryDispatchEnabled,true);assert.equal(report.unknownCount,19);
  assert.equal(report.candidateReady,false);
- assert.equal(report.unprocessedOrUnverifiedCount,14);
+ assert.equal(report.unprocessedOrUnverifiedCount,19);
 });
 
 test('an older failed job cannot authorize recovery after a newer matching attempt',async()=>{

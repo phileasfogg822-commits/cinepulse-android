@@ -1084,6 +1084,15 @@ async function route(request,env){
       const sourceSrt=await file.text();
       try{
         const targets=verifyFailedCarTargets({failed,language,cues:loadProductionCues(outputs['srt_'+language]),accepted,sourceSrt,targets:body.targets});
+        // Recovery is a write operation: unlike a diagnostic candidate, it
+        // must not proceed while any bilingual segment is still unclassified.
+        // Independently reconcile the entire D1 inventory before dispatch.
+        const audit=await auditCarD1Evidence(env,pid,outputs,acceptedPermanentDeepBatches,sourceSrt);
+        const unknown=audit.inventory?.unknownSegmentIds||[];
+        const proven=new Set([...(audit.verifiedSegmentIds||[]),...targets.map(t=>language+':'+t.segmentIndex)]);
+        if(audit.evidenceStatus!=='verified'||unknown.length===0||unknown.length>3||
+           unknown.some(id=>!proven.has(id))||proven.size>3)
+          fail(409,'CAR full bilingual inventory is incomplete or exceeds the three-target recovery limit');
         if(snapshot!==await completedCarSnapshot(env,pid))fail(409,'Completed movie state changed during verification');
         return json(await dispatchCarLiveBatch(env,{projectId:pid,workerId:wid,failed,targets,sourceSrt,
           snapshot,jobId:newId(),nextJobId:newId(),now:nowSeconds()}),201);

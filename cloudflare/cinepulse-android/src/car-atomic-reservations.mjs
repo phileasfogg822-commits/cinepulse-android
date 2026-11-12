@@ -238,3 +238,56 @@ export async function inspectCarDispatchHandoff(env,{projectId,operations}={}){
    })),enqueueAllowed:false,resumeTriggered:false};
  }catch{return reject('dispatch_handoff_unavailable');}
 }
+
+/**
+ * Isolated executor preparation: never writes to production jobs.
+ * It records one durable dispatch claim per target, only for exact handoffs.
+ * Actual production queue creation remains a separate, disabled integration.
+ */
+export async function stageCarDispatchClaims(env,{handoff,enabled=false}={}){
+ const reject=reason=>({claimed:false,reason,enqueueAllowed:false,resumeTriggered:false});
+ if(!enabled)return reject('feature_disabled');
+ if(handoff?.ready!==true||handoff.enqueueAllowed!==false||
+    handoff.resumeTriggered!==false)return reject('unverified_dispatch_handoff');
+ const {projectId,operations}=handoff;
+ const verified=await inspectCarDispatchHandoff(env,{projectId,operations});
+ if(verified.ready!==true)return reject(verified.reason);
+ try{
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS car_recovery_dispatch_claims (
+   project_id TEXT NOT NULL,target_id TEXT NOT NULL,source_job_id TEXT NOT NULL,
+   snapshot_version INTEGER NOT NULL,created_at INTEGER NOT NULL,
+   PRIMARY KEY(project_id,target_id),UNIQUE(project_id,source_job_id)
+  )`).run();
+  const existing=await env.DB.prepare(
+   'SELECT target_id,source_job_id,snapshot_version FROM car_recovery_dispatch_claims WHERE project_id=?'
+  ).bind(projectId).all();
+  const matches=rows=>rows.length===operations.length&&rows.every(row=>
+   operations.some(op=>op.targetId===row.target_id&&
+    op.sourceJobId===row.source_job_id&&op.snapshotVersion===row.snapshot_version));
+  if(existing.results?.length)return matches(existing.results)?
+   {claimed:true,idempotent:true,count:operations.length,enqueueAllowed:false,resumeTriggered:false}:
+   reject('conflicting_dispatch_claims');
+  const payload=JSON.stringify(operations);
+  const result=await env.DB.prepare(`INSERT INTO car_recovery_dispatch_claims
+   (project_id,target_id,source_job_id,snapshot_version,created_at)
+   SELECT ?,json_extract(value,'$.targetId'),json_extract(value,'$.sourceJobId'),
+    json_extract(value,'$.snapshotVersion'),?
+   FROM json_each(?)
+   WHERE (SELECT COUNT(*) FROM car_recovery_execution_intents WHERE project_id=?)=?
+    AND NOT EXISTS(SELECT 1 FROM car_recovery_dispatch_claims WHERE project_id=?)
+    AND NOT EXISTS(SELECT 1 FROM car_recovery_execution_intents i WHERE i.project_id=?
+     AND NOT EXISTS(SELECT 1 FROM json_each(?) j
+      WHERE json_extract(j.value,'$.targetId')=i.target_id
+       AND json_extract(j.value,'$.sourceJobId')=i.source_job_id
+       AND json_extract(j.value,'$.snapshotVersion')=i.snapshot_version))`).bind(
+    projectId,Math.floor(Date.now()/1000),payload,projectId,
+    operations.length,projectId,projectId,payload).run();
+  if(result.meta?.changes!==operations.length)return reject('dispatch_claim_incomplete');
+  const readback=await env.DB.prepare(
+   'SELECT target_id,source_job_id,snapshot_version FROM car_recovery_dispatch_claims WHERE project_id=?'
+  ).bind(projectId).all();
+  if(!matches(readback.results||[]))return reject('dispatch_claim_readback_mismatch');
+  return {claimed:true,idempotent:false,count:operations.length,
+   reason:'isolated_dispatch_claims_staged',enqueueAllowed:false,resumeTriggered:false};
+ }catch{return reject('dispatch_claim_transaction_failed');}
+}

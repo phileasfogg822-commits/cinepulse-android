@@ -1381,7 +1381,7 @@ async function route(request,env){
 
   // CAR v1.1 administrator-only dispatch readiness inspection.
   // Explicitly read-only: no claim, outbox, production job or movie mutation.
-  const carDispatchReadinessRoute=/^\\/v1\\/projects\\/([a-f0-9-]{36})\\/car\\/dispatch-readiness/.exec(url.pathname);
+  const carDispatchReadinessRoute=url.pathname.split('/').length===6 && url.pathname.split('/')[1]==='v1' && url.pathname.split('/')[2]==='projects' && url.pathname.split('/')[4]==='car' && url.pathname.split('/')[5]==='dispatch-readiness' ? [url.pathname,url.pathname.split('/')[3]] : null;
   if(method==='GET'&&carDispatchReadinessRoute&&url.pathname===carDispatchReadinessRoute[0]){
     const projectId=requireUUID(carDispatchReadinessRoute[1]);
     if(env.CAR_V1_1_ENABLED!=='true')fail(403,'CAR recovery is disabled');

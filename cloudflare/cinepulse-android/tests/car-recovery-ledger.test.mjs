@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff} from '../src/car-recovery-ledger.mjs';
+import {checkCarRecoveryWrite,insertCarRecoveryCheckpoint,ensureCarRecoveryLedger,authorizeCarD1Inventory,verifyCarSourceSrt,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff,validateScopedCarRecoveryExecution} from '../src/car-recovery-ledger.mjs';
 const id='fed941ad-ff7f-4b0f-8439-25cfda24d187';
 const good=()=>({enabled:true,projectId:id,targetId:'english:81',inventory:{source:'d1_authoritative',complete:true,mutationPermitted:true,snapshotVersion:8,acceptedSegmentIds:[],recoveredSegmentIds:[],eligibility:{verified:true,unresolvedSegmentIds:['english:81']}},decision:{anchorMethod:'context',visualVerified:false,sourceCueIds:[480],museRequestId:'muse-123'}});
 test('disabled by default',()=>assert.equal(checkCarRecoveryWrite({...good(),enabled:false}).reason,'feature_disabled'));
@@ -239,4 +239,25 @@ test('CAR handoff rejects missing and non-integer D1 snapshot versions',()=>{
   assert.equal(result.reason,'invalid_snapshot_version');
   assert.deepEqual(result.targets,[]);
  }
+});
+
+test('CAR execution preflight requires independent production validation and never enqueues',async()=>{
+ const handoff={authorized:true,enqueueAllowed:false,acceptedJobsMutable:false,
+  resumeTriggered:false,projectId:id,targets:[{targetId:'english:81',
+  sourceJobId:'job-1',snapshotVersion:12,anchorMethod:'context',
+  visualVerified:false,requiresIndependentProductionValidation:true}]};
+ const absent=await validateScopedCarRecoveryExecution({handoff});
+ assert.equal(absent.validated,false);
+ const failed=await validateScopedCarRecoveryExecution({handoff,
+  validateTarget:async()=>({valid:true,targetId:'english:81',
+   sourceJobId:'different',snapshotVersion:12})});
+ assert.equal(failed.validated,false);
+ assert.equal(failed.reason,'production_validation_failed');
+ const passed=await validateScopedCarRecoveryExecution({handoff,
+  validateTarget:async t=>({valid:true,targetId:t.targetId,
+   sourceJobId:t.sourceJobId,snapshotVersion:t.snapshotVersion})});
+ assert.equal(passed.validated,true);
+ assert.equal(passed.enqueueAllowed,false);
+ assert.equal(passed.resumeTriggered,false);
+ assert.equal(passed.targets.length,1);
 });

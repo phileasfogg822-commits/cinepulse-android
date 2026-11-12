@@ -211,8 +211,8 @@ test('real SQLite stages both reservations and intents, retries without duplicat
   assert.equal((await intent()).idempotent,true);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_reservations').get().n,2);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_execution_intents').get().n,2);
-  assert.deepEqual(db.prepare('SELECT output FROM jobs ORDER BY id').all(),
-   [{output:'accepted-original'},{output:'accepted-original'}]);
+  assert.deepEqual(db.prepare('SELECT output FROM jobs ORDER BY id').all().map(row=>row.output),
+   ['accepted-original','accepted-original']);
  }finally{db.close();}
 });
 

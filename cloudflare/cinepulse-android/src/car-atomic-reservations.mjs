@@ -291,3 +291,35 @@ export async function stageCarDispatchClaims(env,{handoff,enabled=false}={}){
    reason:'isolated_dispatch_claims_staged',enqueueAllowed:false,resumeTriggered:false};
  }catch{return reject('dispatch_claim_transaction_failed');}
 }
+
+/**
+ * Build deterministic production job specifications from a verified claim.
+ * No D1 writes, no queue side effects. The executor must bind these to a
+ * real project worker and perform an atomic production transaction separately.
+ */
+export async function planCarRecoveryJobs(env,{handoff,enabled=false}={}){
+ const reject=reason=>({planned:false,reason,enqueueAllowed:false,resumeTriggered:false});
+ if(!enabled)return reject('feature_disabled');
+ if(handoff?.ready!==true||handoff.enqueueAllowed!==false||
+    handoff.resumeTriggered!==false)return reject('unverified_dispatch_handoff');
+ const {projectId,operations}=handoff;
+ const verified=await inspectCarDispatchHandoff(env,{projectId,operations});
+ if(!verified.ready)return reject(verified.reason);
+ try{
+  const claims=await env.DB.prepare(
+   'SELECT target_id,source_job_id,snapshot_version FROM car_recovery_dispatch_claims WHERE project_id=?'
+  ).bind(projectId).all();
+  const rows=claims.results||[];
+  if(rows.length!==operations.length||!rows.every(row=>operations.some(op=>
+    op.targetId===row.target_id&&op.sourceJobId===row.source_job_id&&
+    op.snapshotVersion===row.snapshot_version)))return reject('dispatch_claim_mismatch');
+  const specs=operations.map(op=>Object.freeze({
+   projectId,targetId:op.targetId,sourceJobId:op.sourceJobId,
+   snapshotVersion:op.snapshotVersion,
+   stepId:op.targetId.startsWith('english:')?'deep_match_english':'deep_match_urdu',
+   idempotencyKey:'car-v1.1:'+projectId+':'+op.targetId+':'+op.snapshotVersion
+  }));
+  return {planned:true,reason:'job_specs_ready_for_transactional_executor',
+   jobs:specs,enqueueAllowed:false,resumeTriggered:false};
+ }catch{return reject('job_spec_planning_failed');}
+}

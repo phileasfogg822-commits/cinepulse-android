@@ -133,3 +133,49 @@ export async function stageCarRecoveryReservations(env,{
    count:plan.operations.length,enqueueAllowed:false,resumeTriggered:false};
  }catch{return deny('reservation_transaction_conflict');}
 }
+
+/**
+ * Durable execution intent, isolated from the production jobs table.
+ * A unique project/target reservation permits at most one intent per target.
+ * This is NOT a dispatcher and never creates a Muse job.
+ */
+export async function stageCarExecutionIntents(env,{projectId,operations,enabled=false}={}){
+ const fail=reason=>({staged:false,reason,enqueueAllowed:false,resumeTriggered:false});
+ if(!enabled)return fail('feature_disabled');
+ if(!validProject(projectId)||!Array.isArray(operations)||operations.length<1||
+    operations.length>3)return fail('invalid_intent_batch');
+ const targets=new Set(),jobs=new Set();
+ for(const op of operations){
+  if(!validTarget(op?.targetId)||typeof op.sourceJobId!=='string'||
+     !op.sourceJobId.trim()||!Number.isSafeInteger(op.snapshotVersion)||
+     op.snapshotVersion<=0||targets.has(op.targetId)||jobs.has(op.sourceJobId))
+   return fail('invalid_or_duplicate_intent');
+  targets.add(op.targetId);jobs.add(op.sourceJobId);
+ }
+ try{
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS car_recovery_execution_intents (
+   project_id TEXT NOT NULL,target_id TEXT NOT NULL,
+   source_job_id TEXT NOT NULL,snapshot_version INTEGER NOT NULL,
+   created_at INTEGER NOT NULL,PRIMARY KEY(project_id,target_id),
+   UNIQUE(project_id,source_job_id)
+  )`).run();
+  const payload=JSON.stringify(operations);
+  const sql=`INSERT INTO car_recovery_execution_intents
+   (project_id,target_id,source_job_id,snapshot_version,created_at)
+   SELECT ?,json_extract(value,'$.targetId'),json_extract(value,'$.sourceJobId'),
+    json_extract(value,'$.snapshotVersion'),?
+   FROM json_each(?)
+   WHERE (SELECT COUNT(*) FROM car_recovery_reservations WHERE project_id=?)=?
+    AND NOT EXISTS(SELECT 1 FROM car_recovery_execution_intents WHERE project_id=?)
+    AND NOT EXISTS(SELECT 1 FROM car_recovery_reservations WHERE project_id=?
+     AND NOT EXISTS(SELECT 1 FROM json_each(?) j WHERE
+      json_extract(j.value,'$.targetId')=car_recovery_reservations.target_id
+      AND json_extract(j.value,'$.sourceJobId')=car_recovery_reservations.source_job_id
+      AND json_extract(j.value,'$.snapshotVersion')=car_recovery_reservations.snapshot_version))`;
+  const result=await env.DB.prepare(sql).bind(projectId,Math.floor(Date.now()/1000),
+   payload,projectId,operations.length,projectId,projectId,payload).run();
+  if(result.meta?.changes!==operations.length)return fail('intent_conflict_or_stale_reservation');
+  return {staged:true,count:operations.length,reason:'durable_intents_only',
+   enqueueAllowed:false,resumeTriggered:false};
+ }catch{return fail('intent_transaction_failed');}
+}

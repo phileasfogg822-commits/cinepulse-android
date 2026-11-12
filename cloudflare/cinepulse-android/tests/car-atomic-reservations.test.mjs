@@ -423,3 +423,77 @@ test('CAR production enqueue is disabled by default and rejects unsafe requests'
  assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,enabled:true,
   targetId:'not-a-target'})).reason,'invalid_enqueue_request');
 });
+
+test('real SQLite CAR production enqueue creates one job and blocks concurrent duplicates',async()=>{
+ const {DatabaseSync}=await import('node:sqlite');
+ const db=new DatabaseSync(':memory:');
+ try{
+  db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY,worker_id TEXT);
+   CREATE TABLE jobs(id TEXT PRIMARY KEY,project_id TEXT,worker_id TEXT,
+    step_id TEXT,status TEXT,prompt TEXT,created_at INTEGER,output TEXT);
+   CREATE TABLE car_recovery_dispatch_claims(project_id TEXT,target_id TEXT,
+    source_job_id TEXT,snapshot_version INTEGER,PRIMARY KEY(project_id,target_id));
+   CREATE TABLE car_recovery_job_outbox(project_id TEXT,target_id TEXT,
+    source_job_id TEXT,snapshot_version INTEGER,step_id TEXT,
+    idempotency_key TEXT,created_at INTEGER,PRIMARY KEY(project_id,target_id));`);
+  db.prepare('INSERT INTO projects VALUES(?,?)').run(projectId,'worker-1');
+  const op=operations[0];
+  db.prepare('INSERT INTO car_recovery_dispatch_claims VALUES(?,?,?,?)').run(
+   projectId,op.targetId,op.sourceJobId,op.snapshotVersion);
+  db.prepare('INSERT INTO car_recovery_job_outbox VALUES(?,?,?,?,?,?,?)').run(
+   projectId,op.targetId,op.sourceJobId,op.snapshotVersion,'deep_match_english',
+   'car-v1.1:'+projectId+':'+op.targetId+':'+op.snapshotVersion,12);
+  db.prepare('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)').run(
+   op.sourceJobId,projectId,'worker-1','deep_match_english','done',
+   'original accepted',11,'accepted-original');
+  const env={DB:{prepare(sql){
+   const stmt=db.prepare(sql);
+   return {bind(...args){return {run:async()=>({meta:{changes:Number(stmt.run(...args).changes)}})};}};
+  }}};
+  const args={projectId,targetId:op.targetId,jobId:'car-new-job-1',
+   workerId:'worker-1',prompt:'[CAR-V1.1-RECOVERY] Only recover missing segment',enabled:true};
+  const first=await enqueueCarRecoveryOutboxJob(env,args);
+  assert.equal(first.enqueued,true);
+  const queued=db.prepare('SELECT * FROM jobs WHERE id=?').get(args.jobId);
+  assert.equal(queued.worker_id,'worker-1');
+  assert.equal(queued.status,'queued');
+  assert.equal(queued.step_id,'deep_match_english');
+  assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,
+   jobId:'car-new-job-2'})).reason,'queue_guard_rejected');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n,2);
+  assert.equal(db.prepare('SELECT output FROM jobs WHERE id=?').get(op.sourceJobId).output,
+   'accepted-original');
+ }finally{db.close();}
+});
+
+test('real SQLite CAR enqueue refuses wrong worker and existing active movie jobs',async()=>{
+ const {DatabaseSync}=await import('node:sqlite');
+ const db=new DatabaseSync(':memory:');
+ try{
+  db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY,worker_id TEXT);
+   CREATE TABLE jobs(id TEXT PRIMARY KEY,project_id TEXT,worker_id TEXT,
+    step_id TEXT,status TEXT,prompt TEXT,created_at INTEGER);
+   CREATE TABLE car_recovery_dispatch_claims(project_id TEXT,target_id TEXT,
+    source_job_id TEXT,snapshot_version INTEGER);
+   CREATE TABLE car_recovery_job_outbox(project_id TEXT,target_id TEXT,
+    source_job_id TEXT,snapshot_version INTEGER,step_id TEXT,
+    idempotency_key TEXT,created_at INTEGER);`);
+  const op=operations[0];
+  db.prepare('INSERT INTO projects VALUES(?,?)').run(projectId,'worker-1');
+  db.prepare('INSERT INTO car_recovery_dispatch_claims VALUES(?,?,?,?)').run(
+   projectId,op.targetId,op.sourceJobId,op.snapshotVersion);
+  db.prepare('INSERT INTO car_recovery_job_outbox VALUES(?,?,?,?,?,?,?)').run(
+   projectId,op.targetId,op.sourceJobId,op.snapshotVersion,'deep_match_english','key',12);
+  const env={DB:{prepare(sql){const stmt=db.prepare(sql);return {
+   bind(...args){return {run:async()=>({meta:{changes:Number(stmt.run(...args).changes)}})};}
+  };}}};
+  const args={projectId,targetId:op.targetId,jobId:'car-new-job-1',
+   workerId:'wrong-worker',prompt:'[CAR-V1.1-RECOVERY] Target only',enabled:true};
+  assert.equal((await enqueueCarRecoveryOutboxJob(env,args)).reason,'queue_guard_rejected');
+  db.prepare('INSERT INTO jobs VALUES(?,?,?,?,?,?,?)').run('active',projectId,
+   'worker-1','deep_match_urdu','working','active job',11);
+  assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,workerId:'worker-1'}))
+   .reason,'queue_guard_rejected');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n,1);
+ }finally{db.close();}
+});

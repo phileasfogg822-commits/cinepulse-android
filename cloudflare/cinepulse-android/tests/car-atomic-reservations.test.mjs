@@ -11,7 +11,8 @@ const operations=[
 ];
 const manifest={prepared:true,enqueueAllowed:false,projectId,operations};
 const validProof=async()=>({valid:true,productionValidated:true,
- projectId,fingerprint:hash});
+ projectId,fingerprint:hash,
+ targets:operations.map(op=>({...op,valid:true,productionValidated:true}))});
 function fakeD1(){
  const rows=[],statements=[];
  return {rows,statements,DB:{prepare(sql){
@@ -88,6 +89,18 @@ test('CAR reservation stage refuses stale production attestation without D1 acce
   stateFingerprint:hash,enabled:true,
   validateFreshProduction:async()=>({valid:true,productionValidated:true,
    projectId,fingerprint:'b'.repeat(64)})});
+ assert.equal(result.reserved,false);
+ assert.equal(result.reason,'production_validation_failed');
+ assert.equal(env.statements.length,0);
+});
+
+test('CAR reservation refuses partial per-target production attestation',async()=>{
+ const env=fakeD1();
+ const result=await stageCarRecoveryReservations(env,{manifest,
+  stateFingerprint:hash,enabled:true,
+  validateFreshProduction:async()=>({valid:true,productionValidated:true,
+   projectId,fingerprint:hash,targets:[{...operations[0],
+    valid:true,productionValidated:true}]})});
  assert.equal(result.reserved,false);
  assert.equal(result.reason,'production_validation_failed');
  assert.equal(env.statements.length,0);

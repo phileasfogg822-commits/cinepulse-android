@@ -268,13 +268,25 @@ export function buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints}=
  * mandatory for every target. This is intentionally side-effect-free: no D1
  * mutation, queue insertion or automatic resumption is permitted here.
  */
-export async function validateScopedCarRecoveryExecution({handoff,validateTarget}={}){
+export async function validateScopedCarRecoveryExecution({handoff,validateTarget,validateFreshSnapshot}={}){
  if(handoff?.authorized!==true||handoff.enqueueAllowed!==false||
     handoff.acceptedJobsMutable!==false||handoff.resumeTriggered!==false||
     !validId(handoff.projectId)||!Array.isArray(handoff.targets)||
     handoff.targets.length<1||handoff.targets.length>3||
-    typeof validateTarget!=='function')
+    typeof validateTarget!=='function'||typeof validateFreshSnapshot!=='function')
   return {validated:false,reason:'execution_preconditions_failed',targets:[],resumeTriggered:false};
+ // Reconcile against authoritative D1 state immediately before validation.
+ // The caller must reject accepted/recovered collisions and stale provenance.
+ let snapshot;
+ try{snapshot=await validateFreshSnapshot(Object.freeze({
+  projectId:handoff.projectId,targets:handoff.targets.map(t=>Object.freeze({...t}))
+ }));}
+ catch{return {validated:false,reason:'fresh_snapshot_error',targets:[],resumeTriggered:false};}
+ if(snapshot?.verified!==true||snapshot.projectId!==handoff.projectId||
+    snapshot.snapshotVersion!==handoff.targets[0]?.snapshotVersion||
+    snapshot.acceptedJobsUnchanged!==true||
+    snapshot.unresolvedTargetsVerified!==true)
+  return {validated:false,reason:'fresh_snapshot_mismatch',targets:[],resumeTriggered:false};
  const validated=[];
  for(const target of handoff.targets){
   if(!validTarget(target?.targetId)||typeof target.sourceJobId!=='string'||

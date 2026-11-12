@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff}
+import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff,stageCarDispatchClaims}
  from '../src/car-atomic-reservations.mjs';
 
 const projectId='fed941ad-ff7f-4b0f-8439-25cfda24d187';
@@ -314,4 +314,12 @@ test('dispatcher handoff requires exact reservation and intent sets without writ
  const invalid=await inspectCarDispatchHandoff(env,{projectId,
   operations:[operations[0],operations[0]]});
  assert.equal(invalid.reason,'invalid_dispatch_identity');
+});
+
+test('dispatch claims are disabled without a verified handoff and never authorize enqueue',async()=>{
+ const env={DB:{prepare(){throw Error('must not access DB');}}};
+ const handoff={ready:true,enqueueAllowed:false,resumeTriggered:false,projectId,operations};
+ assert.equal((await stageCarDispatchClaims(env,{handoff})).reason,'feature_disabled');
+ assert.equal((await stageCarDispatchClaims(env,{enabled:true,
+  handoff:{...handoff,enqueueAllowed:true}})).reason,'unverified_dispatch_handoff');
 });

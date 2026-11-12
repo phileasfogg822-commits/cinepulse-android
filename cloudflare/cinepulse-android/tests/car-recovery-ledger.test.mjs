@@ -254,10 +254,23 @@ test('CAR execution preflight requires independent production validation and nev
  assert.equal(failed.validated,false);
  assert.equal(failed.reason,'production_validation_failed');
  const passed=await validateScopedCarRecoveryExecution({handoff,
-  validateTarget:async t=>({valid:true,targetId:t.targetId,
+  validateTarget:async t=>({valid:true,productionValidated:true,targetId:t.targetId,
    sourceJobId:t.sourceJobId,snapshotVersion:t.snapshotVersion})});
  assert.equal(passed.validated,true);
  assert.equal(passed.enqueueAllowed,false);
  assert.equal(passed.resumeTriggered,false);
  assert.equal(passed.targets.length,1);
+});
+
+test('CAR execution preflight rejects a generic valid result without production attestation',async()=>{
+ const handoff={authorized:true,enqueueAllowed:false,acceptedJobsMutable:false,
+  resumeTriggered:false,projectId:id,targets:[{targetId:'english:81',
+  sourceJobId:'job-1',snapshotVersion:12,anchorMethod:'context',
+  visualVerified:false,requiresIndependentProductionValidation:true}]};
+ const result=await validateScopedCarRecoveryExecution({handoff,
+  validateTarget:async t=>({valid:true,targetId:t.targetId,
+   sourceJobId:t.sourceJobId,snapshotVersion:t.snapshotVersion})});
+ assert.equal(result.validated,false);
+ assert.equal(result.reason,'production_validation_failed');
+ assert.deepEqual(result.targets,[]);
 });

@@ -446,3 +446,32 @@ export async function enqueueCarRecoveryOutboxJob(env,{
    reason:'production_job_queued',resumeTriggered:false};
  }catch{return reject('queue_transaction_failed');}
 }
+
+/**
+ * Read-only readiness gate for administrator-controlled CAR dispatch.
+ * Does not authorize enqueue. Existing movie pause/stop and worker pause
+ * always take precedence over any recovery outbox state.
+ */
+export async function inspectCarMovieDispatchControls(env,{projectId}={}){
+ const reject=reason=>({ready:false,reason,enqueueAllowed:false,resumeTriggered:false});
+ if(!validProject(projectId))return reject('invalid_project');
+ try{
+  const project=await env.DB.prepare(
+   'SELECT p.id,p.worker_id,p.status FROM projects p WHERE p.id=?'
+  ).bind(projectId).first();
+  if(!project?.worker_id)return reject('project_or_worker_missing');
+  if(['stopped','paused','cancelled','canceled'].includes(String(project.status||'').toLowerCase()))
+   return reject('movie_control_blocks_recovery');
+  const active=await env.DB.prepare(
+   "SELECT COUNT(*) AS n FROM jobs WHERE project_id=? AND status IN ('queued','working')"
+  ).bind(projectId).first();
+  if(Number(active?.n)!==0)return reject('movie_has_active_jobs');
+  const worker=await env.DB.prepare(
+   'SELECT enabled,paused FROM workers WHERE id=?'
+  ).bind(project.worker_id).first();
+  if(!worker||!Number(worker.enabled)||Number(worker.paused))
+   return reject('worker_unavailable_or_paused');
+  return {ready:true,projectId,workerId:project.worker_id,
+   reason:'controls_read_only_ready',enqueueAllowed:false,resumeTriggered:false};
+ }catch{return reject('movie_control_inspection_failed');}
+}

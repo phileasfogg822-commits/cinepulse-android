@@ -249,11 +249,13 @@ test('CAR execution preflight requires independent production validation and nev
  const absent=await validateScopedCarRecoveryExecution({handoff});
  assert.equal(absent.validated,false);
  const failed=await validateScopedCarRecoveryExecution({handoff,
+  validateFreshSnapshot:async()=>({verified:true,projectId:id,snapshotVersion:12,acceptedJobsUnchanged:true,unresolvedTargetsVerified:true}),
   validateTarget:async()=>({valid:true,targetId:'english:81',
    sourceJobId:'different',snapshotVersion:12})});
  assert.equal(failed.validated,false);
  assert.equal(failed.reason,'production_validation_failed');
  const passed=await validateScopedCarRecoveryExecution({handoff,
+  validateFreshSnapshot:async()=>({verified:true,projectId:id,snapshotVersion:12,acceptedJobsUnchanged:true,unresolvedTargetsVerified:true}),
   validateTarget:async t=>({valid:true,productionValidated:true,targetId:t.targetId,
    sourceJobId:t.sourceJobId,snapshotVersion:t.snapshotVersion})});
  assert.equal(passed.validated,true);
@@ -273,4 +275,19 @@ test('CAR execution preflight rejects a generic valid result without production 
  assert.equal(result.validated,false);
  assert.equal(result.reason,'production_validation_failed');
  assert.deepEqual(result.targets,[]);
+});
+
+test('CAR execution preflight refuses missing or stale D1 snapshot and does not call production validator',async()=>{
+ const handoff={authorized:true,enqueueAllowed:false,acceptedJobsMutable:false,
+  resumeTriggered:false,projectId:id,targets:[{targetId:'english:81',
+  sourceJobId:'job-1',snapshotVersion:12,anchorMethod:'context',
+  visualVerified:false,requiresIndependentProductionValidation:true}]};
+ let calls=0;
+ const result=await validateScopedCarRecoveryExecution({handoff,
+  validateFreshSnapshot:async()=>({verified:true,projectId:id,snapshotVersion:11,
+   acceptedJobsUnchanged:true,unresolvedTargetsVerified:true}),
+  validateTarget:async()=>{calls++;return {valid:true,productionValidated:true}}});
+ assert.equal(result.validated,false);
+ assert.equal(result.reason,'fresh_snapshot_mismatch');
+ assert.equal(calls,0);
 });

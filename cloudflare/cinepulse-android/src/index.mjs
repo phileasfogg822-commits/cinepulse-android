@@ -1107,7 +1107,8 @@ async function route(request,env){
       const live=carLiveEnabled(env,pid)?await readCarLiveAudit(env,pid):null;
       const verified=[...new Set([...(audit.verifiedSegmentIds||[]),...(live?.pendingTargets||[])])];
       const exact=verified.length>0&&verified.length<=3;
-      const eligible=exact&&audit.evidenceStatus==='verified'&&
+      const fullEvidence=unknown.length===verified.length&&unknown.every(id=>verified.includes(id));
+      const eligible=exact&&fullEvidence&&audit.evidenceStatus==='verified'&&
         !Number(movie.control_paused)&&!Number(movie.control_stopped);
       return json({projectId:pid,workerId:wid,projectStatus:movie.status,
         moviePaused:!!Number(movie.control_paused),movieStopped:!!Number(movie.control_stopped),
@@ -1123,10 +1124,11 @@ async function route(request,env){
         reason:eligible?'verified_bounded_candidates_only':
           audit.evidenceStatus!=='verified'?'unverified_source_provenance':
           !exact?(verified.length===0?'verified_failure_declaration_required':'recovery_limit_exceeded'):
+          !fullEvidence?'incomplete_bilingual_inventory':
           'movie_paused_or_stopped',
         readOnly:true,recoveryDispatchEnabled:carLiveEnabled(env,pid),
         recoveryResultAcceptanceEnabled:carLiveEnabled(env,pid),
-        unprocessedOrUnverifiedCount:unknown.length-verified.length,
+        unprocessedOrUnverifiedCount:Math.max(0,unknown.length-verified.length),
         failureDeclarationRequired:verified.length===0,
         failureDeclarationEndpoint:'/w/'+wid+'/projects/'+pid+'/car/recover',
         failedJobs:audit.inventory?.failedJobEvidence||[],
@@ -1236,8 +1238,29 @@ async function route(request,env){
           if(job.status!=='working'||job.lease_until<=nowSeconds()||!secureEqual(body.lease||'',job.lease||''))fail(409,'Muse lease changed');
           if(body.error){
             const reason=requireString(String(body.error),'Muse unresolved scene',1200);
-            const ended=await env.DB.prepare("UPDATE jobs SET status='error',error=?,finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
-              .bind(reason,nowSeconds(),jid,job.lease).first();
+            let carFailureOutput=null;
+            if(body.carFailureEvidence!==undefined){
+              if(!carLiveEnabled(env,job.project_id))fail(403,'CAR failure evidence collection is not enabled');
+              const language=deepLanguage(job.step_id);
+              if(!language)fail(422,'CAR evidence requires a language matching stage');
+              const original=await env.FILES.get((await getProject(env,job.project_id)).source_srt_key);
+              if(!original)fail(409,'Original source missing for CAR failure evidence');
+              const outputs=await priorOutputs(env,job.project_id);
+              const accepted=await acceptedPermanentDeepBatches(env,job.project_id,job.step_id);
+              const decisions=body.carFailureEvidence?.rejectedDecisions;
+              if(!Array.isArray(decisions))fail(422,'Explicit rejected decisions required at original failure time');
+              carFailureOutput=JSON.stringify({carFailureEvidence:{
+                failedJobId:job.id,stepId:job.step_id,rejectedDecisions:decisions
+              }});
+              try{verifyFailedCarTargets({
+                failed:{...job,status:'error',error:reason,output:carFailureOutput},
+                language,cues:loadProductionCues(outputs['srt_'+language]),accepted,
+                sourceSrt:await original.text(),
+                targets:decisions.map(d=>({segmentIndex:d.segmentIndex,rejectedDecision:d}))
+              });}catch(error){fail(422,'Original CAR failure evidence rejected: '+String(error.message));}
+            }
+            const ended=await env.DB.prepare("UPDATE jobs SET status='error',error=?,output=COALESCE(?,output),finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
+              .bind(reason,carFailureOutput,nowSeconds(),jid,job.lease).first();
             if(!ended)fail(409,'Muse task already completed');
             await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?").bind(nowSeconds(),job.project_id).run();
             return json({id:jid,status:'needs_review',reason,preservedCheckpoints:true});

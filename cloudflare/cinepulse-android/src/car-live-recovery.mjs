@@ -16,9 +16,25 @@ export function verifyFailedCarTargets({failed,language,cues,accepted,sourceSrt,
   throw Error('A persisted failed matching job is required');
  const progress=deepProductionProgress(cues,accepted),source=loadProductionCues(sourceSrt);
  if(!Array.isArray(targets)||targets.length<1||targets.length>3)throw Error('Declare one to three failed targets');
+ // A recovery POST cannot invent an earlier failure. Require exact decisions
+ // durably recorded on the original leased Muse job at failure time.
+ let persisted;
+ try{persisted=JSON.parse(failed.output||'null')?.carFailureEvidence;}catch{}
+ if(persisted?.failedJobId!==failed.id||persisted?.stepId!==failed.step_id||
+    !Array.isArray(persisted.rejectedDecisions)||persisted.rejectedDecisions.length!==targets.length)
+  throw Error('Durable original failed-job decision evidence required');
+ const proofByIndex=new Map();
+ for(const decision of persisted.rejectedDecisions){
+  if(!Number.isInteger(decision?.segmentIndex)||proofByIndex.has(decision.segmentIndex))
+   throw Error('Invalid or duplicate durable failed-job decision');
+  proofByIndex.set(decision.segmentIndex,decision);
+ }
  const seen=new Set();
  return targets.map(t=>{
-  const d=t?.rejectedDecision,index=t?.segmentIndex;
+  const d=t?.rejectedDecision,index=t?.segmentIndex,proof=proofByIndex.get(index);
+  if(!proof||!d||['segmentIndex','museRequestId','evidenceQuote','sourceStartSeconds','sourceEndSeconds']
+      .some(key=>d[key]!==proof[key])||JSON.stringify(d.sourceCueIds)!==JSON.stringify(proof.sourceCueIds))
+   throw Error('Recovery declaration differs from durable failed-job decision');
   if(!Number.isInteger(index)||index<=progress.reviewedSegments||index>Math.min(cues.length,progress.reviewedSegments+5)||seen.has(index)||d?.segmentIndex!==index)
    throw Error('Target must be unique and inside the unfinished batch');
   // A textual failure alone cannot authorize CAR: require matching original
@@ -90,12 +106,12 @@ export async function dispatchCarLiveBatch(env,{projectId,workerId,failed,target
  const result=await env.DB.batch([
  env.DB.prepare(`INSERT INTO car_live_batches SELECT r.* FROM (SELECT ? job_id,? project_id,? worker_id,? failed_job_id,? step_id,? targets_json,? snapshot_json,? source_hash,? next_job_id,? created_at) r
  WHERE ${controlGuard} AND ${snapshotGuard}
- AND EXISTS(SELECT 1 FROM jobs f WHERE f.id=r.failed_job_id AND f.project_id=r.project_id AND f.worker_id=r.worker_id AND f.step_id=r.step_id AND f.status='error' AND f.error=?
+ AND EXISTS(SELECT 1 FROM jobs f WHERE f.id=r.failed_job_id AND f.project_id=r.project_id AND f.worker_id=r.worker_id AND f.step_id=r.step_id AND f.status='error' AND f.error=? AND f.output=?
  AND f.rowid=(SELECT max(latest.rowid) FROM jobs latest WHERE latest.project_id=r.project_id AND latest.step_id=r.step_id))
  AND NOT EXISTS(SELECT 1 FROM jobs a WHERE a.project_id=r.project_id AND a.status IN ('queued','working'))
  AND COALESCE((SELECT sum(json_array_length(targets_json)) FROM car_live_batches WHERE project_id=r.project_id),0)+json_array_length(r.targets_json)<=3
  AND NOT EXISTS(SELECT 1 FROM car_live_batches b,json_each(b.targets_json) old,json_each(r.targets_json) fresh
- WHERE b.project_id=r.project_id AND b.step_id=r.step_id AND json_extract(old.value,'$.segmentIndex')=json_extract(fresh.value,'$.segmentIndex'))`).bind(...values,failed.error),
+ WHERE b.project_id=r.project_id AND b.step_id=r.step_id AND json_extract(old.value,'$.segmentIndex')=json_extract(fresh.value,'$.segmentIndex'))`).bind(...values,failed.error,failed.output),
  env.DB.prepare(`INSERT INTO jobs(id,project_id,worker_id,step_id,status,prompt,created_at)
  SELECT job_id,project_id,worker_id,step_id,'queued',?,created_at FROM car_live_batches WHERE job_id=?`).bind(CAR_LIVE_MARKER,jobId),
  env.DB.prepare("UPDATE projects SET status='processing',updated_at=? WHERE id=? AND EXISTS(SELECT 1 FROM jobs WHERE id=?)").bind(now,projectId,jobId)

@@ -9,6 +9,7 @@ const cues=Array.from({length:12},(_,i)=>({startSeconds:i*3,endSeconds:i*3+3,tex
 const accepted=[{decisions:[1,2,3,4,5].map(cue)}];
 const failed={id:'33333333-3333-4333-8333-333333333333',project_id:pid,worker_id:wid,step_id:'deep_match_english',status:'error',error:'Source anchor reused at segment 6'};
 const targets=[{segmentIndex:6,rejectedDecision:{...cue(5),segmentIndex:6}}];
+failed.output=JSON.stringify({carFailureEvidence:{failedJobId:failed.id,stepId:failed.step_id,rejectedDecisions:[targets[0].rejectedDecision]}});
 const verifiedTargets=()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets});
 const payload=()=>({carRecovery:true,decisions:[6,7,8,9,10].map(i=>({...cue(i),...(i===6?{anchorMethod:'context'}:{})}))});
 function fixture(){
@@ -20,7 +21,7 @@ function fixture(){
  INSERT INTO workers VALUES('22222222-2222-4222-8222-222222222222',1,0); INSERT INTO projects VALUES('11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','needs_review',1);
  INSERT INTO cinepulse_movie_controls VALUES('11111111-1111-4111-8111-111111111111',0,0);`);
  db.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,output,created_at) VALUES('accepted','11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','deep_match_english','done',?,1)").run(JSON.stringify(accepted[0]));
- db.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,error,created_at) VALUES('33333333-3333-4333-8333-333333333333','11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','deep_match_english','error',?,2)").run(failed.error);
+ db.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,error,output,created_at) VALUES('33333333-3333-4333-8333-333333333333','11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','deep_match_english','error',?,?,2)").run(failed.error,failed.output);
  const wrap=(sql,args=[])=>({bind(...a){return wrap(sql,a)},async run(){const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}}},async first(){return db.prepare(sql).get(...args)||null},async all(){return {results:db.prepare(sql).all(...args)}}});
  const env={CAR_LIVE_PROJECT_ID:pid,CAR_LIVE_EXECUTOR_ENABLED:'true',DB:{prepare:sql=>wrap(sql),async batch(statements){db.exec('BEGIN');try{const out=[];for(const s of statements)out.push(await s.run());db.exec('COMMIT');return out}catch(e){db.exec('ROLLBACK');throw e}}}};
  return {db,env};
@@ -50,7 +51,16 @@ test('unprocessed segments do not count as failed; only current failed batch tar
  for(const bad of [[{...targets[0],segmentIndex:5}],[...targets,...targets],[],Array(4).fill(targets[0])])
  assert.throws(()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets:bad}));
  assert.throws(()=>verifyFailedCarTargets({failed:{...failed,status:'done'},language:'english',cues,accepted,sourceSrt,targets}));
- assert.throws(()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets:[{segmentIndex:6,rejectedDecision:cue(6)}]}),/reuse/);
+ assert.throws(()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets:[{segmentIndex:6,rejectedDecision:cue(6)}]}),/durable|reuse/);
+});
+test('CAR rejects fabricated or changed failed-job decisions, including commit-time D1 tampering',async()=>{
+ assert.throws(()=>verifyFailedCarTargets({failed:{...failed,output:null},language:'english',cues,accepted,sourceSrt,targets}),/Durable/);
+ const altered={...targets[0].rejectedDecision,museRequestId:'another-muse-request'};
+ assert.throws(()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets:[{segmentIndex:6,rejectedDecision:altered}]}),/differs/);
+ const f=fixture();
+ f.db.prepare("UPDATE jobs SET output='{}' WHERE id=?").run(failed.id);
+ await assert.rejects(dispatch(f),/Dispatch rejected/);
+ assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE id='recovery'").get().n,0);
 });
 test('context recovery uses production validator, exact nearby source and cross-language uniqueness',()=>{
  const record={targets_json:JSON.stringify(verifiedTargets()),failed_job_id:'33333333-3333-4333-8333-333333333333'};
@@ -141,6 +151,8 @@ test('authenticated HTTP declaration, leased result, audit and continuation work
  assert.equal(audit.status,200);const report=await audit.json();
  assert.equal(report.liveRecovery.recoveredCount,1);assert.equal(report.acceptedCount,10);
  assert.equal(report.recoveryDispatchEnabled,true);assert.equal(report.unknownCount,14);
+ assert.equal(report.candidateReady,false);
+ assert.equal(report.unprocessedOrUnverifiedCount,14);
 });
 
 test('an older failed job cannot authorize recovery after a newer matching attempt',async()=>{

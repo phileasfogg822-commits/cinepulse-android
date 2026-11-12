@@ -353,6 +353,15 @@ test('real SQLite stages dispatch claims exactly once after reservations and int
   assert.equal((await stageCarExecutionIntents(env,{projectId,operations,enabled:true})).staged,true);
   const handoff=await inspectCarDispatchHandoff(env,{projectId,operations});
   assert.equal(handoff.ready,true);
+  // A reservation can change after the read-only handoff. The INSERT itself
+  // must reject that stale state without writing a partial claim set.
+  db.prepare('UPDATE car_recovery_reservations SET source_job_id=? WHERE project_id=? AND target_id=?')
+   .run('tampered-source',projectId,operations[0].targetId);
+  const stale=await stageCarDispatchClaims(env,{handoff,enabled:true});
+  assert.equal(stale.claimed,false);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM car_recovery_dispatch_claims').get().n,0);
+  db.prepare('UPDATE car_recovery_reservations SET source_job_id=? WHERE project_id=? AND target_id=?')
+   .run(operations[0].sourceJobId,projectId,operations[0].targetId);
   const first=await stageCarDispatchClaims(env,{handoff,enabled:true});
   assert.equal(first.claimed,true);
   assert.equal(first.count,2);

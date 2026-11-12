@@ -126,3 +126,36 @@ test('CAR execution intents remain disabled and reject duplicate target identiti
  assert.equal(duplicate.reason,'invalid_or_duplicate_intent');
  assert.equal(env.statements.length,0);
 });
+
+test('CAR execution intent exact retry is idempotent and conflict fails closed',async()=>{
+ const rows=[],statements=[];
+ const env={DB:{prepare(sql){
+  statements.push(sql);
+  return {async run(){return {meta:{changes:0}};},bind(...args){
+   return {async all(){return {results:rows.map(r=>({...r}))};},
+    async run(){
+     if(!sql.includes('INSERT INTO car_recovery_execution_intents'))throw Error('unexpected write');
+     if(rows.length)return {meta:{changes:0}};
+     for(const op of JSON.parse(args[2]))rows.push({
+      target_id:op.targetId,source_job_id:op.sourceJobId,
+      snapshot_version:op.snapshotVersion});
+     return {meta:{changes:rows.length}};
+    }};
+  }};
+ }}};
+ const input={projectId,operations,enabled:true};
+ const first=await stageCarExecutionIntents(env,input);
+ assert.equal(first.staged,true);
+ assert.equal(first.count,2);
+ assert.equal(first.enqueueAllowed,false);
+ const retry=await stageCarExecutionIntents(env,input);
+ assert.equal(retry.staged,true);
+ assert.equal(retry.idempotent,true);
+ assert.equal(rows.length,2);
+ const conflict=await stageCarExecutionIntents(env,{...input,operations:[
+  {...operations[0],sourceJobId:'changed-job'},operations[1]]});
+ assert.equal(conflict.staged,false);
+ assert.equal(conflict.reason,'conflicting_execution_intents');
+ assert.equal(rows.length,2);
+ assert.equal(statements.filter(q=>q.includes('INSERT INTO car_recovery_execution_intents')).length,1);
+});

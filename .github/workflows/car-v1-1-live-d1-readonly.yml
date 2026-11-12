@@ -24,9 +24,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo 'CAR_CLOUDFLARE_CREDENTIAL_PREFLIGHT'
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
+          echo 'CAR_INSTALL_READ_ONLY_TOOLS'
           npm install --no-audit --no-fund >/dev/null
+          echo 'CAR_D1_READ_ONLY_QUERY_START'
           sql="SELECT p.id,p.title,p.status,p.created_at,w.label AS worker_label,
             w.enabled AS worker_enabled,w.paused AS worker_paused,
             CASE WHEN substr(COALESCE(d.prompt,''),1,35)='[CINEPULSE-V5-PERMANENT-DEEP-MUSE]' THEN 'V5'
@@ -39,7 +42,17 @@ jobs:
             FROM projects p LEFT JOIN workers w ON w.id=p.worker_id
             LEFT JOIN jobs d ON d.id=(SELECT id FROM jobs WHERE project_id=p.id AND step_id='digest' ORDER BY created_at ASC LIMIT 1)
             ORDER BY p.created_at DESC,p.rowid DESC LIMIT 50"
-          npx wrangler d1 execute cinepulse-android-db --remote --json --command "$sql" > /tmp/car-readonly-movies.json
+          if ! npx wrangler d1 execute cinepulse-android-db --remote --json --command "$sql" > /tmp/car-readonly-movies.json 2>/tmp/car-readonly-error.log; then
+            echo 'CAR_D1_REMOTE_QUERY_FAILED'
+            node --input-type=module - <<'ERRORREPORT'
+          import fs from 'node:fs';
+          const raw=fs.readFileSync('/tmp/car-readonly-error.log','utf8').slice(-1800);
+          const scrub=raw.replace(/Bearer\\s+[^\\s]+/gi,'Bearer [REDACTED]').replace(/[a-f0-9]{32,}/gi,'[REDACTED]');
+          console.log('READ_ONLY_D1_ERROR='+scrub.slice(0,1000));
+          ERRORREPORT
+            exit 2
+          fi
+          echo 'CAR_D1_READ_ONLY_QUERY_OK'
           node --input-type=module - <<'NODE'
           import fs from 'node:fs';
           const r=JSON.parse(fs.readFileSync('/tmp/car-readonly-movies.json','utf8'));

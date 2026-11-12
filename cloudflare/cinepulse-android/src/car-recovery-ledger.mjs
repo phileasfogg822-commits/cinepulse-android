@@ -318,7 +318,7 @@ export async function validateScopedCarRecoveryExecution({handoff,validateTarget
  * the exact eligible targets and source jobs without accepted collisions.
  * This proof is read-only and does not authorize queueing.
  */
-export function verifyFreshCarD1Snapshot({projectId,handoff,audit,checkpoints,sourceSrt}={}){
+export function verifyFreshCarD1Snapshot({projectId,handoff,audit,checkpoints,sourceSrt,freshFingerprint}={}){
  const deny=reason=>({verified:false,reason,projectId,snapshotVersion:null,
   acceptedJobsUnchanged:false,unresolvedTargetsVerified:false});
  if(!validId(projectId)||handoff?.authorized!==true||
@@ -327,6 +327,14 @@ export function verifyFreshCarD1Snapshot({projectId,handoff,audit,checkpoints,so
   return deny('invalid_handoff');
  const readiness=inspectScopedCarRecoveryReadiness({audit,checkpoints,sourceSrt});
  if(!readiness.ready)return deny('fresh_audit_not_ready');
+ if(audit.projectId!==projectId)return deny('audit_project_mismatch');
+ // The created_at-only snapshot version cannot detect changed accepted jobs.
+ // Require a SHA-256 digest over fresh D1 jobs, accepted outputs and evidence.
+ if(typeof handoff.stateFingerprint!=='string'||
+    !/^[a-f0-9]{64}$/.test(handoff.stateFingerprint))
+  return deny('missing_state_fingerprint');
+ if(freshFingerprint!==handoff.stateFingerprint)
+  return deny('accepted_state_changed');
  const fresh=buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints});
  if(!fresh.authorized||fresh.targets.length!==handoff.targets.length)
   return deny('fresh_handoff_mismatch');

@@ -49,6 +49,18 @@ jobs:
           const raw=fs.readFileSync('/tmp/car-readonly-error.log','utf8').slice(-1800);
           const scrub=raw.replace(/Bearer\\s+[^\\s]+/gi,'Bearer [REDACTED]').replace(/[a-f0-9]{32,}/gi,'[REDACTED]');
           console.log('READ_ONLY_D1_ERROR='+scrub.slice(0,1000));
+          const output=fs.readFileSync('/tmp/car-readonly-movies.json','utf8');
+          try{
+            const json=JSON.parse(output);
+            const groups=Array.isArray(json)?json:[json];
+            console.log('READ_ONLY_D1_API_ERRORS='+JSON.stringify(groups.map(v=>({
+              success:v.success,errors:(v.errors||[]).map(e=>({
+                code:e.code,message:String(e.message||'').slice(0,350)
+              }))
+            }))));
+          }catch{
+            console.log('READ_ONLY_D1_STDOUT='+output.replace(/[a-f0-9]{32,}/gi,'[REDACTED]').slice(0,650));
+          }
           ERRORREPORT
             exit 2
           fi

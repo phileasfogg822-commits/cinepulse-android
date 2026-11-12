@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {verifyFailedCarTargets,validateCarRecoveryBatch,ensureCarLiveTable,completedCarSnapshot,dispatchCarLiveBatch,acceptCarLiveBatch,carLiveRecord,retryCarLiveBatch,readCarLiveAudit} from '../src/car-live-recovery.mjs';
+import {verifyFailedCarTargets,requireCarFullInventory,validateCarRecoveryBatch,ensureCarLiveTable,completedCarSnapshot,dispatchCarLiveBatch,acceptCarLiveBatch,carLiveRecord,retryCarLiveBatch,readCarLiveAudit} from '../src/car-live-recovery.mjs';
 const pid='11111111-1111-4111-8111-111111111111',wid='22222222-2222-4222-8222-222222222222';
 const cue=(i)=>({segmentIndex:i,sourceStartSeconds:i*10,sourceEndSeconds:i*10+2,sourceCueIds:[i],evidenceQuote:'Original source line '+i,reason:'Specific character event and story rationale.',alternatives:[{cueId:20,reason:'Different event elsewhere'}],confidence:.8,museRequestId:'muse-actual-'+i});
 const sourceSrt=Array.from({length:30},(_,i)=>`${i+1}\n00:${String(Math.floor((i+1)*10/60)).padStart(2,'0')}:${String((i+1)*10%60).padStart(2,'0')},000 --> 00:${String(Math.floor(((i+1)*10+2)/60)).padStart(2,'0')}:${String(((i+1)*10+2)%60).padStart(2,'0')},000\nOriginal source line ${i+1}`).join('\n\n');
@@ -52,6 +52,14 @@ test('unprocessed segments do not count as failed; only current failed batch tar
  assert.throws(()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets:bad}));
  assert.throws(()=>verifyFailedCarTargets({failed:{...failed,status:'done'},language:'english',cues,accepted,sourceSrt,targets}));
  assert.throws(()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets:[{segmentIndex:6,rejectedDecision:cue(6)}]}),/durable|reuse/);
+});
+test('first dispatch and retry share complete bilingual evidence requirements',()=>{
+ const audit={evidenceStatus:'verified',inventory:{unknownSegmentIds:['english:6','urdu:2']},verifiedSegmentIds:['urdu:2']};
+ assert.equal(requireCarFullInventory(audit,['english:6']),true);
+ assert.throws(()=>requireCarFullInventory({...audit,inventory:{unknownSegmentIds:['english:6','urdu:2','english:7']}},['english:6']),/incomplete/);
+ assert.throws(()=>requireCarFullInventory(audit,['english:7']),/incomplete/);
+ assert.throws(()=>requireCarFullInventory({...audit,evidenceStatus:'not_verified'},['english:6']),/unverified/);
+ assert.throws(()=>requireCarFullInventory(audit,['english:6','english:6']),/incomplete/);
 });
 test('CAR rejects fabricated or changed failed-job decisions, including commit-time D1 tampering',async()=>{
  assert.throws(()=>verifyFailedCarTargets({failed:{...failed,output:null},language:'english',cues,accepted,sourceSrt,targets}),/Durable/);

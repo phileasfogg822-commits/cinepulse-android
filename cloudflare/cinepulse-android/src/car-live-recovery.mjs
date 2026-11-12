@@ -50,6 +50,20 @@ export function verifyFailedCarTargets({failed,language,cues,accepted,sourceSrt,
   return {segmentIndex:index,rejectedDecision:structuredClone(d),failureKind:'accepted_source_overlap'};
  });
 }
+// Shared write authorization for both first dispatch and retry. Diagnostics
+// may show a candidate with unknown future segments; writes may not.
+export function requireCarFullInventory(audit,targetIds){
+ const unknown=audit?.inventory?.unknownSegmentIds;
+ if(audit?.evidenceStatus!=='verified'||!Array.isArray(unknown)||
+    !Array.isArray(targetIds)||targetIds.length<1||targetIds.length>3||
+    new Set(targetIds).size!==targetIds.length)
+  throw Error('CAR full bilingual inventory is incomplete or unverified');
+ const proven=new Set([...(audit.verifiedSegmentIds||[]),...targetIds]);
+ if(unknown.length===0||unknown.length>3||proven.size>3||
+    unknown.some(id=>!proven.has(id))||targetIds.some(id=>!unknown.includes(id)))
+  throw Error('CAR full bilingual inventory is incomplete or exceeds the three-target recovery limit');
+ return true;
+}
 export function validateCarRecoveryBatch({record,language,cues,sourceSrt,accepted,otherAccepted,payload}){
  const targets=JSON.parse(record.targets_json),indices=new Set(targets.map(t=>t.segmentIndex));
  if(payload?.carRecovery!==true)throw Error('Explicit carRecovery:true required');

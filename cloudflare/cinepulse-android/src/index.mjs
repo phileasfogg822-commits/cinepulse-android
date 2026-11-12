@@ -1,4 +1,4 @@
-import {CAR_LIVE_BUILD,CAR_LIVE_MARKER,carLiveEnabled,verifyFailedCarTargets,validateCarRecoveryBatch,carLiveRecord,completedCarSnapshot,dispatchCarLiveBatch,acceptCarLiveBatch,readCarLiveAudit,retryCarLiveBatch} from './car-live-recovery.mjs';
+import {CAR_LIVE_BUILD,CAR_LIVE_MARKER,carLiveEnabled,verifyFailedCarTargets,requireCarFullInventory,validateCarRecoveryBatch,carLiveRecord,completedCarSnapshot,dispatchCarLiveBatch,acceptCarLiveBatch,readCarLiveAudit,retryCarLiveBatch} from './car-live-recovery.mjs';
 import {inspectCarMovieDispatchControls} from './car-atomic-reservations.mjs';
 import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAGARI_BUILD,URDU_DEVANAGARI_METHOD,validateDevanagariUrduVoiceReceipt,urduDevanagariInstructions,urduDevanagariSrtInstructions} from './urdu-devanagari-voice.mjs';
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
@@ -1070,7 +1070,13 @@ async function route(request,env){
         if(!record||record.project_id!==pid||record.worker_id!==wid)fail(403,'Recovery task belongs to another movie or worker');
         const source=await env.FILES.get(movie.source_srt_key);
         if(!source)fail(409,'Original source missing');
-        try{return json(await retryCarLiveBatch(env,{record,sourceSrt:await source.text(),now:nowSeconds()}),201);}
+        const sourceSrt=await source.text();
+        const outputs=await priorOutputs(env,pid);
+        const audit=await auditCarD1Evidence(env,pid,outputs,acceptedPermanentDeepBatches,sourceSrt);
+        try{
+          requireCarFullInventory(audit,JSON.parse(record.targets_json).map(t=>deepLanguage(record.step_id)+':'+t.segmentIndex));
+          return json(await retryCarLiveBatch(env,{record,sourceSrt,now:nowSeconds()}),201);
+        }
         catch(error){fail(409,String(error.message));}
       }
       const failed=await env.DB.prepare('SELECT * FROM jobs WHERE id=? AND project_id=? AND worker_id=?').bind(requireUUID(body.failedJobId),pid,wid).first();
@@ -1088,11 +1094,7 @@ async function route(request,env){
         // must not proceed while any bilingual segment is still unclassified.
         // Independently reconcile the entire D1 inventory before dispatch.
         const audit=await auditCarD1Evidence(env,pid,outputs,acceptedPermanentDeepBatches,sourceSrt);
-        const unknown=audit.inventory?.unknownSegmentIds||[];
-        const proven=new Set([...(audit.verifiedSegmentIds||[]),...targets.map(t=>language+':'+t.segmentIndex)]);
-        if(audit.evidenceStatus!=='verified'||unknown.length===0||unknown.length>3||
-           unknown.some(id=>!proven.has(id))||proven.size>3)
-          fail(409,'CAR full bilingual inventory is incomplete or exceeds the three-target recovery limit');
+        requireCarFullInventory(audit,targets.map(t=>language+':'+t.segmentIndex));
         if(snapshot!==await completedCarSnapshot(env,pid))fail(409,'Completed movie state changed during verification');
         return json(await dispatchCarLiveBatch(env,{projectId:pid,workerId:wid,failed,targets,sourceSrt,
           snapshot,jobId:newId(),nextJobId:newId(),now:nowSeconds()}),201);

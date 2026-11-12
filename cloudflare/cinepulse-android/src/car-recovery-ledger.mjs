@@ -256,6 +256,9 @@ export function buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints}=
  // A recovery source must have an explicit non-empty job identity.
  if(targets.some(t=>typeof t.sourceJobId!=='string'||!t.sourceJobId.trim()))
   return {authorized:false,reason:'invalid_source_job_id',targets:[]};
+ // Snapshot versions must be concrete positive integers, never missing or coerced.
+ if(targets.some(t=>!Number.isSafeInteger(t.snapshotVersion)||t.snapshotVersion<=0))
+  return {authorized:false,reason:'invalid_snapshot_version',targets:[]};
  return {authorized:true,reason:'read_only_handoff',projectId,targets,
   enqueueAllowed:false,acceptedJobsMutable:false,resumeTriggered:false};
 }

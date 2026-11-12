@@ -1422,7 +1422,7 @@ async function route(request,env){
   // audited handoff; the server re-queries source evidence and all deep-match
   // job states before comparing its accepted-state SHA-256 fingerprint.
   // This is NOT atomic with a future enqueue and never resumes a movie.
-  const carPreflightRoute=/^\\/v1\\/projects\\/([a-f0-9-]{36})\\/car\\/preflight$/.exec(url.pathname);
+  const carPreflightRoute=/^\/v1\/projects\/([a-f0-9-]{36})\/car\/preflight$/.exec(url.pathname);
   if(method==='POST'&&carPreflightRoute){
     if(env.CAR_V1_1_ENABLED!=='true')fail(403,'CAR recovery is disabled');
     const projectId=requireUUID(carPreflightRoute[1]);

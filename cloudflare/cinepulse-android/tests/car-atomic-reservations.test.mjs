@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff,stageCarDispatchClaims,planCarRecoveryJobs}
+import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff,stageCarDispatchClaims,planCarRecoveryJobs,stageCarRecoveryOutbox}
  from '../src/car-atomic-reservations.mjs';
 
 const projectId='fed941ad-ff7f-4b0f-8439-25cfda24d187';
@@ -396,4 +396,18 @@ test('job specifications are deterministic and require complete matching dispatc
  assert.deepEqual(first.jobs,second.jobs);
  const invalid=await planCarRecoveryJobs(env,{handoff:{...handoff,ready:false},enabled:true});
  assert.equal(invalid.reason,'unverified_dispatch_handoff');
+});
+
+test('CAR recovery outbox remains disabled and rejects forged job plans before D1 writes',async()=>{
+ const env={DB:{prepare(){throw Error('unexpected D1 access');}}};
+ const job={projectId,targetId:operations[0].targetId,
+  sourceJobId:operations[0].sourceJobId,snapshotVersion:operations[0].snapshotVersion,
+  stepId:'deep_match_english',
+  idempotencyKey:'car-v1.1:'+projectId+':'+operations[0].targetId+':'+operations[0].snapshotVersion};
+ const plan={planned:true,enqueueAllowed:false,resumeTriggered:false,jobs:[job]};
+ assert.equal((await stageCarRecoveryOutbox(env,{plan})).reason,'feature_disabled');
+ assert.equal((await stageCarRecoveryOutbox(env,{plan:{...plan,enqueueAllowed:true},
+  enabled:true})).reason,'unverified_job_plan');
+ assert.equal((await stageCarRecoveryOutbox(env,{plan:{...plan,
+  jobs:[{...job,idempotencyKey:'forged'}]},enabled:true})).reason,'invalid_outbox_job');
 });

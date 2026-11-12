@@ -32,7 +32,7 @@ jobs:
           echo 'CAR_D1_READ_ONLY_QUERY_START'
           sql="SELECT p.id,p.title,p.status,p.created_at,w.label AS worker_label,
             w.enabled AS worker_enabled,w.paused AS worker_paused,
-            CASE WHEN substr(COALESCE(d.prompt,''),1,35)='[CINEPULSE-V5-PERMANENT-DEEP-MUSE]' THEN 'V5'
+            CASE WHEN instr(COALESCE(d.prompt,''),'[CINEPULSE-V5-PERMANENT-DEEP-MUSE]')=1 THEN 'V5'
                  WHEN instr(COALESCE(d.prompt,''),'[CINEPULSE-EXPERIMENTAL-SCENE-INTELLIGENCE-V3828]')=1 THEN 'EXPERIMENT'
                  ELSE 'OTHER' END AS movie_mode,
             (SELECT COUNT(*) FROM jobs j WHERE j.project_id=p.id AND j.status='error') AS errors,
@@ -42,33 +42,25 @@ jobs:
             FROM projects p LEFT JOIN workers w ON w.id=p.worker_id
             LEFT JOIN jobs d ON d.id=(SELECT id FROM jobs WHERE project_id=p.id AND step_id='digest' ORDER BY created_at ASC LIMIT 1)
             ORDER BY p.created_at DESC,p.rowid DESC LIMIT 50"
-          if ! npx wrangler d1 execute cinepulse-android-db --remote --json --command "$sql" > /tmp/car-readonly-movies.json 2>/tmp/car-readonly-error.log; then
-            echo 'CAR_D1_REMOTE_QUERY_FAILED'
-            node --input-type=module - <<'ERRORREPORT'
-          import fs from 'node:fs';
-          const raw=fs.readFileSync('/tmp/car-readonly-error.log','utf8').slice(-1800);
-          const scrub=raw.replace(/Bearer\\s+[^\\s]+/gi,'Bearer [REDACTED]').replace(/[a-f0-9]{32,}/gi,'[REDACTED]');
-          console.log('READ_ONLY_D1_ERROR='+scrub.slice(0,1000));
-          const output=fs.readFileSync('/tmp/car-readonly-movies.json','utf8');
-          try{
-            const json=JSON.parse(output);
-            const groups=Array.isArray(json)?json:[json];
-            console.log('READ_ONLY_D1_API_ERRORS='+JSON.stringify(groups.map(v=>({
-              success:v.success,errors:(v.errors||[]).map(e=>({
-                code:e.code,message:String(e.message||'').slice(0,350)
-              }))
-            }))));
-          }catch{
-            console.log('READ_ONLY_D1_STDOUT='+output.replace(/[a-f0-9]{32,}/gi,'[REDACTED]').slice(0,650));
-          }
-          ERRORREPORT
+          # The Cloudflare D1 query API executes this literal SELECT only.
+          # No migrations, deployments, table writes or asset reads.
+          payload=$(jq -cn --arg sql "$sql" '{sql:$sql}')
+          status=$(curl --silent --show-error --max-time 35 -o /tmp/car-readonly-movies.json -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd/query" \
+            --data "$payload") || status=000
+          if [[ "$status" != 200 ]] || ! jq -e '.success==true' /tmp/car-readonly-movies.json >/dev/null; then
+            echo "CAR_D1_API_STATUS=$status"
+            jq -c '{success,errors:(.errors//[]|map({code,message}))}' /tmp/car-readonly-movies.json 2>/dev/null | head -c 1200 || true
             exit 2
           fi
           echo 'CAR_D1_READ_ONLY_QUERY_OK'
           node --input-type=module - <<'NODE'
           import fs from 'node:fs';
           const r=JSON.parse(fs.readFileSync('/tmp/car-readonly-movies.json','utf8'));
-          const rows=(Array.isArray(r)?r:[r]).flatMap(v=>v.results||[]);
+          const rows=(Array.isArray(r.result)?r.result:[r.result||r]).flatMap(v=>v.results||[]);
           console.log('CAR_LIVE_READ_ONLY_TOTAL='+rows.length);
           console.log('CAR_LIVE_V5_NEEDS_REVIEW='+rows.filter(x=>x.movie_mode==='V5'&&x.status==='needs_review').length);
           for(const x of rows){

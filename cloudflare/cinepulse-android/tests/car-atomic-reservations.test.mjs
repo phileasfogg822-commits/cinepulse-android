@@ -42,9 +42,9 @@ function fakeD1(){
 
 test('reservation manifest rejects partial, duplicate and mixed-snapshot targets',()=>{
  assert.equal(inspectCarReservationManifest({manifest:{...manifest,operations:[]},
-  stateFingerprint:hash}).valid,true===false);
+  stateFingerprint:hash}).reason,'invalid_reservation_manifest');
  assert.equal(inspectCarReservationManifest({manifest:{...manifest,
-  operations:[operations[0],operations[0]]},stateFingerprint:hash}).valid,undefined);
+  operations:[operations[0],operations[0]]},stateFingerprint:hash}).reason,'duplicate_or_invalid_reservation_target');
  assert.equal(inspectCarReservationManifest({manifest:{...manifest,
   operations:[operations[0],{...operations[1],snapshotVersion:13}]},
   stateFingerprint:hash}).reason,'mixed_reservation_snapshot');

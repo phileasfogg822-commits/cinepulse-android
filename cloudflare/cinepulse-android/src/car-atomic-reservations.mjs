@@ -335,3 +335,72 @@ export async function planCarRecoveryJobs(env,{handoff,enabled=false}={}){
    jobs:specs,enqueueAllowed:false,resumeTriggered:false};
  }catch{return reject('job_spec_planning_failed');}
 }
+
+/**
+ * Atomically prepare isolated queue outbox rows from verified job specs.
+ * The outbox is not the production jobs table and has no worker-visible jobs.
+ * A separate production executor must validate, enqueue and acknowledge.
+ */
+export async function stageCarRecoveryOutbox(env,{plan,enabled=false}={}){
+ const reject=reason=>({staged:false,reason,enqueueAllowed:false,resumeTriggered:false});
+ if(!enabled)return reject('feature_disabled');
+ if(plan?.planned!==true||plan.enqueueAllowed!==false||
+    plan.resumeTriggered!==false||!Array.isArray(plan.jobs)||
+    plan.jobs.length<1||plan.jobs.length>3)return reject('unverified_job_plan');
+ const jobs=plan.jobs,projectId=jobs[0]?.projectId;
+ if(!validProject(projectId))return reject('invalid_outbox_project');
+ const targets=new Set(),keys=new Set();
+ for(const job of jobs){
+  if(job.projectId!==projectId||!validTarget(job.targetId)||
+     typeof job.sourceJobId!=='string'||!job.sourceJobId.trim()||
+     !Number.isSafeInteger(job.snapshotVersion)||job.snapshotVersion<=0||
+     job.stepId!==(job.targetId.startsWith('english:')?
+      'deep_match_english':'deep_match_urdu')||
+     job.idempotencyKey!=='car-v1.1:'+projectId+':'+job.targetId+':'+job.snapshotVersion||
+     targets.has(job.targetId)||keys.has(job.idempotencyKey))
+   return reject('invalid_outbox_job');
+  targets.add(job.targetId);keys.add(job.idempotencyKey);
+ }
+ try{
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS car_recovery_job_outbox (
+   project_id TEXT NOT NULL,target_id TEXT NOT NULL,
+   source_job_id TEXT NOT NULL,snapshot_version INTEGER NOT NULL,
+   step_id TEXT NOT NULL,idempotency_key TEXT NOT NULL,
+   created_at INTEGER NOT NULL,PRIMARY KEY(project_id,target_id),
+   UNIQUE(idempotency_key)
+  )`).run();
+  const matches=rows=>rows.length===jobs.length&&rows.every(row=>jobs.some(job=>
+   row.target_id===job.targetId&&row.source_job_id===job.sourceJobId&&
+   row.snapshot_version===job.snapshotVersion&&row.step_id===job.stepId&&
+   row.idempotency_key===job.idempotencyKey));
+  const prior=await env.DB.prepare(
+   'SELECT target_id,source_job_id,snapshot_version,step_id,idempotency_key FROM car_recovery_job_outbox WHERE project_id=?'
+  ).bind(projectId).all();
+  if(prior.results?.length)return matches(prior.results)?
+   {staged:true,idempotent:true,count:jobs.length,enqueueAllowed:false,resumeTriggered:false}:
+   reject('conflicting_outbox');
+  const payload=JSON.stringify(jobs);
+  const sql=`INSERT INTO car_recovery_job_outbox
+   (project_id,target_id,source_job_id,snapshot_version,step_id,idempotency_key,created_at)
+   SELECT ?,json_extract(value,'$.targetId'),json_extract(value,'$.sourceJobId'),
+    json_extract(value,'$.snapshotVersion'),json_extract(value,'$.stepId'),
+    json_extract(value,'$.idempotencyKey'),?
+   FROM json_each(?)
+   WHERE (SELECT COUNT(*) FROM car_recovery_dispatch_claims WHERE project_id=?)=?
+    AND NOT EXISTS(SELECT 1 FROM car_recovery_job_outbox WHERE project_id=?)
+    AND NOT EXISTS(SELECT 1 FROM car_recovery_dispatch_claims c WHERE c.project_id=?
+     AND NOT EXISTS(SELECT 1 FROM json_each(?) j WHERE
+      json_extract(j.value,'$.targetId')=c.target_id AND
+      json_extract(j.value,'$.sourceJobId')=c.source_job_id AND
+      json_extract(j.value,'$.snapshotVersion')=c.snapshot_version))`;
+  const result=await env.DB.prepare(sql).bind(projectId,
+   Math.floor(Date.now()/1000),payload,projectId,jobs.length,projectId,projectId,payload).run();
+  if(result.meta?.changes!==jobs.length)return reject('outbox_insert_incomplete');
+  const verified=await env.DB.prepare(
+   'SELECT target_id,source_job_id,snapshot_version,step_id,idempotency_key FROM car_recovery_job_outbox WHERE project_id=?'
+  ).bind(projectId).all();
+  if(!matches(verified.results||[]))return reject('outbox_readback_mismatch');
+  return {staged:true,idempotent:false,count:jobs.length,
+   reason:'isolated_outbox_staged',enqueueAllowed:false,resumeTriggered:false};
+ }catch{return reject('outbox_transaction_failed');}
+}

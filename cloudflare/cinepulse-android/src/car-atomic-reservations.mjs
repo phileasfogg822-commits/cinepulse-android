@@ -160,6 +160,17 @@ export async function stageCarExecutionIntents(env,{projectId,operations,enabled
    UNIQUE(project_id,source_job_id)
   )`).run();
   const payload=JSON.stringify(operations);
+  const existing=await env.DB.prepare(
+   'SELECT target_id,source_job_id,snapshot_version FROM car_recovery_execution_intents WHERE project_id=? ORDER BY target_id'
+  ).bind(projectId).all();
+  const prior=existing.results||[];
+  const matches=rows=>rows.length===operations.length&&rows.every(row=>
+   operations.some(op=>op.targetId===row.target_id&&
+    op.sourceJobId===row.source_job_id&&op.snapshotVersion===row.snapshot_version));
+  if(prior.length)return matches(prior)?
+   {staged:true,idempotent:true,count:operations.length,
+    reason:'identical_intents_exist',enqueueAllowed:false,resumeTriggered:false}:
+   fail('conflicting_execution_intents');
   const sql=`INSERT INTO car_recovery_execution_intents
    (project_id,target_id,source_job_id,snapshot_version,created_at)
    SELECT ?,json_extract(value,'$.targetId'),json_extract(value,'$.sourceJobId'),
@@ -175,6 +186,10 @@ export async function stageCarExecutionIntents(env,{projectId,operations,enabled
   const result=await env.DB.prepare(sql).bind(projectId,Math.floor(Date.now()/1000),
    payload,projectId,operations.length,projectId,projectId,payload).run();
   if(result.meta?.changes!==operations.length)return fail('intent_conflict_or_stale_reservation');
+  const readback=await env.DB.prepare(
+   'SELECT target_id,source_job_id,snapshot_version FROM car_recovery_execution_intents WHERE project_id=? ORDER BY target_id'
+  ).bind(projectId).all();
+  if(!matches(readback.results||[]))return fail('execution_intent_readback_mismatch');
   return {staged:true,count:operations.length,reason:'durable_intents_only',
    enqueueAllowed:false,resumeTriggered:false};
  }catch{return fail('intent_transaction_failed');}

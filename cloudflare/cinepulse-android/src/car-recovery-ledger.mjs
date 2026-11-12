@@ -311,3 +311,33 @@ export async function validateScopedCarRecoveryExecution({handoff,validateTarget
  return {validated:true,reason:'validated_no_enqueue',targets:validated,
   enqueueAllowed:false,resumeTriggered:false};
 }
+
+/**
+ * Convert a newly queried D1 evidence audit into a bounded snapshot proof.
+ * A prior handoff alone is never sufficient: the fresh audit must reproduce
+ * the exact eligible targets and source jobs without accepted collisions.
+ * This proof is read-only and does not authorize queueing.
+ */
+export function verifyFreshCarD1Snapshot({projectId,handoff,audit,checkpoints,sourceSrt}={}){
+ const deny=reason=>({verified:false,reason,projectId,snapshotVersion:null,
+  acceptedJobsUnchanged:false,unresolvedTargetsVerified:false});
+ if(!validId(projectId)||handoff?.authorized!==true||
+    handoff.projectId!==projectId||!Array.isArray(handoff.targets)||
+    handoff.targets.length<1||handoff.targets.length>3)
+  return deny('invalid_handoff');
+ const readiness=inspectScopedCarRecoveryReadiness({audit,checkpoints,sourceSrt});
+ if(!readiness.ready)return deny('fresh_audit_not_ready');
+ const fresh=buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints});
+ if(!fresh.authorized||fresh.targets.length!==handoff.targets.length)
+  return deny('fresh_handoff_mismatch');
+ const byTarget=new Map(fresh.targets.map(t=>[t.targetId,t]));
+ for(const old of handoff.targets){
+  const current=byTarget.get(old.targetId);
+  if(!current||current.sourceJobId!==old.sourceJobId||
+     current.snapshotVersion!==old.snapshotVersion)
+   return deny('stale_target_provenance');
+ }
+ return {verified:true,reason:'fresh_d1_evidence_verified',projectId,
+  snapshotVersion:fresh.targets[0].snapshotVersion,
+  acceptedJobsUnchanged:true,unresolvedTargetsVerified:true};
+}

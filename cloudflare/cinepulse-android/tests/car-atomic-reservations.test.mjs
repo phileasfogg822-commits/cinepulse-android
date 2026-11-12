@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents}
+import {inspectCarReservationManifest,stageCarRecoveryReservations,stageCarExecutionIntents,inspectCarDispatchHandoff}
  from '../src/car-atomic-reservations.mjs';
 
 const projectId='fed941ad-ff7f-4b0f-8439-25cfda24d187';
@@ -286,4 +286,32 @@ test('real SQLite rejects conflicting intent after reservations without touching
   assert.deepEqual(db.prepare('SELECT output FROM jobs ORDER BY id').all().map(r=>r.output),
    ['accepted-original','accepted-original']);
  }finally{db.close();}
+});
+
+test('dispatcher handoff requires exact reservation and intent sets without writing jobs',async()=>{
+ const calls=[];
+ const env={DB:{prepare(sql){
+  calls.push(sql);
+  return {bind(project){
+   assert.equal(project,projectId);
+   return {all:async()=>({results:operations.map(op=>({
+    target_id:op.targetId,source_job_id:op.sourceJobId,
+    snapshot_version:op.snapshotVersion
+   }))})};
+  }};
+ }}};
+ const result=await inspectCarDispatchHandoff(env,{projectId,operations});
+ assert.equal(result.ready,true);
+ assert.equal(result.enqueueAllowed,false);
+ assert.equal(result.resumeTriggered,false);
+ assert.equal(result.operations.length,2);
+ assert.equal(calls.length,2);
+ assert.ok(calls.every(sql=>sql.startsWith('SELECT ')));
+ const mismatch=await inspectCarDispatchHandoff(env,{projectId,
+  operations:[{...operations[0],sourceJobId:'changed'},operations[1]]});
+ assert.equal(mismatch.ready,false);
+ assert.equal(mismatch.reason,'dispatch_handoff_mismatch');
+ const invalid=await inspectCarDispatchHandoff(env,{projectId,
+  operations:[operations[0],operations[0]]});
+ assert.equal(invalid.reason,'invalid_dispatch_identity');
 });

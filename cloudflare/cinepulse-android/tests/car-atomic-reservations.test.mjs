@@ -573,19 +573,24 @@ test('real SQLite CAR outbox refuses changed claims before writing rows',async()
  }finally{db.close();}
 });
 
-test('CAR dispatch control inspection blocks stopped movies, busy movies and paused workers',async()=>{
- const inspect=async({status='ready',active=0,enabled=1,paused=0}={})=>{
-  const env={DB:{prepare(sql){return {bind(){return {first:async()=>{
-   if(sql.includes('FROM projects'))return {id:projectId,worker_id:'worker-1',status};
-   if(sql.includes('FROM jobs'))return {n:active};
-   if(sql.includes('FROM workers'))return {enabled,paused};
-   throw Error('unexpected query');
-  }};}};}};
+test('CAR dispatch inspection rejects non-review movies, active jobs and paused workers',async()=>{
+ const inspect=async({status='needs_review',active=0,enabled=1,paused=0}={})=>{
+  const env={DB:{prepare(sql){
+   return {bind(){
+    return {first:async()=>{
+     if(sql.includes('FROM projects'))return {id:projectId,worker_id:'worker-1',status};
+     if(sql.includes('FROM jobs'))return {n:active};
+     if(sql.includes('FROM workers'))return {enabled,paused};
+     throw Error('unexpected query');
+    }};
+   }};
+  }}};
   return inspectCarMovieDispatchControls(env,{projectId});
  };
  assert.equal((await inspect()).ready,true);
- assert.equal((await inspect({status:'stopped'})).reason,'movie_control_blocks_recovery');
- assert.equal((await inspect({status:'paused'})).reason,'movie_control_blocks_recovery');
+ for(const status of ['stopped','paused','cancelled','processing','ready','done']){
+  assert.equal((await inspect({status})).reason,'movie_control_blocks_recovery');
+ }
  assert.equal((await inspect({active:1})).reason,'movie_has_active_jobs');
  assert.equal((await inspect({paused:1})).reason,'worker_unavailable_or_paused');
  assert.equal((await inspect({enabled:0})).reason,'worker_unavailable_or_paused');

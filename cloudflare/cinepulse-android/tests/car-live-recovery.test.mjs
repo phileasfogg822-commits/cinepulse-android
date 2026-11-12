@@ -166,3 +166,27 @@ test('an older failed job cannot authorize recovery after a newer matching attem
  await assert.rejects(dispatch(f),/Dispatch rejected/);
  assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE id='recovery'").get().n,0);
 });
+
+test('tampering with original failed-job provenance blocks acceptance without touching accepted V5 checkpoints',async()=>{
+ for(const mutation of [
+  "UPDATE jobs SET output='{}' WHERE id='33333333-3333-4333-8333-333333333333'",
+  "UPDATE jobs SET error=NULL WHERE id='33333333-3333-4333-8333-333333333333'",
+  "UPDATE jobs SET status='queued' WHERE id='33333333-3333-4333-8333-333333333333'"
+ ]){
+  const f=fixture(),args=await prepareResult(f);
+  const acceptedBefore=f.db.prepare("SELECT output FROM jobs WHERE id='accepted'").get().output;
+  f.db.exec(mutation);
+  await assert.rejects(acceptCarLiveBatch(f.env,args),/stale snapshot/);
+  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id='recovery'").get().status,'working');
+  assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE id='next'").get().n,0);
+  assert.equal(f.db.prepare("SELECT output FROM jobs WHERE id='accepted'").get().output,acceptedBefore);
+ }
+});
+test('retry fails closed if the original failed-job evidence was changed after reservation',async()=>{
+ const f=fixture(),args=await prepareResult(f);
+ f.db.exec("UPDATE jobs SET status='error',lease=NULL WHERE id='recovery'; UPDATE projects SET status='needs_review'; UPDATE jobs SET output='{}' WHERE id='33333333-3333-4333-8333-333333333333'");
+ await assert.rejects(retryCarLiveBatch(f.env,{record:args.record,sourceSrt,now:30}),/retry denied/);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id='recovery'").get().status,'error');
+ assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE status='queued'").get().n,0);
+ assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE id='next'").get().n,0);
+});

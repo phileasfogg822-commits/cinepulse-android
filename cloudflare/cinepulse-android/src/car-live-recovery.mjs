@@ -109,6 +109,21 @@ const controlGuard=`EXISTS(SELECT 1 FROM projects p JOIN workers w ON w.id=p.wor
  LEFT JOIN cinepulse_movie_controls c ON c.project_id=p.id
  WHERE p.id=r.project_id AND p.worker_id=r.worker_id AND w.enabled=1 AND w.paused=0
  AND p.status IN ('needs_review','processing') AND COALESCE(c.paused,0)=0 AND COALESCE(c.stopped,0)=0)`;
+// A retry or acceptance must not trust a staged reservation if the original
+// failed Muse job's durable decision evidence was subsequently changed.
+const failedEvidenceGuard=`EXISTS(SELECT 1 FROM jobs f
+ WHERE f.id=r.failed_job_id AND f.project_id=r.project_id
+ AND f.worker_id=r.worker_id AND f.step_id=r.step_id
+ AND f.status='error' AND length(trim(COALESCE(f.error,'')))>0
+ AND json_valid(f.output)=1
+ AND json_extract(f.output,'$.carFailureEvidence.failedJobId')=r.failed_job_id
+ AND json_extract(f.output,'$.carFailureEvidence.stepId')=r.step_id
+ AND json_type(f.output,'$.carFailureEvidence.rejectedDecisions')='array'
+ AND json_array_length(json_extract(f.output,'$.carFailureEvidence.rejectedDecisions'))=json_array_length(r.targets_json)
+ AND NOT EXISTS(SELECT 1 FROM json_each(r.targets_json) target
+ WHERE NOT EXISTS(SELECT 1 FROM json_each(f.output,'$.carFailureEvidence.rejectedDecisions') proof
+ WHERE json_extract(target.value,'$.segmentIndex')=json_extract(proof.value,'$.segmentIndex')
+ AND json_extract(target.value,'$.rejectedDecision')=proof.value)))`;
 export async function dispatchCarLiveBatch(env,{projectId,workerId,failed,targets,snapshot,sourceSrt,jobId,nextJobId,now}){
  if(!carLiveEnabled(env,projectId))throw Error('Controlled CAR rollout is not enabled for this movie');
  await ensureCarLiveTable(env);
@@ -139,7 +154,7 @@ export async function acceptCarLiveBatch(env,{record,job,verified,nextStep,sourc
  const result=await env.DB.batch([
  env.DB.prepare(`UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL
  WHERE id=? AND status='working' AND lease=? AND lease_until>?
- AND EXISTS(SELECT 1 FROM car_live_batches r WHERE r.job_id=jobs.id AND ${controlGuard} AND ${snapshotGuard})`).bind(output,now,job.id,job.lease,now),
+ AND EXISTS(SELECT 1 FROM car_live_batches r WHERE r.job_id=jobs.id AND ${controlGuard} AND ${snapshotGuard} AND ${failedEvidenceGuard})`).bind(output,now,job.id,job.lease,now),
  env.DB.prepare(`INSERT INTO jobs(id,project_id,worker_id,step_id,status,prompt,created_at)
  SELECT r.next_job_id,r.project_id,r.worker_id,?,'queued','[PERMANENT-DEEP-MUSE] Continue after accepted CAR batch',?
  FROM car_live_batches r JOIN jobs j ON j.id=r.job_id WHERE r.job_id=? AND j.status='done' AND j.output=?
@@ -169,7 +184,7 @@ export async function retryCarLiveBatch(env,{record,sourceSrt,now}){
  const result=await env.DB.batch([
   env.DB.prepare(`UPDATE jobs SET status='queued',prompt=?,error=NULL,lease=NULL,lease_until=NULL,finished_at=NULL
    WHERE id=? AND status='error' AND EXISTS(SELECT 1 FROM car_live_batches r WHERE r.job_id=jobs.id
-    AND ${controlGuard} AND ${snapshotGuard}
+    AND ${controlGuard} AND ${snapshotGuard} AND ${failedEvidenceGuard}
     AND NOT EXISTS(SELECT 1 FROM jobs a WHERE a.project_id=r.project_id AND a.status IN ('queued','working')))`)
     .bind(CAR_LIVE_MARKER,record.job_id),
   env.DB.prepare("UPDATE projects SET status='processing',updated_at=? WHERE id=? AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='queued')").bind(now,record.project_id,record.job_id)

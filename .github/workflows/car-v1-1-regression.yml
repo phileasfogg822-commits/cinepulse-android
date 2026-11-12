@@ -1,0 +1,46 @@
+name: CAR v1.1 isolated recovery regression (no deployment)
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/car-v1-1-isolated-recovery-20261111]
+    paths:
+      - 'cloudflare/cinepulse-android/src/context-anchor-recovery.mjs'
+      - 'cloudflare/cinepulse-android/src/car-live-inventory.mjs'
+      - 'cloudflare/cinepulse-android/src/car-d1-inventory.mjs'
+      - 'cloudflare/cinepulse-android/src/car-d1-preflight.mjs'
+      - 'cloudflare/cinepulse-android/src/car-atomic-reservations.mjs'
+      - 'cloudflare/cinepulse-android/src/car-recovery-ledger.mjs'
+      - 'cloudflare/cinepulse-android/src/index.mjs'
+      - 'cloudflare/cinepulse-android/src/car-six-film-diagnostics.mjs'
+      - 'cloudflare/cinepulse-android/tests/context-anchor-recovery.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/car-live-inventory.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/car-d1-inventory.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/car-d1-preflight.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/car-atomic-reservations.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/car-dispatch-readiness-route.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/car-recovery-ledger.test.mjs'
+      - 'cloudflare/cinepulse-android/tests/car-six-film-diagnostics.test.mjs'
+      - '.github/workflows/car-v1-1-regression.yml'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check backend and CAR module syntax
+        run: |
+          node --check cloudflare/cinepulse-android/src/index.mjs
+          node --check cloudflare/cinepulse-android/src/car-d1-inventory.mjs
+          node --check cloudflare/cinepulse-android/src/car-d1-preflight.mjs
+          node --check cloudflare/cinepulse-android/src/car-atomic-reservations.mjs
+          node --check cloudflare/cinepulse-android/src/car-recovery-ledger.mjs
+      - name: Install backend test dependencies
+        working-directory: cloudflare/cinepulse-android
+        run: npm install --no-audit --no-fund
+      - name: Run full Cloudflare backend regression suite
+        working-directory: cloudflare/cinepulse-android
+        run: npm test

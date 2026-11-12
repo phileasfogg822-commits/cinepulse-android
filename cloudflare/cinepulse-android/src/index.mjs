@@ -1,9 +1,15 @@
+import {inspectCarMovieDispatchControls} from './car-atomic-reservations.mjs';
 import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAGARI_BUILD,URDU_DEVANAGARI_METHOD,validateDevanagariUrduVoiceReceipt,urduDevanagariInstructions,urduDevanagariSrtInstructions} from './urdu-devanagari-voice.mjs';
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
 import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
+import { carEligibility } from './context-anchor-recovery.mjs';
+import { verifyCarLiveInventory } from './car-live-inventory.mjs';
+import { collectCarD1Inventory,auditCarD1Evidence,inspectCarRecoveryCandidate } from './car-d1-inventory.mjs';
+import { ensureCarRecoveryLedger,insertScopedCarRecoveryCheckpoint,loadScopedCarRecoveryCheckpoints,inspectScopedCarRecoveryReadiness,buildScopedCarRecoveryHandoff,verifyFreshCarD1Snapshot } from './car-recovery-ledger.mjs';
+import {fingerprintCarD1State} from './car-d1-preflight.mjs';
 import { DEEP_BUILD,DEEP_PREPARE,DEEP_MATCH,DEEP_EXPORT,DEEP_STAGES,ensureDeepTables,deepRow,deepBatch,deepOutputs,normalizeDeepCreate,segmentBatch,preparePrompt,matchPrompt,exportPrompt,validateDeepBatch,validateDeepFinalCuts,publicDeepStatus } from './scene-lab-deep.mjs';
 import { ensureSceneLab,sceneLabRow,normalizeSceneLabCreate,sceneLabInstructions,sceneLabTaskMetadata,SCENE_LAB_STAGE,SCENE_LAB_BUILD } from './scene-lab-runtime.mjs';
 import { buildSceneLabV4Package,unwrapMeasuredSrt } from './scene-lab-package.mjs';
@@ -131,6 +137,16 @@ async function acceptedPermanentDeepBatches(env,projectId,stage){
  });
  return stage===PERMANENT_DEEP_MATCH_UR?
    applyAcceptedUrduRepairs(original,await acceptedUrduRepairOutputs(env,projectId)):original;
+}
+// Read all relevant job states, not just completed batches: accepted outputs
+// and late status changes must invalidate an older CAR audit handoff.
+async function readCarD1Fingerprint(env,projectId,audit,checkpoints,sourceSrt,outputs){
+ const rows=await env.DB.prepare(
+  "SELECT id,step_id,status,output,created_at,finished_at FROM jobs WHERE project_id=? AND step_id IN (?,?) ORDER BY created_at ASC,rowid ASC"
+ ).bind(projectId,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR).all();
+ return fingerprintCarD1State({projectId,audit,checkpoints,sourceSrt,
+  englishSrt:outputs.srt_english,urduSrt:outputs.srt_urdu,
+  jobRows:rows.results||[]});
 }
 async function priorOutputs(env,projectId) {
  const result=await env.DB.prepare("SELECT step_id,output FROM jobs WHERE project_id=? AND status='done' ORDER BY created_at ASC,rowid ASC").bind(projectId).all();
@@ -852,6 +868,27 @@ async function acceptPermanentDeepStage(env,job,output){
    const accepted=await acceptedPermanentDeepBatches(env,job.project_id,job.step_id);
    const source=await env.FILES.get(movie.source_srt_key);
    if(!source)throw Error('Original movie subtitles missing');
+   // CAR v1.1 integration guard: normal Muse submissions are unchanged.
+   // Recovery is never inferred from a 422 or a partial five-segment batch.
+   // A future recovery submission must provide a complete independently verified
+   // movie-wide unresolved inventory, and must not replace accepted decisions.
+   if(output?.carRecovery){
+     // Client-supplied inventories are not trusted. Reconcile both languages
+     // against this project's live D1 checkpoints before any CAR decision.
+     const d1Inventory=await collectCarD1Inventory(env,job.project_id,outputs,acceptedPermanentDeepBatches);
+     if(!d1Inventory.eligibility.verified)
+       throw Error('CAR live D1 inventory denied: '+d1Inventory.eligibility.reason);
+     const verifiedInventory=verifyCarLiveInventory(d1Inventory);
+     const check=carEligibility({
+       enabled:env.CAR_V1_1_ENABLED==='true',
+       unresolvedSegmentIds:verifiedInventory.unresolvedSegmentIds,
+       acceptedSegmentIds:[
+         ...accepted.flatMap(batch=>batch.decisions||[]).map(d=>language+':'+d.segmentIndex)
+       ]
+     });
+     if(!check.eligible)throw Error('CAR recovery denied: '+check.reason);
+     throw Error('CAR recovery persistence not yet authorized: atomic checkpoint integration required');
+   }
    const verified=validateProductionDeepBatch(language,cues,await source.text(),accepted,output);
    const now=nowSeconds();
    const updated=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
@@ -1341,6 +1378,120 @@ async function route(request,env){
   }
   if(!url.pathname.startsWith('/v1/'))fail(404,'Route not found');
   await administrator(request,env);
+
+  // CAR v1.1 administrator-only dispatch readiness inspection.
+  // Explicitly read-only: no claim, outbox, production job or movie mutation.
+  const carDispatchReadinessRoute=url.pathname.split('/').length===6 && url.pathname.split('/')[1]==='v1' && url.pathname.split('/')[2]==='projects' && url.pathname.split('/')[4]==='car' && url.pathname.split('/')[5]==='dispatch-readiness' ? [url.pathname,url.pathname.split('/')[3]] : null;
+  if(method==='GET'&&carDispatchReadinessRoute&&url.pathname===carDispatchReadinessRoute[0]){
+    const projectId=requireUUID(carDispatchReadinessRoute[1]);
+    if(env.CAR_V1_1_ENABLED!=='true')fail(403,'CAR recovery is disabled');
+    const project=await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR dispatch requires a V5 permanent Muse project');
+    const controls=await inspectCarMovieDispatchControls(env,{projectId});
+    return json({...controls,projectStatus:project.status,readOnly:true,
+      enqueueAllowed:false,resumeTriggered:false});
+  }
+
+  // Read-only, administrator-authenticated CAR coverage diagnostic.
+  // No stage is resumed and no D1/R2 record is modified by this endpoint.
+  const carInventoryRoute=/^\/v1\/projects\/([a-f0-9-]{36})\/car\/inventory$/.exec(url.pathname);
+  if(method==='GET'&&carInventoryRoute){
+    const projectId=requireUUID(carInventoryRoute[1]);
+    await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR D1 inventory requires a V5 permanent Muse project');
+    const outputs=await priorOutputs(env,projectId);
+    return json({projectId,...await collectCarD1Inventory(env,projectId,outputs,acceptedPermanentDeepBatches)});
+  }
+
+  // Administrator-only, read-only operational CAR audit. This route does not
+  // advance, lease, pause or alter any normal movie job.
+  const carAuditRoute=/^\/v1\/projects\/([a-f0-9-]{36})\/car\/audit$/.exec(url.pathname);
+  if(method==='GET'&&carAuditRoute){
+    const projectId=requireUUID(carAuditRoute[1]);
+    const project=await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR audit requires a V5 permanent Muse project');
+    const original=await env.FILES.get(project.source_srt_key||objectKey(projectId,'source_srt'));
+    if(!original)fail(409,'Original movie source SRT unavailable for CAR audit');
+    const sourceSrt=await original.text();
+    const outputs=await priorOutputs(env,projectId);
+    const audit=await auditCarD1Evidence(env,projectId,outputs,acceptedPermanentDeepBatches,sourceSrt);
+    const target=url.searchParams.get('target');
+    // Read the isolated checkpoint ledger only after the live evidence audit.
+    // Existing accepted V5 decisions remain authoritative; no auto-resume.
+    const checkpoints=env.CAR_V1_1_ENABLED==='true'
+      ?await (async()=>{await ensureCarRecoveryLedger(env);return loadScopedCarRecoveryCheckpoints(env,projectId)})()
+      :[];
+    const readiness=inspectScopedCarRecoveryReadiness({audit,checkpoints,sourceSrt});
+    const plan=buildScopedCarRecoveryHandoff({projectId,readiness,checkpoints});
+    const handoff=plan.authorized?{...plan,stateFingerprint:await readCarD1Fingerprint(
+      env,projectId,audit,checkpoints,sourceSrt,outputs)}:plan;
+    return json({...audit,checkpoints,readiness,handoff,
+      candidate:target?inspectCarRecoveryCandidate(audit,target):null,
+      resumeTriggered:false,acceptedCheckpointsUnchanged:true});
+  }
+
+  // Read-only live D1 preflight. An administrator submits the previously
+  // audited handoff; the server re-queries source evidence and all deep-match
+  // job states before comparing its accepted-state SHA-256 fingerprint.
+  // This is NOT atomic with a future enqueue and never resumes a movie.
+  const carPreflightRoute=/^\/v1\/projects\/([a-f0-9-]{36})\/car\/preflight$/.exec(url.pathname);
+  if(method==='POST'&&carPreflightRoute){
+    if(env.CAR_V1_1_ENABLED!=='true')fail(403,'CAR recovery is disabled');
+    const projectId=requireUUID(carPreflightRoute[1]);
+    const body=await getJson(request);
+    const handoff=body?.handoff;
+    if(handoff?.projectId!==projectId||handoff?.authorized!==true)
+      fail(422,'A project-matched audited CAR handoff is required');
+    const project=await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR preflight requires a V5 permanent Muse project');
+    const original=await env.FILES.get(project.source_srt_key||objectKey(projectId,'source_srt'));
+    if(!original)fail(409,'Original movie source SRT unavailable');
+    const sourceSrt=await original.text();
+    const outputs=await priorOutputs(env,projectId);
+    const audit=await auditCarD1Evidence(env,projectId,outputs,acceptedPermanentDeepBatches,sourceSrt);
+    // No CREATE TABLE here: an absent ledger is a failure, not permission
+    // to mutate D1 as part of a read-only preflight.
+    const checkpoints=await loadScopedCarRecoveryCheckpoints(env,projectId);
+    const freshFingerprint=await readCarD1Fingerprint(env,projectId,audit,checkpoints,sourceSrt,outputs);
+    const proof=verifyFreshCarD1Snapshot({
+      projectId,handoff,audit,checkpoints,sourceSrt,freshFingerprint
+    });
+    return json({...proof,readOnly:true,productionValidated:false,
+      enqueueAllowed:false,resumeTriggered:false});
+  }
+
+  // CAR-only, administrator-authenticated checkpoint submission. Never mutates
+  // accepted V5 batches, jobs, project state or the normal movie queue.
+  const carCheckpointRoute=/^\/v1\/projects\/([a-f0-9-]{36})\/car\/checkpoint/.exec(url.pathname);
+  if(method==='POST'&&carCheckpointRoute&&url.pathname===carCheckpointRoute[0]){
+    if(env.CAR_V1_1_ENABLED!=='true')fail(403,'CAR recovery is disabled');
+    const projectId=requireUUID(carCheckpointRoute[1]);
+    const project=await getProject(env,projectId);
+    const policy=await projectPolicy(env,projectId);
+    if(!policy.permanentDeep)fail(403,'CAR requires a V5 permanent Muse project');
+    const body=await getJson(request);
+    const targetId=body?.targetId,decision=body?.decision;
+    if(typeof targetId!=='string'||! /^(english|urdu):[1-9][0-9]*$/.test(targetId))
+      fail(422,'CAR targetId must be an English or Urdu segment');
+    const original=await env.FILES.get(project.source_srt_key||objectKey(projectId,'source_srt'));
+    if(!original)fail(409,'Original movie source SRT unavailable');
+    const sourceSrt=await original.text();
+    const outputs=await priorOutputs(env,projectId);
+    const audit=await auditCarD1Evidence(env,projectId,outputs,acceptedPermanentDeepBatches,sourceSrt);
+    const candidate=inspectCarRecoveryCandidate(audit,targetId);
+    if(!candidate.eligible)fail(409,'CAR target denied: '+candidate.reason);
+    await ensureCarRecoveryLedger(env);
+    const result=await insertScopedCarRecoveryCheckpoint(env,{
+      projectId,targetId,audit,decision,sourceSrt,enabled:true
+    });
+    if(!result.saved)fail(409,'CAR checkpoint denied: '+result.reason);
+    return json({projectId,targetId,status:'checkpoint_saved',resumeTriggered:false,
+      normalPipelineUnchanged:true,mutationScope:result.mutationScope},201);
+  }
 
   if(method==='GET'&&url.pathname==='/v1/scene-lab/deep'){
     await ensureDeepTables(env);

@@ -1,0 +1,11 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {verifyCarLiveInventory as verify} from '../src/car-live-inventory.mjs';
+const base=()=>({snapshotVersion:2,english:{complete:true,total:2,segments:[{index:1,status:'accepted'},{index:2,status:'unresolved'}]},urdu:{complete:true,total:1,segments:[{index:1,status:'accepted'}]},accepted:['english:1','urdu:1'],recovered:[]});
+test('both languages fully enumerated',()=>assert.deepEqual(verify(base()).unresolvedSegmentIds,['english:2']));
+test('missing second language fails closed',()=>{const b=base();delete b.urdu;assert.equal(verify(b).verified,false)});
+test('partial coverage fails closed',()=>{const b=base();b.english.segments.pop();assert.equal(verify(b).verified,false)});
+test('duplicate segments fail closed',()=>{const b=base();b.english.segments[1].index=1;assert.equal(verify(b).verified,false)});
+test('checkpoint mismatch fails closed',()=>{const b=base();b.accepted=[];assert.equal(verify(b).verified,false)});
+test('missing snapshot version fails closed',()=>{const b=base();delete b.snapshotVersion;assert.equal(verify(b).verified,false)});
+test('four unresolved fails closed',()=>{const b=base();b.english.total=4;b.english.segments.push({index:3,status:'unresolved'},{index:4,status:'unresolved'});b.urdu.segments[0].status='unresolved';b.accepted=['english:1'];assert.equal(verify(b).verified,false)});
+test('recovered segments count against lifetime cap',()=>{const b=base();b.english.segments[0].status='recovered';b.accepted=['urdu:1'];b.recovered=['english:1'];assert.equal(verify(b).lifetimeCount,2)});

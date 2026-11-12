@@ -1,0 +1,153 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {assembleCarD1Inventory as assemble,collectCarD1Inventory as collect,reconcileCarEvidence,verifyCarMuseEvidence,auditCarD1Evidence,inspectCarRecoveryCandidate} from '../src/car-d1-inventory.mjs';
+const srt=(n)=>Array.from({length:n},(_,i)=>String(i+1)+'\n00:00:'+String(i*2).padStart(2,'0')+',000 --> 00:00:'+String(i*2+1).padStart(2,'0')+',000\nNarration '+(i+1)+'\n').join('\n');
+const batch=(n)=>({decisions:Array.from({length:n},(_,i)=>({segmentIndex:i+1}))});
+const input=()=>({englishSrt:srt(6),urduSrt:srt(2),englishBatches:[batch(5)],urduBatches:[],jobs:[{id:'a',step_id:'deep_match_english',status:'done',created_at:100}]});
+test('D1 collector enumerates both languages without guessing unresolved',()=>{const i=assemble(input());assert.equal(i.english.reviewed,5);assert.equal(i.unknownSegmentIds.length,3);assert.equal(i.complete,false);assert.equal(i.mutationPermitted,false);assert.equal(i.eligibility.verified,false)});
+test('D1 failure messages do not certify unresolved segments',()=>{const x=input();x.jobs.push({id:'failure',step_id:'deep_match_english',status:'error',error:'segment 6 lacks a cue',created_at:101});const i=assemble(x);assert.equal(i.failedJobEvidence.length,1);assert.deepEqual(i.unknownSegmentIds,['english:6','urdu:1','urdu:2']);assert.equal(i.eligibility.verified,false)});
+test('missing Urdu measured SRT rejects instead of inferring coverage',()=>{const x=input();delete x.urduSrt;assert.throws(()=>assemble(x),/missing urdu/)});
+test('corrupt committed batch fails rather than silently skipping',()=>{const x=input();x.englishBatches=[{decisions:[{segmentIndex:2}]}];assert.throws(()=>assemble(x),/Corrupt|Incomplete/)});
+test('fully accepted D1 source is not eligible for recovery',()=>{const x=input();x.englishSrt=srt(5);x.urduBatches=[batch(2)];const i=assemble(x);assert.equal(i.complete,true);assert.equal(i.eligibility.verified,false);assert.equal(i.eligibility.reason,'lifetime_cap_exceeded_or_empty')});
+test('collector queries D1 read-only and loads checkpoints for both languages',async()=>{
+  const x=input(),queries=[];
+  const db={
+    prepare(sql){
+      queries.push(sql);
+      return {
+        bind(...args){
+          return {
+            async all(){
+              assert.equal(args.length,3);
+              return {results:x.jobs};
+            }
+          };
+        }
+      };
+    }
+  };
+  const i=await collect({DB:db},'some-project',
+    {srt_english:x.englishSrt,srt_urdu:x.urduSrt},
+    async (_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[]);
+  assert.equal(i.english.reviewed,5);
+  assert.ok(queries.every(q=>/^SELECT /i.test(q)));
+});
+
+test('unverified error evidence cannot resolve an unknown segment',()=>{
+ const base=assemble(input());
+ assert.throws(()=>reconcileCarEvidence(base,[{id:'english:6',status:'unresolved',sourceJobId:'j1',snapshotVersion:100}]),/invalid/);
+});
+test('stale, duplicate and accepted-segment evidence are rejected',()=>{
+ const base=assemble(input());
+ const evidence={id:'english:6',status:'unresolved',sourceJobId:'j1',verifiedByProduction:true,snapshotVersion:100};
+ assert.throws(()=>reconcileCarEvidence(base,[{...evidence,snapshotVersion:99}]),/stale/);
+ assert.throws(()=>reconcileCarEvidence(base,[evidence,evidence]),/invalid/);
+ assert.throws(()=>reconcileCarEvidence(base,[{...evidence,id:'english:1'}]),/collides/);
+});
+test('partial verified evidence leaves other segments unknown and denied',()=>{
+ const base=assemble(input());
+ const result=reconcileCarEvidence(base,[{id:'english:6',status:'unresolved',sourceJobId:'j1',verifiedByProduction:true,snapshotVersion:100}]);
+ assert.deepEqual(result.unknownSegmentIds,['urdu:1','urdu:2']);
+ assert.equal(result.eligibility.verified,false);
+ assert.equal(result.mutationPermitted,false);
+ assert.deepEqual(base.unknownSegmentIds,['english:6','urdu:1','urdu:2']);
+});
+test('complete verified evidence counts both languages and applies CAR cap',()=>{
+ const base=assemble(input());
+ const ev=['english:6','urdu:1','urdu:2'].map(id=>({id,status:'unresolved',sourceJobId:'j1',verifiedByProduction:true,snapshotVersion:100}));
+ const result=reconcileCarEvidence(base,ev);
+ assert.equal(result.complete,true);
+ assert.equal(result.eligibility.verified,true);
+ assert.equal(result.eligibility.lifetimeCount,3);
+ assert.equal(result.mutationPermitted,false);
+});
+test('more than three lifetime unresolved segments are rejected',()=>{
+ const base=assemble(input());
+ const ev=['english:6','urdu:1','urdu:2'].map(id=>({id,status:'unresolved',sourceJobId:'j1',verifiedByProduction:true,snapshotVersion:100}));
+ const result=reconcileCarEvidence(base,[{...ev[0],status:'recovered'},ev[1],ev[2]]);
+ assert.equal(result.eligibility.verified,true);
+ const extra={...base,unknownSegmentIds:['english:6','urdu:1','urdu:2','english:7'],
+ english:{...base.english,segments:[...base.english.segments,{index:7,status:'unknown'}],total:7}};
+ assert.equal(extra.unknownSegmentIds.length,4);
+});
+
+test('failed Muse job text never certifies a segment as unresolved',()=>{
+ const base=assemble(input()),row={id:'j1',step_id:'deep_match_english',status:'error',output:'{"unresolvedSegments":[{"segmentIndex":6}]}'};const e=[{id:'english:6',sourceJobId:'j1',status:'unresolved',snapshotVersion:100}];
+ assert.equal(verifyCarMuseEvidence(base,[row],e).verified,false);
+});
+test('client-provided verified flag cannot replace durable Muse evidence',()=>{
+ const base=assemble(input()),row={id:'j1',step_id:'deep_match_english',status:'done',output:'{}'};const e=[{id:'english:6',sourceJobId:'j1',status:'unresolved',snapshotVersion:100,verifiedByProduction:true}];
+ assert.equal(verifyCarMuseEvidence(base,[row],e).reason,'missing_explicit_muse_segment_evidence');
+});
+test('valid explicit completed Muse segment evidence is reconciled but remains read-only',()=>{
+ const base=assemble(input()),row={id:'j1',step_id:'deep_match_english',status:'done',output:JSON.stringify({unresolvedSegments:[{segmentIndex:6,status:'unresolved',reviewedByMuse:true,sourceCueQuote:'quoted original movie',sourceCueIds:[25],museRequestId:'muse-123'}]})};
+ const e=[{id:'english:6',sourceJobId:'j1',status:'unresolved',snapshotVersion:100}];
+ const verified=verifyCarMuseEvidence(base,[row],e);
+ assert.equal(verified.verified,true);
+ const result=reconcileCarEvidence(base,verified.evidence);
+ assert.equal(result.mutationPermitted,false);
+ assert.deepEqual(result.unknownSegmentIds,['urdu:1','urdu:2']);
+});
+test('wrong language and stale version reject otherwise complete evidence',()=>{
+ const base=assemble(input()),row={id:'j1',step_id:'deep_match_urdu',status:'done',output:JSON.stringify({unresolvedSegments:[{segmentIndex:6,status:'unresolved',reviewedByMuse:true,sourceCueQuote:'source',sourceCueIds:[25],museRequestId:'muse-123'}]})};
+ const e=[{id:'english:6',sourceJobId:'j1',status:'unresolved',snapshotVersion:100}];
+ assert.equal(verifyCarMuseEvidence(base,[row],e).verified,false);
+ row.step_id='deep_match_english';e[0].snapshotVersion=99;
+ assert.equal(verifyCarMuseEvidence(base,[row],e).verified,false);
+});
+
+test('operational D1 audit reads durable declarations without mutating ordinary jobs',async()=>{
+ const x=input(),sql=[];
+ const jobs=[{id:'j1',step_id:'deep_match_english',status:'done',created_at:100,
+ output:JSON.stringify({unresolvedSegments:[{segmentIndex:6,status:'unresolved',reviewedByMuse:true,sourceCueQuote:'dragon flies over village',sourceCueIds:[25],museRequestId:'muse-123'}]})}];
+ const db={prepare(query){sql.push(query);return {bind(){return {async all(){return {results:query.includes('status=\'done\'')?jobs:x.jobs}}}}}}};
+ const result=await auditCarD1Evidence({DB:db},'project',{srt_english:x.englishSrt,srt_urdu:x.urduSrt},
+  async (_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[],
+  '25\n00:01:00,000 --> 00:01:04,000\nThe dragon flies over village.\n');
+ assert.equal(result.declaredCount,1);
+ assert.equal(result.verifiedCount,1);
+ assert.equal(result.mutationPermitted,false);
+ assert.equal(result.evidenceStatus,'verified');
+ assert.ok(sql.every(q=>q.trim().startsWith('SELECT ')));
+});
+test('operational D1 audit does not invent declarations from error jobs',async()=>{
+ const x=input(),sql=[];
+ const db={prepare(query){sql.push(query);return {bind(){return {async all(){return {results:query.includes('status=\'done\'')?[]:x.jobs}}}}}}};
+ const result=await auditCarD1Evidence({DB:db},'project',{srt_english:x.englishSrt,srt_urdu:x.urduSrt},
+  async (_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[]);
+ assert.equal(result.declaredCount,0);
+ assert.equal(result.verifiedCount,0);
+ assert.equal(result.mutationPermitted,false);
+});
+
+test('bounded CAR candidate does not wait for unrelated unfinished segments',()=>{
+ const base=assemble(input());
+ const audit={inventory:base,evidenceStatus:'verified',verifiedSegmentIds:['english:6']};
+ const result=inspectCarRecoveryCandidate(audit,'english:6');
+ assert.equal(result.eligible,true);
+ assert.equal(result.unrelatedUnknownCount,2);
+ assert.equal(result.mutationPermitted,false);
+});
+test('bounded CAR candidate rejects unknown segment without durable evidence',()=>{
+ const base=assemble(input());
+ const audit={inventory:base,evidenceStatus:'verified',verifiedSegmentIds:['english:6']};
+ assert.equal(inspectCarRecoveryCandidate(audit,'urdu:1').reason,'no_verified_muse_evidence');
+ assert.equal(inspectCarRecoveryCandidate(audit,'english:1').reason,'already_accepted');
+});
+test('bounded CAR candidate enforces three-segment cap without touching production',()=>{
+ const base=assemble(input());
+ const audit={inventory:base,evidenceStatus:'verified',verifiedSegmentIds:['english:6','urdu:1','urdu:2','english:7']};
+ assert.equal(inspectCarRecoveryCandidate(audit,'english:6').reason,'recovery_limit_exceeded');
+});
+
+test('D1 audit rejects fabricated quotes even from completed Muse jobs',async()=>{
+ const x=input();
+ const jobs=[{id:'j1',step_id:'deep_match_english',status:'done',created_at:100,
+ output:JSON.stringify({unresolvedSegments:[{segmentIndex:6,status:'unresolved',reviewedByMuse:true,sourceCueQuote:'fabricated movie dialogue',sourceCueIds:[25],museRequestId:'muse-123'}]})}];
+ const db={prepare(query){return {bind(){return {async all(){return {results:query.includes("status='done'")?jobs:x.jobs}}}}}}};
+ const result=await auditCarD1Evidence({DB:db},'project',{srt_english:x.englishSrt,srt_urdu:x.urduSrt},
+  async (_env,_id,stage)=>stage==='deep_match_english'?x.englishBatches:[],
+  '25\n00:01:00,000 --> 00:01:04,000\nThe dragon flies over village.\n');
+ assert.equal(result.verifiedCount,0);
+ assert.equal(result.mutationPermitted,false);
+});

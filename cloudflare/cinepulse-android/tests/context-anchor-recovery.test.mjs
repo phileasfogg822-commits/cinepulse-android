@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {carEligibility,prepareCarPatch} from '../src/context-anchor-recovery.mjs';
+const good={anchorMethod:'context',visualVerified:false,sourceCueIds:[42],museRequestId:'muse-real-123'};
+test('disabled by default',()=>assert.equal(carEligibility({unresolvedSegmentIds:['90']}).eligible,false));
+test('unknown inventory fails closed',()=>assert.equal(carEligibility({enabled:true}).eligible,false));
+test('1, 2, 3 allowed; 4 denied',()=>{for(let n=1;n<=3;n++)assert.equal(carEligibility({enabled:true,unresolvedSegmentIds:Array.from({length:n},(_,i)=>String(i+1))}).eligible,true);assert.equal(carEligibility({enabled:true,unresolvedSegmentIds:['1','2','3','4']}).eligible,false)});
+test('accepted collision and duplicates denied',()=>{assert.equal(carEligibility({enabled:true,unresolvedSegmentIds:['90'],acceptedSegmentIds:['90']}).eligible,false);assert.equal(carEligibility({enabled:true,unresolvedSegmentIds:['90','90']}).eligible,false)});
+test('only unresolved target is patched; accepted snapshot unchanged',()=>{const accepted={'89':{cue:3},'91':{cue:4}};const after=prepareCarPatch({accepted,unresolvedSegmentIds:['90'],targetId:'90',recovery:good,enabled:true});assert.deepEqual(accepted,{'89':{cue:3},'91':{cue:4}});assert.deepEqual(after['89'],accepted['89']);assert.deepEqual(after['91'],accepted['91']);assert.equal(after['90'].anchorMethod,'context')});
+test('cannot replace accepted match',()=>assert.throws(()=>prepareCarPatch({accepted:{'90':{}},unresolvedSegmentIds:['90'],targetId:'90',recovery:good,enabled:true})));
+test('cannot patch unrelated target',()=>assert.throws(()=>prepareCarPatch({accepted:{},unresolvedSegmentIds:['90'],targetId:'91',recovery:good,enabled:true})));
+test('rejects missing evidence and visual verification claims',()=>assert.throws(()=>prepareCarPatch({accepted:{},unresolvedSegmentIds:['90'],targetId:'90',recovery:{...good,visualVerified:true},enabled:true})));

@@ -1,0 +1,79 @@
+name: CinePulse CAR v1.1 live D1 movie candidate audit (read only)
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/car-v1-1-isolated-recovery-20261111]
+    paths: ['.github/workflows/car-v1-1-live-d1-readonly.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Query live movie states without modifying D1 or production jobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'CAR_CLOUDFLARE_CREDENTIAL_PREFLIGHT'
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          echo 'CAR_INSTALL_READ_ONLY_TOOLS'
+          npm install --no-audit --no-fund >/dev/null
+          echo 'CAR_D1_READ_ONLY_QUERY_START'
+          sql="SELECT p.id,p.title,p.status,p.created_at,w.label AS worker_label,
+            w.enabled AS worker_enabled,w.paused AS worker_paused,
+            CASE WHEN instr(COALESCE(d.prompt,''),'[CINEPULSE-V5-PERMANENT-DEEP-MUSE]')=1 THEN 'V5'
+                 WHEN instr(COALESCE(d.prompt,''),'[CINEPULSE-EXPERIMENTAL-SCENE-INTELLIGENCE-V3828]')=1 THEN 'EXPERIMENT'
+                 ELSE 'OTHER' END AS movie_mode,
+            (SELECT COUNT(*) FROM jobs j WHERE j.project_id=p.id AND j.status='error') AS errors,
+            (SELECT COUNT(*) FROM jobs j WHERE j.project_id=p.id AND j.status IN ('queued','working')) AS active,
+            (SELECT step_id FROM jobs j WHERE j.project_id=p.id ORDER BY created_at DESC,rowid DESC LIMIT 1) AS last_step,
+            (SELECT status FROM jobs j WHERE j.project_id=p.id ORDER BY created_at DESC,rowid DESC LIMIT 1) AS last_status
+            FROM projects p LEFT JOIN workers w ON w.id=p.worker_id
+            LEFT JOIN jobs d ON d.id=(SELECT id FROM jobs WHERE project_id=p.id AND step_id='digest' ORDER BY created_at ASC LIMIT 1)
+            ORDER BY p.created_at DESC,p.rowid DESC LIMIT 50"
+          # The Cloudflare D1 query API executes this literal SELECT only.
+          # No migrations, deployments, table writes or asset reads.
+          payload=$(jq -cn --arg sql "$sql" '{sql:$sql}')
+          status=$(curl --silent --show-error --max-time 35 -o /tmp/car-readonly-movies.json -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd/query" \
+            --data "$payload") || status=000
+          if [[ "$status" != 200 ]] || ! jq -e '.success==true' /tmp/car-readonly-movies.json >/dev/null; then
+            echo "CAR_D1_API_STATUS=$status"
+            jq -c '{success,errors:(.errors//[]|map({code,message}))}' /tmp/car-readonly-movies.json 2>/dev/null | head -c 1200 || true
+            exit 2
+          fi
+          echo 'CAR_D1_READ_ONLY_QUERY_OK'
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          const r=JSON.parse(fs.readFileSync('/tmp/car-readonly-movies.json','utf8'));
+          const rows=(Array.isArray(r.result)?r.result:[r.result||r]).flatMap(v=>v.results||[]);
+          console.log('CAR_LIVE_READ_ONLY_TOTAL='+rows.length);
+          console.log('CAR_LIVE_V5_NEEDS_REVIEW='+rows.filter(x=>x.movie_mode==='V5'&&x.status==='needs_review').length);
+          for(const x of rows){
+            const candidate=x.movie_mode==='V5' && x.status==='needs_review';
+            if(!candidate && x.id!=='df5e65e3-bb54-4908-b973-04c4dd89234e')continue;
+            console.log('CAR_CANDIDATE '+JSON.stringify({
+              projectId:x.id,title:String(x.title||'').slice(0,100),mode:x.movie_mode,
+              status:x.status,workerLabel:String(x.worker_label||'').slice(0,40),
+              workerEnabled:Number(x.worker_enabled)===1,
+              workerPaused:Number(x.worker_paused)===1,
+              errors:x.errors,active:x.active,
+              lastStep:x.last_step,lastStatus:x.last_status
+            }));
+          }
+          console.log('CAR_LIVE_MOVIE_AUDIT_COMPLETE_NO_MUTATION');
+          NODE

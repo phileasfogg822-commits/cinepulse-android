@@ -566,7 +566,9 @@ test('real SQLite CAR enqueue refuses wrong worker and existing active movie job
   db.prepare('UPDATE jobs SET output=? WHERE id=?').run('accepted-original',op.sourceJobId);
   assert.equal((await enqueueCarRecoveryOutboxJob(env,{...args,workerId:'worker-1'}))
    .enqueued,true);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n,1);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n,2);
+  assert.equal(db.prepare('SELECT output FROM jobs WHERE id=?').get(op.sourceJobId).output,
+   'accepted-original','source accepted output must remain unchanged');
  }finally{db.close();}
 });
 

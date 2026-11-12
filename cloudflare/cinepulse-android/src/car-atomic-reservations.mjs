@@ -279,9 +279,21 @@ export async function stageCarDispatchClaims(env,{handoff,enabled=false}={}){
      AND NOT EXISTS(SELECT 1 FROM json_each(?) j
       WHERE json_extract(j.value,'$.targetId')=i.target_id
        AND json_extract(j.value,'$.sourceJobId')=i.source_job_id
-       AND json_extract(j.value,'$.snapshotVersion')=i.snapshot_version))`).bind(
+       AND json_extract(j.value,'$.snapshotVersion')=i.snapshot_version))
+    AND (SELECT COUNT(*) FROM car_recovery_reservations WHERE project_id=?)=?
+    AND NOT EXISTS(SELECT 1 FROM car_recovery_execution_intents i WHERE i.project_id=?
+     AND NOT EXISTS(SELECT 1 FROM car_recovery_reservations r
+      WHERE r.project_id=i.project_id AND r.target_id=i.target_id
+       AND r.source_job_id=i.source_job_id AND r.snapshot_version=i.snapshot_version))
+    AND NOT EXISTS(SELECT 1 FROM car_recovery_reservations r WHERE r.project_id=?
+     AND (r.state_fingerprint IS NULL OR length(r.state_fingerprint)<>64))
+    AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=?
+     AND j.step_id IN ('deep_match_english','deep_match_urdu')
+     AND j.created_at>(SELECT MIN(snapshot_version) FROM car_recovery_reservations
+      WHERE project_id=?))`).bind(
     projectId,Math.floor(Date.now()/1000),payload,projectId,
-    operations.length,projectId,projectId,payload).run();
+    operations.length,projectId,projectId,payload,
+    projectId,operations.length,projectId,projectId,projectId,projectId).run();
   if(result.meta?.changes!==operations.length)return reject('dispatch_claim_incomplete');
   const readback=await env.DB.prepare(
    'SELECT target_id,source_job_id,snapshot_version FROM car_recovery_dispatch_claims WHERE project_id=?'

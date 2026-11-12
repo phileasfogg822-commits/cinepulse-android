@@ -22,7 +22,7 @@ function fixture(){
  db.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,output,created_at) VALUES('accepted','11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','deep_match_english','done',?,1)").run(JSON.stringify(accepted[0]));
  db.prepare("INSERT INTO jobs(id,project_id,worker_id,step_id,status,error,created_at) VALUES('33333333-3333-4333-8333-333333333333','11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','deep_match_english','error',?,2)").run(failed.error);
  const wrap=(sql,args=[])=>({bind(...a){return wrap(sql,a)},async run(){const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}}},async first(){return db.prepare(sql).get(...args)||null},async all(){return {results:db.prepare(sql).all(...args)}}});
- const env={CAR_LIVE_PROJECT_ID:pid,DB:{prepare:sql=>wrap(sql),async batch(statements){db.exec('BEGIN');try{const out=[];for(const s of statements)out.push(await s.run());db.exec('COMMIT');return out}catch(e){db.exec('ROLLBACK');throw e}}}};
+ const env={CAR_LIVE_PROJECT_ID:pid,CAR_LIVE_EXECUTOR_ENABLED:'true',DB:{prepare:sql=>wrap(sql),async batch(statements){db.exec('BEGIN');try{const out=[];for(const s of statements)out.push(await s.run());db.exec('COMMIT');return out}catch(e){db.exec('ROLLBACK');throw e}}}};
  return {db,env};
 }
 async function dispatch(f,extra={}){return dispatchCarLiveBatch(f.env,{projectId:pid,workerId:wid,failed,targets:verifiedTargets(),snapshot:await completedCarSnapshot(f.env,pid),sourceSrt,jobId:'recovery',nextJobId:'next',now:10,...extra});}
@@ -33,6 +33,18 @@ async function prepareResult(f){
  const verified=validateCarRecoveryBatch({record,language:'english',cues,sourceSrt,accepted,otherAccepted:[],payload:payload()});
  return {record,job:{id:'recovery',project_id:pid,worker_id:wid,step_id:'deep_match_english',lease:'lease'},verified,nextStep:'deep_match_english',sourceSrt,now:20};
 }
+test('CAR deployment is inert unless an explicit executor activation flag is true',async()=>{
+ const f=fixture();
+ delete f.env.CAR_LIVE_EXECUTOR_ENABLED;
+ await assert.rejects(dispatch(f),/not enabled/);
+ assert.equal(f.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='car_live_batches'").get().n,0);
+ f.env.CAR_LIVE_EXECUTOR_ENABLED='false';
+ await assert.rejects(dispatch(f),/not enabled/);
+ assert.equal(f.db.prepare("SELECT count(*) AS n FROM jobs WHERE status='queued'").get().n,0);
+ f.env.CAR_LIVE_EXECUTOR_ENABLED='true';
+ assert.equal((await dispatch(f)).status,'queued');
+});
+
 test('unprocessed segments do not count as failed; only current failed batch targets accepted',()=>{
  assert.equal(verifiedTargets().length,1);
  for(const bad of [[{...targets[0],segmentIndex:5}],[...targets,...targets],[],Array(4).fill(targets[0])])

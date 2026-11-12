@@ -6,7 +6,9 @@ import {deepProductionProgress,loadProductionCues,validateProductionDeepBatch,de
 import {sha256} from './helpers.mjs';
 export const CAR_LIVE_BUILD='car-live-recovery-v1.1';
 export const CAR_LIVE_MARKER='[CAR-LIVE-V1.1]';
-export const carLiveEnabled=(env,id)=>!!id&&env.CAR_LIVE_PROJECT_ID===id;
+// A project allowlist alone is NOT deployment authorization. Keep all recovery
+// mutation routes inert until a separately approved runtime activation is set.
+export const carLiveEnabled=(env,id)=>!!id&&env.CAR_LIVE_EXECUTOR_ENABLED==='true'&&env.CAR_LIVE_PROJECT_ID===id;
 const overlap=(a,b)=>a.sourceStartSeconds<b.sourceEndSeconds-.001&&a.sourceEndSeconds>b.sourceStartSeconds+.001;
 const norm=s=>String(s||'').replace(/\s+/g,' ').trim();
 export function verifyFailedCarTargets({failed,language,cues,accepted,sourceSrt,targets}){

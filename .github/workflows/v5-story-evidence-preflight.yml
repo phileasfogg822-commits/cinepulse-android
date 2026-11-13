@@ -1,0 +1,29 @@
+name: V5 Story Evidence Preflight (isolated, no deployment)
+on:
+  push:
+    branches: [feature/v5-story-evidence-preflight-20261113]
+  pull_request:
+    branches: [feature/scene-intelligence-v3828-staging]
+    paths:
+      - 'cloudflare/cinepulse-android/src/v5-story-evidence-preflight.mjs'
+      - 'cloudflare/cinepulse-android/tests/v5-story-evidence-preflight.test.mjs'
+      - '.github/workflows/v5-story-evidence-preflight.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Story evidence prototype tests
+        working-directory: cloudflare/cinepulse-android
+        run: |
+          node --check src/v5-story-evidence-preflight.mjs
+          node --test tests/v5-story-evidence-preflight.test.mjs
+      - name: Full backend regression
+        working-directory: cloudflare/cinepulse-android
+        run: npm test

@@ -16,7 +16,7 @@ jobs:
     steps:
       - name: Probe currently deployed Worker without authenticated access
         run: |
-          curl -fsS --max-time 25 https://cinepulse-android-bridge.maryumblog.workers.dev/health | jq -c '{status,build,v5gWorker1:.policy.v5gWorker1Only,legacyInt:.policy.v5gLegacyIntPreserved,stageCount:.policy.v5gLiveStageCount}'
+          curl -fsS --max-time 25 https://cinepulse-android-bridge.maryumblog.workers.dev/health | jq -c '{status,build,v5gWorker1:.policy.v5gWorker1Only,legacyInt:.policy.v5gLegacyIntPreserved,stageCount:.policy.v5gLiveStageCount,acceptingNewV5G:.policy.v5gAcceptingNewProjects}'
       - name: Read-only protected admin project lookup when token exists
         shell: bash
         run: |

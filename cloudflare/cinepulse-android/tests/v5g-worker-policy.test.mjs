@@ -25,7 +25,7 @@ test('worker routing is based on database worker.label after worker auth, not us
 });
 
 test('health advertises Worker 1-only V5-G and unchanged INT, never misleads about default worker routes',()=>{
- assert.match(backend,/v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gLiveStageCount:V5G_STEPS\.length/);
+ assert.match(backend,/v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gAcceptingNewProjects:env\.CINEPULSE_V5G_DISABLED!=='true',v5gLiveStageCount:V5G_STEPS\.length/);
 });
 
 test('guarded production smoke checks Worker 1/INT V5-G markers in a single valid jq expression',()=>{

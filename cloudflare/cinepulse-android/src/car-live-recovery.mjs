@@ -50,18 +50,28 @@ export function verifyFailedCarTargets({failed,language,cues,accepted,sourceSrt,
   return {segmentIndex:index,rejectedDecision:structuredClone(d),failureKind:'accepted_source_overlap'};
  });
 }
-// Shared write authorization for both first dispatch and retry. Diagnostics
-// may show a candidate with unknown future segments; writes may not.
-export function requireCarFullInventory(audit,targetIds){
+// UNKNOWN means unprocessed, never a confirmed failed segment. This guard is
+// called ONLY after verifyFailedCarTargets has independently proved the
+// original failed job, exact rejected decisions, unfinished five-cue batch,
+// and source-SRT collision. Future unknowns are outside the CAR lifetime cap.
+export function requireCarCurrentBatchInventory(audit,targetIds){
  const unknown=audit?.inventory?.unknownSegmentIds;
+ const accepted=audit?.inventory?.acceptedSegmentIds;
  if(audit?.evidenceStatus!=='verified'||!Array.isArray(unknown)||
-    !Array.isArray(targetIds)||targetIds.length<1||targetIds.length>3||
+    !Array.isArray(accepted)||!Array.isArray(targetIds)||
+    targetIds.length<1||targetIds.length>3||
     new Set(targetIds).size!==targetIds.length)
-  throw Error('CAR full bilingual inventory is incomplete or unverified');
- const proven=new Set([...(audit.verifiedSegmentIds||[]),...targetIds]);
- if(unknown.length===0||unknown.length>3||proven.size>3||
-    unknown.some(id=>!proven.has(id))||targetIds.some(id=>!unknown.includes(id)))
-  throw Error('CAR full bilingual inventory is incomplete or exceeds the three-target recovery limit');
+  throw Error('CAR current-batch inventory is incomplete or unverified');
+ const unprocessed=new Set(unknown),done=new Set(accepted);
+ const valid=id=>typeof id==='string'&&/^(english|urdu):[1-9][0-9]*$/.test(id);
+ if(unprocessed.size!==unknown.length||done.size!==accepted.length||
+    unknown.some(id=>!valid(id)||done.has(id))||
+    accepted.some(id=>!valid(id))||
+    targetIds.some(id=>!valid(id)||!unprocessed.has(id)||done.has(id)))
+  throw Error('CAR target is not an unprocessed segment or immutable inventory is inconsistent');
+ const verified=audit.verifiedSegmentIds;
+ if(!Array.isArray(verified)||verified.some(id=>!unprocessed.has(id)))
+  throw Error('CAR verified evidence conflicts with the current inventory');
  return true;
 }
 export function validateCarRecoveryBatch({record,language,cues,sourceSrt,accepted,otherAccepted,payload}){

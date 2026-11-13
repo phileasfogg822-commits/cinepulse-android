@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {verifyFailedCarTargets,requireCarFullInventory,validateCarRecoveryBatch,ensureCarLiveTable,completedCarSnapshot,dispatchCarLiveBatch,acceptCarLiveBatch,carLiveRecord,retryCarLiveBatch,readCarLiveAudit} from '../src/car-live-recovery.mjs';
+import {verifyFailedCarTargets,requireCarCurrentBatchInventory,validateCarRecoveryBatch,ensureCarLiveTable,completedCarSnapshot,dispatchCarLiveBatch,acceptCarLiveBatch,carLiveRecord,retryCarLiveBatch,readCarLiveAudit} from '../src/car-live-recovery.mjs';
 const pid='11111111-1111-4111-8111-111111111111',wid='22222222-2222-4222-8222-222222222222';
 const cue=(i)=>({segmentIndex:i,sourceStartSeconds:i*10,sourceEndSeconds:i*10+2,sourceCueIds:[i],evidenceQuote:'Original source line '+i,reason:'Specific character event and story rationale.',alternatives:[{cueId:20,reason:'Different event elsewhere'}],confidence:.8,museRequestId:'muse-actual-'+i});
 const sourceSrt=Array.from({length:30},(_,i)=>`${i+1}\n00:${String(Math.floor((i+1)*10/60)).padStart(2,'0')}:${String((i+1)*10%60).padStart(2,'0')},000 --> 00:${String(Math.floor(((i+1)*10+2)/60)).padStart(2,'0')}:${String(((i+1)*10+2)%60).padStart(2,'0')},000\nOriginal source line ${i+1}`).join('\n\n');
@@ -53,13 +53,25 @@ test('unprocessed segments do not count as failed; only current failed batch tar
  assert.throws(()=>verifyFailedCarTargets({failed:{...failed,status:'done'},language:'english',cues,accepted,sourceSrt,targets}));
  assert.throws(()=>verifyFailedCarTargets({failed,language:'english',cues,accepted,sourceSrt,targets:[{segmentIndex:6,rejectedDecision:cue(6)}]}),/durable|reuse/);
 });
-test('first dispatch and retry share complete bilingual evidence requirements',()=>{
- const audit={evidenceStatus:'verified',inventory:{unknownSegmentIds:['english:6','urdu:2']},verifiedSegmentIds:['urdu:2']};
- assert.equal(requireCarFullInventory(audit,['english:6']),true);
- assert.throws(()=>requireCarFullInventory({...audit,inventory:{unknownSegmentIds:['english:6','urdu:2','english:7']}},['english:6']),/incomplete/);
- assert.throws(()=>requireCarFullInventory(audit,['english:7']),/incomplete/);
- assert.throws(()=>requireCarFullInventory({...audit,evidenceStatus:'not_verified'},['english:6']),/unverified/);
- assert.throws(()=>requireCarFullInventory(audit,['english:6','english:6']),/incomplete/);
+test('future unprocessed segments do not count against the CAR cap',()=>{
+ const unknown=['english:6',...Array.from({length:100},(_,i)=>'english:'+(i+7)),...Array.from({length:148},(_,i)=>'urdu:'+(i+41))];
+ const audit={evidenceStatus:'verified',inventory:{unknownSegmentIds:unknown,acceptedSegmentIds:['english:1','english:2','english:3','english:4','english:5']},verifiedSegmentIds:[]};
+ assert.equal(requireCarCurrentBatchInventory(audit,['english:6']),true);
+ assert.equal(audit.inventory.unknownSegmentIds.length,249);
+ assert.equal(audit.verifiedSegmentIds.length,0); // audit must not classify future work as failure
+ assert.throws(()=>requireCarCurrentBatchInventory(audit,['english:5']),/not an unprocessed/);
+ assert.throws(()=>requireCarCurrentBatchInventory(audit,['english:300']),/not an unprocessed/);
+ assert.throws(()=>requireCarCurrentBatchInventory(audit,['english:6','english:6']),/incomplete/);
+ assert.throws(()=>requireCarCurrentBatchInventory({...audit,evidenceStatus:'not_verified'},['english:6']),/unverified/);
+ assert.throws(()=>requireCarCurrentBatchInventory({...audit,inventory:{...audit.inventory,acceptedSegmentIds:['english:6']}},['english:6']),/inconsistent/);
+ assert.throws(()=>requireCarCurrentBatchInventory({...audit,verifiedSegmentIds:['urdu:999']},['english:6']),/conflicts/);
+});
+test('BFG-sized Urdu inventory permits only independently proven current-batch targets',()=>{
+ const unknown=Array.from({length:148},(_,i)=>'urdu:'+(i+41));
+ const audit={evidenceStatus:'verified',inventory:{acceptedSegmentIds:Array.from({length:40},(_,i)=>'urdu:'+(i+1)),unknownSegmentIds:unknown},verifiedSegmentIds:[]};
+ assert.equal(requireCarCurrentBatchInventory(audit,['urdu:41']),true);
+ assert.throws(()=>requireCarCurrentBatchInventory(audit,['urdu:41','urdu:76','urdu:81','urdu:180']),/incomplete/);
+ assert.throws(()=>verifyFailedCarTargets({failed:{...failed,output:null},language:'english',cues,accepted,sourceSrt,targets}),/Durable/);
 });
 test('CAR rejects fabricated or changed failed-job decisions, including commit-time D1 tampering',async()=>{
  assert.throws(()=>verifyFailedCarTargets({failed:{...failed,output:null},language:'english',cues,accepted,sourceSrt,targets}),/Durable/);
@@ -132,7 +144,7 @@ test('failed recovery retries the same reservation and audit distinguishes reser
  assert.equal(f.db.prepare('SELECT count(*) n FROM car_live_batches').get().n,1);
 });
 
-test('authenticated HTTP recovery rejects 19 unclassified bilingual segments without mutating V5',async()=>{
+test('authenticated HTTP recovery dispatches proven target while preserving 19 unprocessed segments',async()=>{
  const {default:worker}=await import('../src/index.mjs');
  const {hashWorkerToken}=await import('../src/helpers.mjs');
  const f=fixture(),token='real-test-worker-token';
@@ -149,16 +161,17 @@ test('authenticated HTTP recovery rejects 19 unclassified bilingual segments wit
  };
  const before=f.db.prepare("SELECT output FROM jobs WHERE id='accepted'").get().output;
  const start=await post('/projects/'+pid+'/car/recover',{failedJobId:failed.id,targets});
- assert.equal(start.status,409,JSON.stringify(start.body));
- assert.match(JSON.stringify(start.body),/inventory/i);
- assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE status='queued'").get().n,0);
+ assert.equal(start.status,201,JSON.stringify(start.body));
+ assert.equal(start.body.status,'queued');
+ assert.equal(f.db.prepare("SELECT count(*) n FROM jobs WHERE status='queued'").get().n,1);
  assert.equal(f.db.prepare("SELECT output FROM jobs WHERE id='accepted'").get().output,before);
  const audit=await worker.fetch(new Request('https://test/w/'+wid+'/projects/'+pid+'/car/audit',{headers:{Authorization:'Bearer '+token}}),f.env,{});
  assert.equal(audit.status,200);const report=await audit.json();
- assert.equal(report.liveRecovery.reservedCount,0);assert.equal(report.acceptedCount,5);
+ assert.equal(report.liveRecovery.reservedCount,1);
+ assert.deepEqual(report.liveRecovery.pendingTargets,['english:6']);assert.equal(report.acceptedCount,5);
  assert.equal(report.recoveryDispatchEnabled,true);assert.equal(report.unknownCount,19);
- assert.equal(report.candidateReady,false);
- assert.equal(report.unprocessedOrUnverifiedCount,19);
+ assert.equal(report.candidateReady,true);
+ assert.equal(report.unprocessedOrUnverifiedCount,18);
 });
 
 test('an older failed job cannot authorize recovery after a newer matching attempt',async()=>{

@@ -5,6 +5,20 @@ Production rollout is restricted by CAR_LIVE_PROJECT_ID to Shrek 2
 This implementation handles verified source-anchor reuse failures. Other failure
 classes fail closed; it does not infer failed segments from remaining work.
 
+## Unprocessed is not failed — current-batch guard
+
+The assigned worker's exact durable failed-job decision must be independently
+proved against the current unfinished batch and original source SRT. Only those
+targets may be considered for CAR. All future unprocessed English/Urdu segments
+remain UNKNOWN (not verified failures) and never consume the three-target
+lifetime limit. Full five-cue batch validation is still mandatory before the
+existing sequential queue can continue; this does not implement skip-ahead.
+
+BFG is NOT enabled in this Shrek 2-only PR. Muse's dry run lists four suspected
+hard cases (41/76/81/180), above the strict three-target CAR lifetime cap, and
+16 weak matches that must not be auto-accepted at the agreed 9/10 standard.
+Do not change flags, deploy, replay, or resume BFG based on dry-run alone.
+
 ## Assigned Muse worker procedure
 
 Use the existing worker token and existing movie. Do not restart or upload assets.

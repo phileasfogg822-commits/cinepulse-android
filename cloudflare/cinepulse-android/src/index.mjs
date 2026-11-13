@@ -1,4 +1,4 @@
-import {CAR_LIVE_BUILD,CAR_LIVE_MARKER,carLiveEnabled,verifyFailedCarTargets,requireCarFullInventory,validateCarRecoveryBatch,carLiveRecord,completedCarSnapshot,dispatchCarLiveBatch,acceptCarLiveBatch,readCarLiveAudit,retryCarLiveBatch} from './car-live-recovery.mjs';
+import {CAR_LIVE_BUILD,CAR_LIVE_MARKER,carLiveEnabled,verifyFailedCarTargets,requireCarCurrentBatchInventory,validateCarRecoveryBatch,carLiveRecord,completedCarSnapshot,dispatchCarLiveBatch,acceptCarLiveBatch,readCarLiveAudit,retryCarLiveBatch} from './car-live-recovery.mjs';
 import {inspectCarMovieDispatchControls} from './car-atomic-reservations.mjs';
 import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAGARI_BUILD,URDU_DEVANAGARI_METHOD,validateDevanagariUrduVoiceReceipt,urduDevanagariInstructions,urduDevanagariSrtInstructions} from './urdu-devanagari-voice.mjs';
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
@@ -1074,7 +1074,7 @@ async function route(request,env){
         const outputs=await priorOutputs(env,pid);
         const audit=await auditCarD1Evidence(env,pid,outputs,acceptedPermanentDeepBatches,sourceSrt);
         try{
-          requireCarFullInventory(audit,JSON.parse(record.targets_json).map(t=>deepLanguage(record.step_id)+':'+t.segmentIndex));
+          requireCarCurrentBatchInventory(audit,JSON.parse(record.targets_json).map(t=>deepLanguage(record.step_id)+':'+t.segmentIndex));
           return json(await retryCarLiveBatch(env,{record,sourceSrt,now:nowSeconds()}),201);
         }
         catch(error){fail(409,String(error.message));}
@@ -1090,11 +1090,11 @@ async function route(request,env){
       const sourceSrt=await file.text();
       try{
         const targets=verifyFailedCarTargets({failed,language,cues:loadProductionCues(outputs['srt_'+language]),accepted,sourceSrt,targets:body.targets});
-        // Recovery is a write operation: unlike a diagnostic candidate, it
-        // must not proceed while any bilingual segment is still unclassified.
-        // Independently reconcile the entire D1 inventory before dispatch.
+        // Independent failed-job proof above is required. Check these targets
+        // still belong to the unprocessed inventory, without classifying
+        // unrelated future English/Urdu segments as failures.
         const audit=await auditCarD1Evidence(env,pid,outputs,acceptedPermanentDeepBatches,sourceSrt);
-        requireCarFullInventory(audit,targets.map(t=>language+':'+t.segmentIndex));
+        requireCarCurrentBatchInventory(audit,targets.map(t=>language+':'+t.segmentIndex));
         if(snapshot!==await completedCarSnapshot(env,pid))fail(409,'Completed movie state changed during verification');
         return json(await dispatchCarLiveBatch(env,{projectId:pid,workerId:wid,failed,targets,sourceSrt,
           snapshot,jobId:newId(),nextJobId:newId(),now:nowSeconds()}),201);
@@ -1118,8 +1118,8 @@ async function route(request,env){
       const live=carLiveEnabled(env,pid)?await readCarLiveAudit(env,pid):null;
       const verified=[...new Set([...(audit.verifiedSegmentIds||[]),...(live?.pendingTargets||[])])];
       const exact=verified.length>0&&verified.length<=3;
-      const fullEvidence=unknown.length===verified.length&&unknown.every(id=>verified.includes(id));
-      const eligible=exact&&fullEvidence&&audit.evidenceStatus==='verified'&&
+      const targetsUnprocessed=exact&&verified.every(id=>unknown.includes(id));
+      const eligible=targetsUnprocessed&&audit.evidenceStatus==='verified'&&
         !Number(movie.control_paused)&&!Number(movie.control_stopped);
       return json({projectId:pid,workerId:wid,projectStatus:movie.status,
         moviePaused:!!Number(movie.control_paused),movieStopped:!!Number(movie.control_stopped),
@@ -1135,7 +1135,7 @@ async function route(request,env){
         reason:eligible?'verified_bounded_candidates_only':
           audit.evidenceStatus!=='verified'?'unverified_source_provenance':
           !exact?(verified.length===0?'verified_failure_declaration_required':'recovery_limit_exceeded'):
-          !fullEvidence?'incomplete_bilingual_inventory':
+          !targetsUnprocessed?'verified_target_not_in_unprocessed_inventory':
           'movie_paused_or_stopped',
         readOnly:true,recoveryDispatchEnabled:carLiveEnabled(env,pid),
         recoveryResultAcceptanceEnabled:carLiveEnabled(env,pid),

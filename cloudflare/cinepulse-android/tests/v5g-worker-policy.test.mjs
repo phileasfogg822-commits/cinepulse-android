@@ -27,3 +27,8 @@ test('worker routing is based on database worker.label after worker auth, not us
 test('health advertises Worker 1-only V5-G and unchanged INT, never misleads about default worker routes',()=>{
  assert.match(backend,/v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gLiveStageCount:V5G_STEPS\.length/);
 });
+
+test('guarded production smoke checks Worker 1/INT V5-G markers in a single valid jq expression',()=>{
+ const workflow=readFileSync(new URL('../../../.github/workflows/cinepulse-v3828-production-gated-promotion.yml',import.meta.url),'utf8');
+ assert.match(workflow,/\.policy\.v5gWorker1Only==true and \.policy\.v5gLegacyIntPreserved==true and \.policy\.v5gLiveStageCount==15' \/tmp\/cp-after-health\.json/);
+});

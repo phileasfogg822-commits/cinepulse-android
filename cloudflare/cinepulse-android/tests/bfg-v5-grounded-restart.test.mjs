@@ -9,7 +9,7 @@ const sourceSrt=[
 const data=()=>({sourceSrt,
  blueprint:[
   {beatId:'greeting-first',startSeconds:.8,endSeconds:2.5},
-  {beatId:'greeting-second',startSeconds:24.8,endSeconds:26.5},
+  {beatId:'greeting-second',startSeconds:24.8,endSeconds:26},
   {beatId:'question',startSeconds:11.5,endSeconds:13.5}
  ],
  beats:[

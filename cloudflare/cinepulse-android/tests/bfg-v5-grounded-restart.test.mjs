@@ -14,13 +14,16 @@ const data=()=>({sourceSrt,sourceMediaSha256:hash,
   {beatId:'quiet-action',startSeconds:15,endSeconds:19}
  ],
  beats:[
-  {id:'greeting-first',summary:'First greeting',evidence:[{kind:'subtitle',cueId:1,quote:'Morning, Sophie.'}]},
-  {id:'greeting-second',summary:'Another greeting at another movie time',evidence:[{kind:'subtitle',cueId:3,quote:'Morning, Sophie.'}]},
-  {id:'quiet-action',summary:'Characters react to a moving creature',evidence:[{kind:'visual',startSeconds:15,endSeconds:19,sourceMediaSha256:hash,verifiedFromVideo:true,verificationMethod:'frame_review',verificationRef:'visual-review-1',observedAction:'Characters react in alarm to something moving'}]}
+  {id:'greeting-first',summary:'First greeting',evidence:[{kind:'subtitle',cueId:1,exactQuote:'Morning, Sophie.'}]},
+  {id:'greeting-second',summary:'Another greeting at another movie time',evidence:[{kind:'subtitle',cueId:3,exactQuote:'Morning, Sophie.'}]},
+  {id:'quiet-action',summary:'Characters react to a moving creature',evidence:[{kind:'visual',startSeconds:15,endSeconds:19,sourceMediaSha256:hash,verifiedFromVideo:true,method:'verified_frames',verificationRef:'visual-review-1',observedAction:'Characters react in alarm to something moving'}]}
  ],
  narrationUnits:[
   {language:'english',id:'en-first',text:'Morning, Sophie.',beatIds:['greeting-first']},
   {language:'english',id:'en-second',text:'Another greeting.',beatIds:['greeting-second']},
+  {language:'english',id:'en-action',text:'They react to the creature.',beatIds:['quiet-action']},
+  {language:'urdu',id:'ur-first',text:'A greeting to Sophie.',beatIds:['greeting-first']},
+  {language:'urdu',id:'ur-second',text:'A later greeting.',beatIds:['greeting-second']},
   {language:'urdu',id:'ur-action',text:'They react to the creature.',beatIds:['quiet-action']}
  ],
  measuredCues:[
@@ -48,18 +51,18 @@ test('same spoken words cannot be relabeled as a different source cue',()=>{
  assert.equal(inspectBeforeVoice(a).ready,false);
 });
 test('invented digest text, missing beat, or unsupported visuals fail',()=>{
- const a=data();a.beats[0].evidence[0].quote='Unsaid dialogue';a.narrationUnits[0].beatIds=['invented'];
+ const a=data();a.beats[0].evidence[0].exactQuote='Unsaid dialogue';a.narrationUnits[0].beatIds=['invented'];
  delete a.beats[2].evidence[0].verificationRef;
  assert.equal(inspectBeforeVoice(a).ready,false);
 });
 test('short sentence remains one semantic narration group despite two STT cues',()=>{
- const a=data(),s=inspectAfterVoice({units:a.narrationUnits,measuredCues:a.measuredCues});
+ const a=data(),s=inspectAfterVoice({units:a.narrationUnits.filter(u=>['en-first','en-second','ur-action'].includes(u.id)),measuredCues:a.measuredCues});
  assert.equal(s.ready,true,JSON.stringify(s.errors));
  assert.deepEqual(s.groups.find(g=>g.unitId==='en-first').cueIndices,[1,2]);assert.equal(s.measuredSrtUnchanged,true);
 });
 test('missing or out-of-order measured SRT cue does not become a valid scene',()=>{
  const a=data();a.measuredCues.splice(1,1);
- assert.equal(inspectAfterVoice({units:a.narrationUnits,measuredCues:a.measuredCues}).ready,false);
+ assert.equal(inspectAfterVoice({units:a.narrationUnits.filter(u=>['en-first','en-second','ur-action'].includes(u.id)),measuredCues:a.measuredCues}).ready,false);
 });
 test('global plan refuses weak 0.60 match, and forbids lowered quality floor',()=>{
  const groups=[{language:'english',unitId:'en-first'}];

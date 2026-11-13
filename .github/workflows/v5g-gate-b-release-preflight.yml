@@ -1,0 +1,41 @@
+name: CinePulse V5-G Gate B release preflight (no deployment)
+on:
+  push:
+    branches: [feature/v5-story-evidence-preflight-20261113]
+    paths:
+      - 'cloudflare/cinepulse-android/src/index.mjs'
+      - 'cloudflare/cinepulse-android/src/v5g-*.mjs'
+      - 'cloudflare/cinepulse-android/tests/v5g-*.test.mjs'
+      - '.github/workflows/v5g-gate-b-release-preflight.yml'
+  pull_request:
+    branches: [feature/scene-intelligence-v3828-staging]
+permissions:
+  contents: read
+jobs:
+  release-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare/cinepulse-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install backend dependencies without producing release side effects
+        run: npm install --no-audit --no-fund
+      - name: Syntax check worker, new stages and historical deep-matching modules
+        run: |
+          node --check src/index.mjs
+          node --check src/v5g-production-gate.mjs
+          node --check src/v5g-match-plan.mjs
+          node --check src/srt-interval-context.mjs
+          node --check src/permanent-deep-muse.mjs
+      - name: Full backend regressions including Worker 1/INT isolation
+        run: npm test
+      - name: Cloudflare production bundle dry-run (never deploys)
+        run: |
+          node -e "const x=require('./wrangler.json');if(x.name!=='cinepulse-android-bridge'||x.main!=='src/index.mjs'||!x.keep_vars||x.d1_databases?.[0]?.binding!=='DB'||x.r2_buckets?.[0]?.binding!=='FILES')process.exit(1)"
+          npx wrangler deploy --dry-run --config wrangler.json
+          echo V5G_GATE_B_RELEASE_BUNDLE_VALIDATED

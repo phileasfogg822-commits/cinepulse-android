@@ -5,6 +5,11 @@ on:
     paths:
       - '.github/workflows/cinepulse-v3828-production-gated-promotion.yml'
       - 'cloudflare/cinepulse-android/src/index.mjs'
+      - 'cloudflare/cinepulse-android/src/v5g-production-gate.mjs'
+      - 'cloudflare/cinepulse-android/src/v5g-match-plan.mjs'
+      - 'cloudflare/cinepulse-android/src/bfg-v5-grounded-restart.mjs'
+      - 'cloudflare/cinepulse-android/src/srt-interval-context.mjs'
+      - 'cloudflare/cinepulse-android/tests/v5g-*.test.mjs'
       - 'cloudflare/cinepulse-android/src/longform-policy.mjs'
       - 'cloudflare/cinepulse-android/src/muse-production-contract.mjs'
       - 'cloudflare/cinepulse-android/tests/cutplan-srt-diagnostics.test.mjs'
@@ -132,7 +137,7 @@ jobs:
             sleep 3
           done
           [[ "$status" == "200" ]]
-          jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.windowsAssetCount==8 and .build=="android-cloud-backend-0.4.3-v3828-cutplan-srt-diagnostics"' /tmp/cp-after-health.json >/dev/null
+          jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.windowsAssetCount==8 and .build=="android-cloud-backend-0.4.3-v3828-cutplan-srt-diagnostics"' and .policy.v5gWorker1Only==true and .policy.v5gLegacyIntPreserved==true and .policy.v5gLiveStageCount==15 /tmp/cp-after-health.json >/dev/null
           no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects")
           test "$no_auth" = "401"
           lab_no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/scene-lab")

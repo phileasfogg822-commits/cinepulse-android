@@ -23,3 +23,7 @@ test('worker routing is based on database worker.label after worker auth, not us
  assert.match(backend,/body\.v5Grounded!==undefined && body\.v5Grounded!==grounded/);
  assert.match(backend,/stages:grounded\?V5G_STEPS:permanentDeep\?PERMANENT_DEEP_STEPS/);
 });
+
+test('health advertises Worker 1-only V5-G and unchanged INT, never misleads about default worker routes',()=>{
+ assert.match(backend,/v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gLiveStageCount:V5G_STEPS\.length/);
+});

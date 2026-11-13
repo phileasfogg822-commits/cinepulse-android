@@ -38,7 +38,7 @@ test('movie pause atomically revokes active Muse lease and retains unfinished jo
  assert.match(src,/if\(controlIsPaused\(await getProject\(env,job\.project_id\)\)\)return \{status:'paused'/);
  assert.match(src,/if\(controlIsStopped\(await getProject\(env,job\.project_id\)\)\)fail\(410/);
 });
-test('paused state is separate from stopped and does not leak to other movies',()=>{
+test('paused state is separate from stopped and does not leak to other movies',async()=>{
  const {controlIsPaused}=await import('../src/movie-controls.mjs');
  assert.equal(controlIsPaused({control_paused:1,control_stopped:0}),true);
  assert.equal(controlIsPaused({control_paused:1,control_stopped:1}),false);

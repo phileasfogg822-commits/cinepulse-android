@@ -96,11 +96,21 @@ export function validateV5gMeasuredCues(measuredSrt,cues,language){
  return {count:actual.length,unitIds:[...claimed]};
 }
 
-/** Persisted new-movie routing policy. Never use a client-controlled worker label. */
-export function selectV5gWorkflow(workerLabel,{disabled=false}={}){
- const key=String(workerLabel??'').normalize('NFKC').toLowerCase().replace(/[^a-z0-9]/g,'');
- if(key==='int')return false;
- if(key==='worker1')return !disabled;
- // Unknown/new worker label: fail closed to legacy flow until explicitly assigned.
- return false;
+/** Only the server-stored worker label controls NEW movie routing.
+ * A label not demonstrably Worker 1 or INT is rejected at intake, never
+ * silently mapped to old V5. Durable digest markers preserve old projects.
+ */
+export function classifyV5gWorker(workerLabel,{disabled=false}={}){
+ const label=String(workerLabel??'').normalize('NFKC').toLowerCase()
+  .replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
+ const hasInt=/(?:^| )int(?: |$)/.test(label);
+ const isInt=(hasInt&&!/(?:^| )worker ?(?:0*1|one)(?: |$)/.test(label));
+ const workerOne=/(?:^| )worker ?(?:0*1|one)(?: |$)/.test(label) && !hasInt;
+ if(isInt)return {kind:'legacy_int',productionMode:'stable',recognized:true};
+ if(workerOne&&disabled)return {kind:'v5g_disabled',productionMode:'unavailable',recognized:true};
+ if(workerOne)return {kind:'grounded_worker1',productionMode:'v5_grounded_srt_only',recognized:true};
+ return {kind:'unrecognized',productionMode:'unavailable',recognized:false};
+}
+export function selectV5gWorkflow(workerLabel,options={}){
+ return classifyV5gWorker(workerLabel,options).kind==='grounded_worker1';
 }

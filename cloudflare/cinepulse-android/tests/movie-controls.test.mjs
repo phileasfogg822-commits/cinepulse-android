@@ -29,3 +29,18 @@ test('server rejects stopped leases and excludes paused/ stopped movie IDs from 
    "return {status:'stopped',autoAdvanced:false}"
  ]) assert.ok(src.includes(marker),'Missing safety condition: '+marker);
 });
+
+test('movie pause atomically revokes active Muse lease and retains unfinished job as queued',()=>{
+ const src=readFileSync(new URL('../src/index.mjs',import.meta.url),'utf8');
+ assert.match(src,/if\(action==='pause'\)\{\s*\/\/ Per-movie immediate pause:/);
+ assert.match(src,/UPDATE jobs SET status='queued',lease=NULL,lease_until=NULL WHERE project_id=\? AND status='working'/);
+ assert.match(src,/leaseRevoked:true/);
+ assert.match(src,/if\(controlIsPaused\(await getProject\(env,job\.project_id\)\)\)return \{status:'paused'/);
+ assert.match(src,/if\(controlIsStopped\(await getProject\(env,job\.project_id\)\)\)fail\(410/);
+});
+test('paused state is separate from stopped and does not leak to other movies',()=>{
+ const {controlIsPaused}=await import('../src/movie-controls.mjs');
+ assert.equal(controlIsPaused({control_paused:1,control_stopped:0}),true);
+ assert.equal(controlIsPaused({control_paused:1,control_stopped:1}),false);
+ assert.equal(controlIsPaused({control_paused:0,control_stopped:0}),false);
+});

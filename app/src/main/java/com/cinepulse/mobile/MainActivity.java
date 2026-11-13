@@ -329,7 +329,7 @@ public final class MainActivity extends Activity {
         if(ids.isEmpty()){showError("There are no active workers. Resume or create a worker first.");return;}
         LinearLayout form=vertical();pad(form,24,0,24,0);
         form.addView(text("Project title",13,Color.DKGRAY,true));form.addView(name);
-        form.addView(text("MODE: STANDARD — MUSE DEEP SCENE MATCHING",15,0xFF00795E,true));
+        form.addView(text("MODE: AUTOMATIC — V5-G GROUNDED / V5 LEGACY",15,0xFF00795E,true));
         form.addView(text("Choose Worker 1 for the new V5-G grounded 15-stage pipeline or INT for the earlier V5 workflow. The server verifies the selection and records the project-specific pipeline.",13,Color.DKGRAY,false));
         form.addView(text("Processing worker (existing Muse connection)",13,Color.DKGRAY,true));
         Spinner spinner=new Spinner(this);
@@ -361,7 +361,7 @@ public final class MainActivity extends Activity {
         ScrollView submissionScroll=new ScrollView(this);
         submissionScroll.setFillViewport(false);
         submissionScroll.addView(form);
-        new AlertDialog.Builder(this).setTitle("NEW MOVIE · Permanent Muse Deep Matching")
+        new AlertDialog.Builder(this).setTitle("NEW MOVIE · Select verified pipeline")
             .setView(submissionScroll).setNegativeButton("Cancel",null)
             .setPositiveButton("Submit",(d,w)->{
                 String title=name.getText().toString().trim();
@@ -453,11 +453,11 @@ public final class MainActivity extends Activity {
         summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
         final boolean experimentalProject="scene_intelligence_experiment".equals(project.optString("productionMode"));
         final boolean groundedProject="v5_grounded_srt_only".equals(project.optString("productionMode"));
-        if(groundedProject)summary.addView(text("MODE: V5-G · SOURCE-GROUNDED 15-STAGE PIPELINE",13,GREEN,true));
-        summary.addView(text(experimentalProject?
-            "MODE: EXPERIMENTAL · Same selected Muse worker · Scene Intelligence + 11 files":
-            "MODE: STANDARD · Muse-owned long-form editing",13,
-            experimentalProject?GREEN:0xFFFFC47E,true));
+        summary.addView(text(groundedProject?
+            "MODE: V5-G · SOURCE-GROUNDED 15-STAGE PIPELINE":
+            experimentalProject?"MODE: EXPERIMENTAL · SCENE INTELLIGENCE":
+            "MODE: V5 · LEGACY DEEP SCENE MATCHING",13,
+            groundedProject||experimentalProject?GREEN:0xFFFFC47E,true));
         space(summary,5);
         summary.addView(text(status.equals("ready")?(experimentalProject?"Experimental eleven-file package ready: includes reusable source scene SQLite, bilingual cuts, both MP3s and measured SRTs. Original movie video is linked locally in Windows.":"Long-form export ready for checks. The eight-file Windows package requires complete English/Urdu MP3s, measured SRTs, metadata, digest and non-overlapping final cuts. No shorts or viral files are included."):
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));

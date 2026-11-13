@@ -23,7 +23,7 @@ import { MUSE_V4_MARKER, MUSE_V4_STAGES, museStageInstructions, verifyMuseWindow
 import { assetRow,registerAsset,assetTableFor,allAssetKeys,allAssetMetadata,storageTotals,ensureWindowsAssets } from './asset-registry.mjs';
 import { EXPERIMENT_JOB_MARKER,EXPERIMENT_JOB_STAGES,experimentalQueuePrompt } from './experimental-muse-instructions.mjs';
 import { createExperimentIndex,experimentalSourceInfo,validateSceneIntelligenceOutput,storeExperimentAsset,experimentalAssetRow,isExperimentAssetKind,EXPERIMENT_ASSET_NAMES,ensureExperimentTables,experimentR2Key } from './experimental-bridge-runtime.mjs';
-import { ensureMovieControls, MOVIE_CONTROL_JOIN, MOVIE_CONTROL_FIELDS, ELIGIBLE_MOVIE_CONTROL, publicMovieState, controlIsStopped } from './movie-controls.mjs';
+import { ensureMovieControls, MOVIE_CONTROL_JOIN, MOVIE_CONTROL_FIELDS, ELIGIBLE_MOVIE_CONTROL, publicMovieState, controlIsStopped, controlIsPaused } from './movie-controls.mjs';
 
 // Legacy projects continue through their original stages. New projects use metadata only.
 const STAGES = ['digest','narration_english','narration_urdu','viral_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
@@ -637,6 +637,7 @@ async function recoverOneCompletedProject(env,workerId=null){
 }
 async function advancePipeline(env,job){
   if(controlIsStopped(await getProject(env,job.project_id)))return {status:'stopped',autoAdvanced:false};
+  if(controlIsPaused(await getProject(env,job.project_id)))return {status:'paused',autoAdvanced:false};
   const policy=await projectPolicy(env,job.project_id);
   const stages=policy.stages;
   const current=stages.indexOf(job.step_id);
@@ -1817,12 +1818,15 @@ async function route(request,env){
     // accepted final jobs stuck at storage registration. At most one per poll.
     const recovery=await recoverOneCompletedProject(env);
     const rows=await env.DB.prepare("SELECT p.*, "+MOVIE_CONTROL_FIELDS+", "+
-      "(SELECT prompt FROM jobs j WHERE j.project_id=p.id AND j.step_id='digest' ORDER BY j.created_at ASC LIMIT 1) AS first_digest_prompt "+
+      "(SELECT prompt FROM jobs j WHERE j.project_id=p.id AND j.step_id='digest' ORDER BY j.created_at ASC LIMIT 1) AS first_digest_prompt, "+
+      "(SELECT step_id FROM jobs j WHERE j.project_id=p.id ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1) AS latest_step_id, "+
+      "(SELECT status FROM jobs j WHERE j.project_id=p.id ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1) AS latest_step_status "+
       "FROM projects p "+MOVIE_CONTROL_JOIN+" ORDER BY p.created_at DESC LIMIT 200").all();
     return json({projects:(rows.results||[]).map(row=>{
       const prompt=String(row.first_digest_prompt||'');
       return {...publicProject(row),productionMode:prompt.includes(V5G_MARKER)?'v5_grounded_srt_only':
-        prompt.startsWith(PERMANENT_DEEP_MARKER)?'stable':'legacy'};
+        prompt.startsWith(PERMANENT_DEEP_MARKER)?'stable':'legacy',
+        currentStep:row.latest_step_id||null,currentStepStatus:row.latest_step_status||null};
     }),
       ...(recovery.attempted?{finalizationRecovery:recovery}:{})});
   }
@@ -1945,10 +1949,21 @@ async function route(request,env){
       }
       if(controlIsStopped(project))fail(409,'Stopped movies cannot resume; submit again explicitly if needed');
       if(project.status!=='processing')fail(409,'Only processing movies can be paused or resumed');
-      const paused=action==='pause'?1:0;
-      await env.DB.prepare("INSERT INTO cinepulse_movie_controls(project_id,paused,stopped,updated_at) VALUES(?,?,0,?) ON CONFLICT(project_id) DO UPDATE SET paused=excluded.paused,updated_at=excluded.updated_at WHERE stopped=0").bind(pid,paused,time).run();
-      return json({projectId:pid,status:'processing',paused:!!paused,stopped:false,
-        message:paused?'This movie is paused; current task may complete but no new stages will be claimed. Other movies continue.':'Movie resumed on its original Muse worker.'});
+      if(action==='pause'){
+        // Per-movie immediate pause: atomically invalidate its current Muse
+        // lease and requeue that *unfinished* task. The currently executing
+        // external worker cannot be interrupted, but all further writes made
+        // with the revoked lease are rejected. No other worker/movie touched.
+        await env.DB.batch([
+          env.DB.prepare("INSERT INTO cinepulse_movie_controls(project_id,paused,stopped,updated_at) VALUES(?,1,0,?) ON CONFLICT(project_id) DO UPDATE SET paused=1,updated_at=excluded.updated_at WHERE stopped=0").bind(pid,time),
+          env.DB.prepare("UPDATE jobs SET status='queued',lease=NULL,lease_until=NULL WHERE project_id=? AND status='working'").bind(pid)
+        ]);
+        return json({projectId:pid,status:'processing',paused:true,stopped:false,leaseRevoked:true,
+          message:'This movie is paused. Current Muse lease revoked; unfinished task saved as queued and will be available after resume. Other movies unaffected.'});
+      }
+      await env.DB.prepare("INSERT INTO cinepulse_movie_controls(project_id,paused,stopped,updated_at) VALUES(?,0,0,?) ON CONFLICT(project_id) DO UPDATE SET paused=0,updated_at=excluded.updated_at WHERE stopped=0").bind(pid,time).run();
+      return json({projectId:pid,status:'processing',paused:false,stopped:false,
+        message:'This movie is resumed. Preserved queued stage can be claimed by its original worker.'});
     }
     if(method==='POST'&&action==='repair-finalization'){
       const result=await recoverAcceptedFinalization(env,project);

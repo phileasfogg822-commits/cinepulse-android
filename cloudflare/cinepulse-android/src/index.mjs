@@ -3,6 +3,8 @@ import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAG
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
 import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
+import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts } from './v5g-production-gate.mjs';
+import {validateV5gGlobalPlan} from './v5g-match-plan.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
 import { carEligibility } from './context-anchor-recovery.mjs';
@@ -35,6 +37,7 @@ async function projectPolicy(env,projectId){
   const prompt=String(row?.prompt||'');
   const experiment=prompt.startsWith(EXPERIMENT_JOB_MARKER);
   const permanentDeep=prompt.startsWith(PERMANENT_DEEP_MARKER);
+  const grounded=permanentDeep&&prompt.includes(V5G_MARKER);
   const strictNarrationDuration=permanentDeep&&prompt.includes(STRICT_DURATION_MARKER);
   const audioLanguageQa=permanentDeep&&prompt.includes(AUDIO_QA_MARKER);
   const urduDevanagariVoice=permanentDeep&&prompt.includes(URDU_DEVANAGARI_POLICY_MARKER);
@@ -42,8 +45,8 @@ async function projectPolicy(env,projectId){
   const serverCuts=prompt.startsWith(LONGFORM_MARKER_V3);
   const longForm=museOwnsCuts||serverCuts||prompt.startsWith(LONGFORM_MARKER);
   const targetMinutes=longForm ? Number(/targetMinutes=(\d+)/.exec(prompt)?.[1]||10) : null;
-  return {longForm,serverCuts,museOwnsCuts,permanentDeep,strictNarrationDuration,audioLanguageQa,urduDevanagariVoice,experiment,targetMinutes,
-    stages:permanentDeep?PERMANENT_DEEP_STEPS:experiment?EXPERIMENT_JOB_STAGES:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
+  return {longForm,serverCuts,museOwnsCuts,permanentDeep,grounded,strictNarrationDuration,audioLanguageQa,urduDevanagariVoice,experiment,targetMinutes,
+    stages:grounded?V5G_STEPS:permanentDeep?PERMANENT_DEEP_STEPS:experiment?EXPERIMENT_JOB_STAGES:museOwnsCuts?MUSE_V4_STAGES:serverCuts?LONGFORM_STAGES_V3:longForm?LONGFORM_STAGES:STAGES};
 }
 
 const ASSET_TYPES = {
@@ -96,6 +99,9 @@ async function logDaily(env,delta) {
 function promptFor(step) {
   switch(step){
     case 'digest':return 'Read the original SRT from inputAsset. Create a detailed, chronological movie digest grounded in the subtitles. Return the digest as plain text. Do not invent scenes unsupported by the SRT.';
+    case V5G_EVIDENCE:return 'V5-G SOURCE EVIDENCE STAGE. Use ONLY the original source SRT, priorOutputs.digest and surrounding dialogue plus literal bracket captions for important uncaptioned intervals. Return JSON {"beats":[{"id":"B01","summary":"...", "evidence":[{"kind":"subtitle","cueId":1,"exactQuote":"exact quote present inside original cue"}]}],"blueprint":[{"beatId":"B01","startSeconds":1,"endSeconds":2}]}. For silent contextual beats, use evidence kind srt_context with precedingCueId,followingCueId (adjacent), precedingExactQuote,followingExactQuote,role temporal_transition or caption_supported_context, reason >=18 chars, and if caption-supported captionCueId + exactCaption. Never invent visual content from SRT gaps. Every beat needs a distinct ID, source evidence and a matching window. Read the WHOLE SRT and preserve chronology. This checkpoint must pass server validation before narration.';
+    case V5G_PREFLIGHT:return 'V5-G PRE-TTS HARD GATE. Using previousOutputs.grounded_evidence, previousOutputs.narration_english and previousOutputs.narration_urdu, return JSON {"narrationUnits":[{"language":"english","id":"en1","text":"exact passage copied from the approved English narration","beatIds":["B01"]},{"language":"urdu","id":"ur1","text":"exact passage copied from approved Urdu narration","beatIds":["B01"]}]}. Complete texts concatenated in unit order must equal each saved approved narration script (no missing text, no duplicated text); both languages must reference every approved story beat; preserve short sentences as one unit, do not split the Morning, Sophie greeting. No MP3 may start until this checkpoint is accepted.';
+    case V5G_MATCH_PLAN:return 'V5-G GLOBAL SRT-SEMANTIC MATCHING GATE, BEFORE DEEP MUSE FIVE-CUE BATCHES. Read both actual measured SRTs, the approved narration units and source SRT. Return JSON {"measuredCues":[{"language":"english","index":1,"startSeconds":0,"endSeconds":4,"text":"EXACT MEASURED SRT CUE TEXT","unitIds":["en1"]}],"decisions":{"english":[{"segmentIndex":1,"unitId":"en1","sourceStartSeconds":100,"sourceEndSeconds":104,"sourceCueIds":[1],"evidenceQuote":"exact copied source quote","reason":"why this source supports the narration >=24 chars","alternatives":[{"cueId":2,"reason":"why another cue is wrong"}],"confidence":0.97,"qualityScore":0.95,"independentSubtitleReview":true,"reviewerRef":"real independent review ref","museRequestId":"actual Muse call reference"}],"urdu":[...]}}. Provide measuredCues for ALL real English and Urdu SRT cues, and exactly one source decision per measured cue. Do NOT invent timestamps, reuse source intervals in the SAME language, pass weak/precision candidates as verified, or assert visual verification. A cue spanning two different narration semantic units must receive targeted real audio boundary repair before this submission. Quality >=0.90 applies to SRT-semantic relevance only; a numeric claim alone cannot prove correctness. Return unresolved stage error if any part is unsupported.';
     case 'narration_english':return 'Using the completed digest and source SRT available for this project, write a compelling English narration script appropriate to the movie tone and desired length. Return only the complete English narration text.';
     case 'narration_urdu':return 'Using the completed digest and source SRT, write the complete Urdu narration in Urdu script. Return only the Urdu narration text; do not mix English paragraphs.';
     case 'viral_metadata':return 'LEGACY COMPATIBILITY: return JSON with {"viralScenes":[],"metadata":{"description":"At least 20 characters of movie description","keywords":["movie recap"],"hashtags":["#movie"]}}. Do not generate viral scenes or Shorts.';
@@ -256,7 +262,14 @@ async function taskDetail(env,job) {
       const file=await env.FILES.get(movie.source_srt_key);
       if(!file)fail(409,'Original source SRT unavailable for full-movie Muse matching');
       const evidence=productionDeepPrompt(language,null,cues,await file.text(),accepted);
+      const groundedPlan=policyForDeep.grounded?JSON.parse(outputs[V5G_MATCH_PLAN]||'null'):null;
+      if(policyForDeep.grounded&&(!groundedPlan?.validation?.globalCoverage||
+         !Array.isArray(groundedPlan?.decisions?.[language])))
+        fail(409,'V5-G global matching plan not accepted');
+      const globalDecisions=groundedPlan?.decisions?.[language]?.slice(
+        evidence.progress.reviewedSegments,evidence.progress.reviewedSegments+evidence.segments.length)||null;
       return {...publicJob(job),lease:job.lease,prompt:evidence.prompt+
+        (globalDecisions?'\nV5-G ACCEPTED WHOLE-MOVIE SOURCE PLAN FOR THIS FIVE-CUE BATCH. Recheck and submit these independently reviewed decisions preserving source intervals/quotes; do not blindly reallocate earlier scene anchors. '+JSON.stringify(globalDecisions):'')+
         (job.prompt?.startsWith('RETRY REQUIRED:')?'\n'+job.prompt:''),
        movie:{id:movie.id,title:movie.title,workerId:movie.worker_id},
        productionMode:'stable',sceneMatchingMode:PERMANENT_DEEP_BUILD,
@@ -265,7 +278,7 @@ async function taskDetail(env,job) {
         batchCount:evidence.progress.batchCount,reviewedSegments:evidence.progress.reviewedSegments,
         totalSegments:cues.length,segments:evidence.segments,rankedSourceCandidates:evidence.ranked.candidates,
         maxSourceEvidenceCharacters:evidence.ranked.budget,priorAcceptedDecisions:accepted.flatMap(x=>x.decisions),
-        visualVerified:false},
+        visualVerified:false,groundedGlobalPlanDecisions:globalDecisions||undefined},
        notice:'This is live FULL-MOVIE Muse matching, not fast scoring. Each measured narration cue requires a separate Muse semantic decision.'};
     }
     const [english,urdu]=await Promise.all([
@@ -333,7 +346,7 @@ async function taskDetail(env,job) {
     await sha256(new TextEncoder().encode(outputs.narration_urdu)):undefined;
 
   return {...publicJob(job),lease:job.lease,
-    prompt:policy.museOwnsCuts?(museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes})+(controlledUrduTask&&job.step_id==='mp3_urdu'?'\n'+urduDevanagariInstructions({rescue:String(job.prompt||'').includes(URDU_DEVANAGARI_RESCUE_MARKER)}):'')+(controlledUrduTask&&job.step_id==='srt_urdu'?'\n'+urduDevanagariSrtInstructions:'')+(controlledUrduTask&&job.step_id==='narration_urdu'?'\nAPPROVED CANONICAL NARRATION IS PAKISTANI URDU SCRIPT. The later Devanagari TTS transport MUST NOT alter this text.':'')+(policy.audioLanguageQa&&!((controlledUrduTask)&&['narration_urdu','mp3_urdu','srt_urdu'].includes(job.step_id))&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?
+    prompt:policy.museOwnsCuts?((policy.grounded&&[V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN].includes(job.step_id)?job.prompt:museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes}))+(policy.grounded&&['digest','narration_english','narration_urdu'].includes(job.step_id)?'\nV5-G GROUNDED POLICY: Use original SRT and previously accepted source-backed evidence; avoid unsupported story detail, preserve distinct source cue/beat context and full scripts. There is a mandatory pre-TTS checkpoint before audio.':'')+(controlledUrduTask&&job.step_id==='mp3_urdu'?'\n'+urduDevanagariInstructions({rescue:String(job.prompt||'').includes(URDU_DEVANAGARI_RESCUE_MARKER)}):'')+(controlledUrduTask&&job.step_id==='srt_urdu'?'\n'+urduDevanagariSrtInstructions:'')+(controlledUrduTask&&job.step_id==='narration_urdu'?'\nAPPROVED CANONICAL NARRATION IS PAKISTANI URDU SCRIPT. The later Devanagari TTS transport MUST NOT alter this text.':'')+(policy.audioLanguageQa&&!((controlledUrduTask)&&['narration_urdu','mp3_urdu','srt_urdu'].includes(job.step_id))&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?
       '\nCINEPULSE V5.4 AUDIO QA (NEW MOVIES ONLY): Reject filler or repeated 5- to 8-word phrases and repeated TTS chunks. Before MP3, compare the exact script against all previous chunks and check chunk joins with overlap-free sample playback. Never restart, duplicate or loop a previously synthesized chunk. After MP3, use speech-to-text aligned to REAL audio and compare each transcript region with the approved script; never hallucinate transcription or fake cues. For URDU ONLY: write natural idiomatic Pakistani Urdu (Nastaliq/Arabic-derived script) with Pakistani vocabulary, not Hindi or awkward literal translation; read Urdu text aloud in a genuine ur-PK-capable voice and do not transliterate to Devanagari or use a hi-IN Hindi voice. If ur-PK TTS unavailable, return a clear unresolved stage error; never silently substitute Hindi. The mp3_urdu result output MUST be JSON {"provider":"actual provider","voiceName":"actual voice id","voiceLocale":"ur-PK","inputScript":"Urdu","transliterated":false,"hindiFallback":false} after uploading the real MP3. The SRT must be plain timed Urdu (or a JSON envelope with format=srt, text=timed Urdu), without Cyrillic, Chinese, Korean, Devanagari or repeated hallucinated segments. QA failures mean repair THIS stage; never advance to Deep matching with bad audio.': '')+(policy.strictNarrationDuration&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?'\nHARD CAP FOR THIS NEW MOVIE: '+policy.targetMinutes+' minutes per language. Narration must stay under the word cap and measured MP3-aligned SRT MUST end no later than '+(policy.targetMinutes*60)+'s. Shorten script before TTS to prevent overlong audio. Do not slow down or stretch narration.':'')+(policy.permanentDeep&&job.step_id==='windows_project'?'\nPERMANENT DEEP MUSE V5: use priorOutputs.cut_plan derived from the validated 5-cue semantic batches for BOTH languages; preserve all cut values and sourceEvidence; do not repeat matching or alter narration/audio. Include method/provenance in cloudImport if supported.':'')+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
       policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
     movie:policy.museOwnsCuts?{id:movie.id,title:movie.title,targetMinutes:policy.targetMinutes,workerId:movie.worker_id}:undefined,
@@ -889,6 +902,25 @@ async function acceptPermanentDeepStage(env,job,output){
      if(!check.eligible)throw Error('CAR recovery denied: '+check.reason);
      throw Error('CAR recovery persistence not yet authorized: atomic checkpoint integration required');
    }
+   const policy=await projectPolicy(env,job.project_id);
+   if(policy.grounded){
+     const plan=JSON.parse(outputs[V5G_MATCH_PLAN]||'null');
+     if(!plan?.validation?.globalCoverage||!Array.isArray(plan?.decisions?.[language]))
+       throw Error('V5-G global plan checkpoint not accepted');
+     const start=deepProductionProgress(cues,accepted).reviewedSegments;
+     const expected=plan.decisions[language].slice(start,start+output.decisions.length);
+     if(expected.length!==output.decisions.length)throw Error('V5-G planned decision count differs');
+     for(let i=0;i<expected.length;i++){
+       const a=expected[i],b=output.decisions[i];
+       if(!b||b.segmentIndex!==a.segmentIndex||
+          b.sourceStartSeconds!==a.sourceStartSeconds||
+          b.sourceEndSeconds!==a.sourceEndSeconds||
+          JSON.stringify(b.sourceCueIds)!==JSON.stringify(a.sourceCueIds)||
+          String(b.evidenceQuote).trim()!==String(a.evidenceQuote).trim()||
+          a.qualityScore<.9||a.independentSubtitleReview!==true)
+         throw Error('V5-G decision differs from accepted reviewed global plan at cue '+(start+i+1));
+     }
+   }
    const verified=validateProductionDeepBatch(language,cues,await source.text(),accepted,output);
    const now=nowSeconds();
    const updated=await env.DB.prepare("UPDATE jobs SET output=?,status='done',finished_at=?,lease=NULL,lease_until=NULL WHERE id=? AND lease=? AND status='working' RETURNING id")
@@ -1267,8 +1299,41 @@ async function route(request,env){
           await env.DB.prepare("UPDATE projects SET status='needs_review',updated_at=? WHERE id=?").bind(nowSeconds(),job.project_id).run();
           return json({id:jid,status:'error',pipeline:{status:'needs_review'},reason,notice:'Task reported failure and processing stopped safely. No fake MP3/SRT generated.'});
         }
-        const output=typeof body.output==='string'?body.output:JSON.stringify(body.output??'');
+        let output=typeof body.output==='string'?body.output:JSON.stringify(body.output??'');
         if(!output.trim()||output.length>limit)fail(422,'Nonempty task output required within stage size limit');
+        if([V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN].includes(job.step_id)){
+          const policy=await projectPolicy(env,job.project_id);
+          if(!policy.grounded)fail(403,'V5-G checkpoint is not part of this movie workflow');
+          const parent=await getProject(env,job.project_id);
+          const original=await env.FILES.get(parent.source_srt_key);
+          if(!original)fail(409,'Original source SRT required for V5-G validation');
+          const sourceSrt=await original.text();
+          const outputs=await priorOutputs(env,job.project_id);
+          try{
+            let checked;
+            if(job.step_id===V5G_EVIDENCE)
+              checked=validateV5gEvidence(sourceSrt,output);
+            else if(job.step_id===V5G_PREFLIGHT){
+              if(!outputs[V5G_EVIDENCE])fail(409,'Accepted V5-G evidence stage missing');
+              checked=validateV5gPreTts({
+                sourceSrt,evidence:JSON.parse(outputs[V5G_EVIDENCE]),
+                englishScript:outputs.narration_english,urduScript:outputs.narration_urdu,input:output
+              });
+            }else{
+              if(!outputs[V5G_PREFLIGHT]||!outputs.srt_english||!outputs.srt_urdu)
+                fail(409,'Accepted V5-G pre-TTS checkpoint and both real measured SRTs required');
+              checked=validateV5gGlobalPlan({
+                sourceSrt,englishSrt:outputs.srt_english,urduSrt:outputs.srt_urdu,
+                preflight:JSON.parse(outputs[V5G_PREFLIGHT]),input:output
+              });
+            }
+            output=JSON.stringify(checked);
+            if(output.length>limit)fail(413,'V5-G reviewed evidence checkpoint exceeds stage size limit');
+          }catch(error){
+            if(error instanceof HttpError)throw error;
+            fail(422,'V5-G checkpoint rejected before durable acceptance: '+String(error.message||error).slice(0,900));
+          }
+        }
         if(job.step_id==='mp3_english'&&!await assetByKind(env,job.project_id,'english_mp3'))fail(409,'Real English MP3 upload required');
         if(job.step_id==='mp3_urdu'&&!await assetByKind(env,job.project_id,'urdu_mp3'))fail(409,'Real Urdu MP3 upload required');
         if(['narration_english','narration_urdu'].includes(job.step_id)){
@@ -1395,7 +1460,7 @@ async function route(request,env){
         }catch(error){
           const policy=await projectPolicy(env,job.project_id);
           if(policy.museOwnsCuts && [422].includes(error?.status) &&
-             ['scene_intelligence','scene_matching','cut_plan','windows_project'].includes(job.step_id)){
+             ['scene_intelligence','scene_matching','cut_plan','windows_project',V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN].includes(job.step_id)){
             const feedback='RETRY REQUIRED: '+String(error.message||'Invalid Muse output').slice(0,1200)+
               '\nRecalculate and resubmit the full corrected result. Do not ask Cloudflare or Android to invent edits.';
             await env.DB.prepare("UPDATE jobs SET prompt=? WHERE id=? AND lease=? AND status='working'")
@@ -1696,6 +1761,7 @@ async function route(request,env){
   if(method==='POST'&&url.pathname==='/v1/projects'){
     const body=await getJson(request);
     const experiment=body.productionMode==='scene_intelligence_experiment';
+    const grounded=body.v5Grounded!==false&&env.CINEPULSE_V5G_DISABLED!=='true';
     if(experiment)fail(410,'Experimental scene intelligence is retired for NEW movies; permanent Muse Deep V5 is now the standard. Existing projects remain downloadable.');
     if(body.productionMode && body.productionMode!=='stable' && !experiment)fail(422,'Unknown CinePulse production mode');
     let requested;try{requested=isLongFormCreateRequest(body);}catch(error){fail(422,error.message);}
@@ -1721,12 +1787,12 @@ async function route(request,env){
     }
     await logDaily(env,{projects_created:1,uploaded_bytes:bytes.byteLength});
     // Durable project-level policy stored in the first digest job prompt: no schema migration.
-    const policyPrompt=`${experiment?EXPERIMENT_JOB_MARKER:PERMANENT_DEEP_MARKER} ${STRICT_DURATION_MARKER} ${AUDIO_QA_MARKER} ${URDU_DEVANAGARI_POLICY_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=${experiment?11:8}\n${promptFor('digest')}`;
+    const policyPrompt=`${experiment?EXPERIMENT_JOB_MARKER:PERMANENT_DEEP_MARKER} ${grounded?' '+V5G_MARKER:''} ${STRICT_DURATION_MARKER} ${AUDIO_QA_MARKER} ${URDU_DEVANAGARI_POLICY_MARKER} targetMinutes=${requested.targetMinutes} outputMode=${LONGFORM_MODE} shorts=false virals=false museOwnsCuts=true windowsFiles=${experiment?11:8}\n${promptFor('digest')}`;
     const taskId=await queueTask(env,{id:pid,worker_id:workerId},'digest',policyPrompt);
     return json({projectId:pid,workerId,title,firstTaskId:taskId,stage:'digest',status:'processing',retentionHours:hours,
-      productionMode:experiment?'scene_intelligence_experiment':'stable',
+      productionMode:experiment?'scene_intelligence_experiment':grounded?'v5_grounded_srt_only':'stable',
       targetMinutes:requested.targetMinutes,outputMode:requested.outputMode,
-      modules:{digest:true,englishNarration:true,urduNarration:true,metadata:true,englishMp3:true,urduMp3:true,
+      modules:{digest:true,sourceGrounded:grounded,groundedEvidence:grounded,groundedPreTts:grounded,globalMatchPlan:grounded,englishNarration:true,urduNarration:true,metadata:true,englishMp3:true,urduMp3:true,
         englishMeasuredSrt:true,urduMeasuredSrt:true,sceneMatching:true,finalCuts:true,sceneMatchingMethod:'muse_semantic_batches',batchSize:5,eachLanguageIndependent:true,
         finalCutOwner:'muse',windowsProjectOwner:'muse',windowsAssets:experiment?11:8,shorts:false,virals:false}},201);
   }

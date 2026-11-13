@@ -86,3 +86,8 @@ test('unverified visual evidence cannot be auto-accepted',()=>{
  const result=inspectGlobalSceneDryRun({sourceSrt,groups,decisions});
  assert.equal(result.ready,false);assert.deepEqual(result.precision,['urdu:one']);
 });
+
+test('BFG exact-source hash is pinned independently of cue count',()=>{
+ assert.equal(BFG_PILOT.expectedSourceSha256,'c8ba15b4dd98e7d5c50266f2d01fcb689c0d5fb15fd63b240802f91bf91c9268');
+ assert.equal(BFG_PILOT.reportedSourceCues,1239);
+});

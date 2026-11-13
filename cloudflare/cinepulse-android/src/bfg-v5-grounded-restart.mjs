@@ -10,7 +10,7 @@ const time=(a,b)=>Number.isFinite(a)&&Number.isFinite(b)&&a>=0&&b>a;
 const overlap=(a,b)=>a.start<b.end-.001&&a.end>b.start+.001;
 const R=(errors,warnings,fields={})=>({ready:errors.length===0,errors,warnings,...fields});
 export const BFG_PILOT={movie:'The BFG (2016)',originalProjectId:'796b9f28-9f31-484f-91e2-e40a385950c6',
- worker:'INT',reportedSourceCues:1239,allowProductionMutation:false};
+ worker:'INT',reportedSourceCues:1239,expectedSourceSha256:'c8ba15b4dd98e7d5c50266f2d01fcb689c0d5fb15fd63b240802f91bf91c9268',allowProductionMutation:false};
 export function inspectSourceIntake(srt,{expectedCues=null,gapSeconds=5}={}){
  let cues;try{cues=parseMeasuredCues(srt)}catch(e){return R(['Invalid source SRT: '+e.message],[],{sourceCueCount:0,gaps:[]})}
  const errors=[],gaps=[];

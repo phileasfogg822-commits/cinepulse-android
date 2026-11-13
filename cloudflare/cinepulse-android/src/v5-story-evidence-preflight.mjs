@@ -1,19 +1,19 @@
 /**
  * Read-only V5 story-evidence preflight. NOT a queue stage.
- * Evidence from original subtitles differs from verified visual evidence.
+ * Operates on original source subtitles only; no movie file or frame inspection.
  */
 import {parseMeasuredCues} from './scene-lab-package.mjs';
 const id=x=>typeof x==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(x);
 const norm=x=>String(x||'').normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase();
 const interval=(a,b)=>Number.isFinite(a)&&Number.isFinite(b)&&a>=0&&b>a;
 
-/** Gaps in captions must never be represented as proven silent scenes. */
+/** Gaps indicate only missing subtitle captions, not proven silent scenes. */
 export function findUncaptionedIntervals(srt,seconds=4){
  if(!Number.isFinite(seconds)||seconds<=0)throw Error('Positive gap threshold required');
  const cues=parseMeasuredCues(srt),out=[];
  for(let i=1;i<cues.length;i++){
   const a=cues[i-1].endSeconds,b=cues[i].startSeconds;
-  if(b-a>=seconds)out.push({startSeconds:a,endSeconds:b,status:'video_inspection_required',source:'subtitle_gap_only',precedingCueId:i,followingCueId:i+1});
+  if(b-a>=seconds)out.push({startSeconds:a,endSeconds:b,status:'uncaptioned_interval_only',source:'subtitle_gap_only',precedingCueId:i,followingCueId:i+1});
  }
  return out;
 }
@@ -42,13 +42,7 @@ export function inspectStoryEvidenceBlueprint(input={}){
     if(!cue||norm(item.quote).length<2||!norm(cue.text).includes(norm(item.quote)))
      errors.push('Digest beat '+beat.id+' has invalid exact source quote/cue');
    }else if(item?.kind==='visual'){
-    const videoHash=input.sourceMediaSha256;
-    if(!interval(item.startSeconds,item.endSeconds)||
-       typeof videoHash!=='string'||!/^[0-9a-f]{64}$/i.test(videoHash)||
-       item.sourceMediaSha256!==videoHash||item.verifiedFromVideo!==true||
-       !['frame_review','video_review'].includes(item.verificationMethod)||
-       !id(item.verificationRef)||String(item.observedAction||'').trim().length<12)
-      errors.push('Digest beat '+beat.id+' has unverified visual evidence');
+    errors.push('Digest beat '+beat.id+' relies on excluded visual-only evidence');
    }else errors.push('Digest beat '+beat.id+' has unknown evidence kind');
   }
  }

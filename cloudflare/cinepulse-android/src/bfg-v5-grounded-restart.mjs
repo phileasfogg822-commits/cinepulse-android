@@ -1,7 +1,7 @@
 /**
  * Isolated CinePulse V5-G restart preflight (NO D1/R2, worker, queue or cut writes).
- * Story provenance is independent of source footage allocation.
- * Captions are not proof of the visual events between them.
+ * This SRT-only variant does not inspect movie frames or require source video.
+ * Subtitle gaps remain unknown context; they never prove visual action.
  */
 import {parseMeasuredCues} from './scene-lab-package.mjs';
 const okId=x=>typeof x==='string'&&/^[A-Za-z0-9][\w:.+-]{0,127}$/.test(x);
@@ -17,12 +17,12 @@ export function inspectSourceIntake(srt,{expectedCues=null,gapSeconds=5}={}){
  if(expectedCues!==null&&cues.length!==expectedCues)errors.push('Expected '+expectedCues+' original cues; got '+cues.length);
  for(let i=1;i<cues.length;i++)if(cues[i].startSeconds-cues[i-1].endSeconds>=gapSeconds)
   gaps.push({start:cues[i-1].endSeconds,end:cues[i].startSeconds,
-   precedingCue:i,followingCue:i+1,status:'video_inspection_required',evidence:'subtitle_gap_only'});
+   precedingCue:i,followingCue:i+1,status:'uncaptioned_interval_only',evidence:'subtitle_gap_only'});
  return R(errors,[],{sourceCueCount:cues.length,gaps,sourceSrtLastCueEnd:cues.at(-1).endSeconds,
-  silentSceneContentVerified:false,productionProjectCreated:false});
+  videoInputRequired:false,uncaptionedActionsInferred:false,productionProjectCreated:false});
 }
-/** Pre-TTS validation of original SRT -> digest -> footage blueprint -> bilingual narration. */
-export function inspectBeforeVoice({sourceSrt,beats,blueprint,narrationUnits,sourceMediaSha256=null}={}){
+/** SRT-only pre-TTS check: source cue -> digest beat -> source window -> bilingual narration. */
+export function inspectBeforeVoice({sourceSrt,beats,blueprint,narrationUnits}={}){
  let source;try{source=parseMeasuredCues(sourceSrt)}catch(e){return R(['Invalid source SRT: '+e.message],[])};
  const errors=[],warnings=[],beatMap=new Map(),blue=new Map(),usedCue=new Map();
  if(!Array.isArray(beats)||!Array.isArray(blueprint)||!Array.isArray(narrationUnits))
@@ -44,13 +44,7 @@ export function inspectBeforeVoice({sourceSrt,beats,blueprint,narrationUnits,sou
      usedCue.set(ev.cueId,b.id);
     }
    }else if(ev?.kind==='visual'){
-    // A gap is not proof. An independently checked video/frames receipt is required.
-    if(!time(ev.startSeconds,ev.endSeconds)||!String(ev.observedAction||'').trim()||
-      !/^[a-f0-9]{64}$/i.test(sourceMediaSha256||'')||sourceMediaSha256!==ev.sourceMediaSha256||
-      ev.verifiedFromVideo!==true||!['verified_video','verified_frames'].includes(ev.method)||
-      !okId(ev.verificationRef))
-     errors.push('Unverified silent scene '+b.id);
-    warnings.push('Video evidence receipt '+b.id+' requires external pixel-level verification');
+    errors.push('Video-derived scene evidence is excluded from the SRT-only workflow at beat '+b.id);
    }else errors.push('Unknown digest evidence type '+b.id);
   }
  }
@@ -58,11 +52,11 @@ export function inspectBeforeVoice({sourceSrt,beats,blueprint,narrationUnits,sou
   if(!okId(x?.beatId)||blue.has(x.beatId)){errors.push('Duplicate/invalid blueprint entry');continue}
   blue.set(x.beatId,x);
   if(!beatMap.has(x.beatId))errors.push('Unknown blueprint beat '+x.beatId);
-  if(!time(x.startSeconds,x.endSeconds))errors.push('Invalid footage window '+x.beatId);
+  if(!time(x.startSeconds,x.endSeconds)||x.endSeconds>source.at(-1).endSeconds+0.001)errors.push('Invalid SRT source window '+x.beatId);
   const b=beatMap.get(x.beatId);
   if(b?.evidence.some(e=>e.kind==='subtitle')&&!b.evidence.some(e=>{
     const c=source[e.cueId-1];return e.kind==='subtitle'&&c&&x.startSeconds<=c.endSeconds&&x.endSeconds>=c.startSeconds;
-  }))errors.push('Blueprint misses cited source dialogue '+x.beatId);
+  }))errors.push('Blueprint misses cited SRT source cue '+x.beatId);
  }
  for(const id of beatMap.keys())if(!blue.has(id))errors.push('Missing scene blueprint '+id);
  const byLang={english:new Set(),urdu:new Set()},unitKeys=new Set();
@@ -86,7 +80,7 @@ export function inspectBeforeVoice({sourceSrt,beats,blueprint,narrationUnits,sou
  }
  if(!beatMap.size)errors.push('Empty digest');
  return R(errors,warnings,{stage:'before_voice',sourceCueCount:source.length,digestBeats:beatMap.size,
-   narrationUnitCount:unitKeys.size,footagePlanCount:blue.size,
+   narrationUnitCount:unitKeys.size,sourceAnchorPlanCount:blue.size,videoInputRequired:false,
    allSourceAndAudioImmutable:true,productionApplyAuthorized:false});
 }
 /** Keep actual STT cue timestamps while grouping short speech as ONE semantic event. */
@@ -124,7 +118,7 @@ export function inspectAfterVoice({units,measuredCues}={}){
  }
  return R(errors,[],{groups,measuredSrtUnchanged:true,productionApplyAuthorized:false});
 }
-/** A dry-run result is not a source of pixel truth or mutation authority. */
+/** An SRT-only dry run checks cited source text and semantic score, never pixels. */
 export function inspectGlobalSceneDryRun({sourceSrt,groups,decisions,qualityFloor=.9}={}){
  let source;try{source=parseMeasuredCues(sourceSrt)}catch(e){return R(['Invalid source SRT: '+e.message],[])};
  const errors=[],warnings=[],precision=[],unsupported=[],verified=[],reserved={english:[],urdu:[]};
@@ -143,9 +137,16 @@ export function inspectGlobalSceneDryRun({sourceSrt,groups,decisions,qualityFloo
    precision.push(key);continue
   }
   if(d.status!=='verified'){errors.push('Unknown dry-run status '+key);continue}
-  if(!d.independentVisualReview||!okId(d.reviewerRef)||
-     !Array.isArray(d.sourceCueIds)||!d.sourceCueIds.some(n=>Number.isInteger(n)&&source[n-1])){
-   warnings.push('Independent scene evidence missing '+key);precision.push(key);continue
+  const hasExactSubtitleProof=Array.isArray(d.sourceCueIds)&&
+   d.sourceCueIds.some(id=>{
+    const cue=Number.isInteger(id)&&id>0?source[id-1]:null;
+    return cue&&norm(d.evidenceQuote).length>=2&&norm(cue.text).includes(norm(d.evidenceQuote))&&
+     d.startSeconds<=cue.endSeconds+12&&d.endSeconds>=cue.startSeconds-12;
+   });
+  if(d.independentSubtitleReview!==true||!okId(d.reviewerRef)||
+     typeof d.reason!=='string'||d.reason.trim().length<24||!hasExactSubtitleProof){
+   warnings.push('Independent source-SRT citation or semantic rationale missing '+key);
+   precision.push(key);continue;
   }
   const win={start:d.startSeconds,end:d.endSeconds};
   if(reserved[d.language]?.some(x=>overlap(x,win))){

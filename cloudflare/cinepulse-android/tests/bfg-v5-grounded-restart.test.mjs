@@ -6,37 +6,37 @@ const sourceSrt=[
 '2\n00:00:12,000 --> 00:00:13,000\nWhere are you?',
 '3\n00:00:25,000 --> 00:00:26,000\nMorning, Sophie.'
 ].join('\n\n');
-const hash='a'.repeat(64);
-const data=()=>({sourceSrt,sourceMediaSha256:hash,
+const data=()=>({sourceSrt,
  blueprint:[
   {beatId:'greeting-first',startSeconds:.8,endSeconds:2.5},
   {beatId:'greeting-second',startSeconds:24.8,endSeconds:26.5},
-  {beatId:'quiet-action',startSeconds:15,endSeconds:19}
+  {beatId:'question',startSeconds:11.5,endSeconds:13.5}
  ],
  beats:[
   {id:'greeting-first',summary:'First greeting',evidence:[{kind:'subtitle',cueId:1,exactQuote:'Morning, Sophie.'}]},
   {id:'greeting-second',summary:'Another greeting at another movie time',evidence:[{kind:'subtitle',cueId:3,exactQuote:'Morning, Sophie.'}]},
-  {id:'quiet-action',summary:'Characters react to a moving creature',evidence:[{kind:'visual',startSeconds:15,endSeconds:19,sourceMediaSha256:hash,verifiedFromVideo:true,method:'verified_frames',verificationRef:'visual-review-1',observedAction:'Characters react in alarm to something moving'}]}
+  {id:'question',summary:'A character asks where someone is',evidence:[{kind:'subtitle',cueId:2,exactQuote:'Where are you?'}]}
  ],
  narrationUnits:[
   {language:'english',id:'en-first',text:'Morning, Sophie.',beatIds:['greeting-first']},
   {language:'english',id:'en-second',text:'Another greeting.',beatIds:['greeting-second']},
-  {language:'english',id:'en-action',text:'They react to the creature.',beatIds:['quiet-action']},
+  {language:'english',id:'en-action',text:'Someone asks where they are.',beatIds:['question']},
   {language:'urdu',id:'ur-first',text:'A greeting to Sophie.',beatIds:['greeting-first']},
   {language:'urdu',id:'ur-second',text:'A later greeting.',beatIds:['greeting-second']},
-  {language:'urdu',id:'ur-action',text:'They react to the creature.',beatIds:['quiet-action']}
+  {language:'urdu',id:'ur-action',text:'Someone asks where they are.',beatIds:['question']}
  ],
  measuredCues:[
   {language:'english',index:1,startSeconds:0,endSeconds:.5,text:'Morning,',unitIds:['en-first']},
   {language:'english',index:2,startSeconds:.5,endSeconds:1.2,text:'Sophie.',unitIds:['en-first']},
   {language:'english',index:3,startSeconds:1.2,endSeconds:2.5,text:'Another greeting.',unitIds:['en-second']},
-  {language:'urdu',index:1,startSeconds:0,endSeconds:2,text:'They react to the creature.',unitIds:['ur-action']}
+  {language:'urdu',index:1,startSeconds:0,endSeconds:2,text:'Someone asks where they are.',unitIds:['ur-action']}
  ]});
 test('BFG pilot never mutates live project',()=>{assert.equal(BFG_PILOT.worker,'INT');assert.equal(BFG_PILOT.allowProductionMutation,false)});
 test('source intake sees time gaps but does not invent silent-scene content',()=>{
  const a=inspectSourceIntake(sourceSrt,{expectedCues:3,gapSeconds:5});
  assert.equal(a.ready,true);assert.equal(a.gaps.length,2);
- assert.ok(a.gaps.every(g=>g.status==='video_inspection_required'));
+ assert.ok(a.gaps.every(g=>g.status==='uncaptioned_interval_only'));
+ assert.equal(a.videoInputRequired,false);
  assert.equal(a.productionProjectCreated,false);
 });
 test('source integrity fails closed on cue count discrepancy',()=>{
@@ -50,10 +50,12 @@ test('same spoken words cannot be relabeled as a different source cue',()=>{
  const a=data();a.beats[1].evidence[0].cueId=2;
  assert.equal(inspectBeforeVoice(a).ready,false);
 });
-test('invented digest text, missing beat, or unsupported visuals fail',()=>{
- const a=data();a.beats[0].evidence[0].exactQuote='Unsaid dialogue';a.narrationUnits[0].beatIds=['invented'];
- delete a.beats[2].evidence[0].verificationRef;
+test('unbacked digest, narration, and visual-only claims fail without requiring video',()=>{
+ const a=data();a.beats[0].evidence[0].exactQuote='Unsaid dialogue';
+ a.narrationUnits[0].beatIds=['invented'];
  assert.equal(inspectBeforeVoice(a).ready,false);
+ const b=data();b.beats[2].evidence=[{kind:'visual',startSeconds:15,endSeconds:19,observedAction:'Unseen dinosaur'}];
+ assert.match(inspectBeforeVoice(b).errors.join(' '),/excluded from the SRT-only workflow/);
 });
 test('short sentence remains one semantic narration group despite two STT cues',()=>{
  const a=data(),s=inspectAfterVoice({units:a.narrationUnits.filter(u=>['en-first','en-second','ur-action'].includes(u.id)),measuredCues:a.measuredCues});
@@ -72,15 +74,15 @@ test('global plan refuses weak 0.60 match, and forbids lowered quality floor',()
 });
 test('two narration units sharing one source time cannot silently overlap',()=>{
  const groups=[{language:'english',unitId:'one'},{language:'english',unitId:'two'}];
- const decisions=groups.map(g=>({...g,status:'verified',qualityScore:.96,startSeconds:1,endSeconds:2,sourceCueIds:[1],independentVisualReview:true,reviewerRef:'r1'}));
+ const decisions=groups.map(g=>({...g,status:'verified',qualityScore:.96,startSeconds:1,endSeconds:2,sourceCueIds:[1],independentSubtitleReview:true,reviewerRef:'r1',evidenceQuote:'Morning, Sophie.',reason:'Exact original dialogue supports a greeting at this time.'}));
  assert.equal(inspectGlobalSceneDryRun({sourceSrt,groups,decisions}).ready,false);
 });
 test('English and Urdu can select same source time in independent rendered videos',()=>{
  const groups=[{language:'english',unitId:'one'},{language:'urdu',unitId:'one'}];
- const decisions=groups.map(g=>({...g,status:'verified',qualityScore:.96,startSeconds:1,endSeconds:2,sourceCueIds:[1],independentVisualReview:true,reviewerRef:'r1'}));
+ const decisions=groups.map(g=>({...g,status:'verified',qualityScore:.96,startSeconds:1,endSeconds:2,sourceCueIds:[1],independentSubtitleReview:true,reviewerRef:'r1',evidenceQuote:'Morning, Sophie.',reason:'Exact original dialogue supports a greeting at this time.'}));
  assert.equal(inspectGlobalSceneDryRun({sourceSrt,groups,decisions}).ready,true);
 });
-test('unverified visual evidence cannot be auto-accepted',()=>{
+test('unverified source-SRT evidence cannot be auto-accepted',()=>{
  const groups=[{language:'urdu',unitId:'one'}];
  const decisions=[{language:'urdu',unitId:'one',status:'verified',qualityScore:.99,startSeconds:1,endSeconds:2,sourceCueIds:[1]}];
  const result=inspectGlobalSceneDryRun({sourceSrt,groups,decisions});
@@ -90,4 +92,19 @@ test('unverified visual evidence cannot be auto-accepted',()=>{
 test('BFG exact-source hash is pinned independently of cue count',()=>{
  assert.equal(BFG_PILOT.expectedSourceSha256,'c8ba15b4dd98e7d5c50266f2d01fcb689c0d5fb15fd63b240802f91bf91c9268');
  assert.equal(BFG_PILOT.reportedSourceCues,1239);
+});
+test('proper source quotation is required even for a claimed 0.99 semantic match',()=>{
+ const groups=[{language:'english',unitId:'greeting'}];
+ const decisions=[{language:'english',unitId:'greeting',status:'verified',qualityScore:.99,
+  startSeconds:1,endSeconds:2,sourceCueIds:[1],independentSubtitleReview:true,
+  reviewerRef:'reader-1',reason:'An exact morning greeting from the original subtitle cue',
+  evidenceQuote:'fabricated dialogue'}];
+ const report=inspectGlobalSceneDryRun({sourceSrt,groups,decisions});
+ assert.equal(report.ready,false);
+ assert.deepEqual(report.precision,['english:greeting']);
+});
+test('SRT-only pre-TTS pilot accepts source-backed narration with no video hash',()=>{
+ const r=inspectBeforeVoice(data());
+ assert.equal(r.ready,true,JSON.stringify(r.errors));
+ assert.equal(r.videoInputRequired,false);
 });

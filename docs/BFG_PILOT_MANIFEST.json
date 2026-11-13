@@ -3,16 +3,15 @@
   "originalProjectId": "796b9f28-9f31-484f-91e2-e40a385950c6",
   "assignedWorker": "INT",
   "originalSourceCueCountReported": 1239,
-  "status": "source_srt_received_locally_crc_and_cue_integrity_verified",
+  "status": "original_srt_1239_verified_srt_only_pilot_ready_for_digest_review",
   "sourceSha256": "c8ba15b4dd98e7d5c50266f2d01fcb689c0d5fb15fd63b240802f91bf91c9268",
-  "sourceMediaSha256": null,
   "backendProjectCreated": false,
   "automaticRestartEnabled": false,
   "productionChanges": false,
   "manualGates": [
     "source integrity",
     "digest/story evidence",
-    "scene blueprint",
+    "SRT-source-anchored story beat plan",
     "narration before voice",
     "measured narration/semantic groups",
     "whole-film match dry-run",
@@ -30,5 +29,8 @@
   "captionGapsAtLeastFiveSeconds": 195,
   "sourceGroundedDraftBeats": 83,
   "sourceDigestStatus": "draft_83_beats_not_visual_or_narration_approved",
-  "videoEvidenceVerified": false
+  "pipelineInputMode": "original_srt_only",
+  "movieFootageRequired": false,
+  "visualInspectionRequired": false,
+  "qualityGoal": "9/10 SRT-semantic source relevance; no claim of visual verification"
 }

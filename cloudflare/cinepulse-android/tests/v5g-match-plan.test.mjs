@@ -9,6 +9,7 @@ const en=['1\n00:00:00,000 --> 00:00:02,000\nFirst greeting.',
 '2\n00:00:02,000 --> 00:00:04,000\nThen a question.'].join('\n\n');
 const ur=['1\n00:00:00,000 --> 00:00:02,000\nپہلا سلام۔',
 '2\n00:00:02,000 --> 00:00:04,000\nپھر سوال۔'].join('\n\n');
+const evidenceBlueprint={beats:[{id:'b1'},{id:'b2'}],blueprint:[{beatId:'b1',startSeconds:1,endSeconds:2},{beatId:'b2',startSeconds:12,endSeconds:13}]};
 const preflight={narrationUnits:[
 {language:'english',id:'en1',text:'First greeting.',beatIds:['b1']},
 {language:'english',id:'en2',text:'Then a question.',beatIds:['b2']},
@@ -31,7 +32,7 @@ const make=()=>{
  }
  return {measuredCues,decisions};
 };
-const args=input=>({sourceSrt:source,englishSrt:en,urduSrt:ur,preflight,input});
+const args=input=>({sourceSrt:source,englishSrt:en,urduSrt:ur,preflight,evidence:evidenceBlueprint,input});
 test('whole-movie bilingual plan validates before batches and preserves semantic units',()=>{
  const r=validateV5gGlobalPlan(args(make()));
  assert.equal(r.validation.status,'reviewed_all_units');
@@ -53,4 +54,11 @@ test('global plan rejects reused film source time in one language',()=>{
 test('narration-measured-SRT timestamps are checked against the actual saved SRT',()=>{
  const p=make();p.measuredCues[0].startSeconds=.1;
  assert.throws(()=>validateV5gGlobalPlan(args(p)),/timestamps differ/);
+});
+
+test('global semantic source decision must belong to narration digest blueprint',()=>{
+ const p=make();p.decisions.english[0].sourceStartSeconds=25;
+ p.decisions.english[0].sourceEndSeconds=26;p.decisions.english[0].sourceCueIds=[3];
+ p.decisions.english[0].evidenceQuote='Morning, Sophie.';
+ assert.throws(()=>validateV5gGlobalPlan(args(p)),/outside its narration beat blueprint/);
 });

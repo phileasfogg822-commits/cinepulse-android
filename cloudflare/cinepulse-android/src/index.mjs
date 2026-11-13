@@ -3,7 +3,7 @@ import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAG
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
 import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
-import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts } from './v5g-production-gate.mjs';
+import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts,selectV5gWorkflow } from './v5g-production-gate.mjs';
 import {validateV5gGlobalPlan} from './v5g-match-plan.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
@@ -1324,7 +1324,7 @@ async function route(request,env){
                 fail(409,'Accepted V5-G pre-TTS checkpoint and both real measured SRTs required');
               checked=validateV5gGlobalPlan({
                 sourceSrt,englishSrt:outputs.srt_english,urduSrt:outputs.srt_urdu,
-                preflight:JSON.parse(outputs[V5G_PREFLIGHT]),input:output
+                preflight:JSON.parse(outputs[V5G_PREFLIGHT]),evidence:JSON.parse(outputs[V5G_EVIDENCE]||'null'),input:output
               });
             }
             output=JSON.stringify(checked);
@@ -1761,12 +1761,18 @@ async function route(request,env){
   if(method==='POST'&&url.pathname==='/v1/projects'){
     const body=await getJson(request);
     const experiment=body.productionMode==='scene_intelligence_experiment';
-    const grounded=body.v5Grounded!==false&&env.CINEPULSE_V5G_DISABLED!=='true';
+    // Worker 1 alone uses the new V5-G queue; INT is always on its existing V5 path.
+    // Operator/Android cannot force another worker into V5-G with a request flag.
+    // Resolve routing from the authenticated DB worker row below.
+    let grounded=false;
     if(experiment)fail(410,'Experimental scene intelligence is retired for NEW movies; permanent Muse Deep V5 is now the standard. Existing projects remain downloadable.');
     if(body.productionMode && body.productionMode!=='stable' && !experiment)fail(422,'Unknown CinePulse production mode');
     let requested;try{requested=isLongFormCreateRequest(body);}catch(error){fail(422,error.message);}
     const title=requireString(body.title,'movie title'),workerId=requireUUID(body.workerId),worker=await env.DB.prepare('SELECT * FROM workers WHERE id=? AND enabled=1').bind(workerId).first();
     if(!worker)fail(404,'Select an active Muse worker');
+    grounded=selectV5gWorkflow(worker.label,{disabled:env.CINEPULSE_V5G_DISABLED==='true'});
+    if(body.v5Grounded!==undefined && body.v5Grounded!==grounded)
+      fail(422,'V5-G processing is assigned to Worker 1 only; INT retains the legacy workflow. Select the correct worker.');
     const srt=normalizeSrt(body.sourceSrt);
     const hours=body.retentionHours===24?24:body.retentionHours===48||body.retentionHours===undefined?48:null;
     if(!hours)fail(422,'retentionHours must be 24 or 48');

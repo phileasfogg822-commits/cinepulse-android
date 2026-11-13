@@ -8,8 +8,14 @@ import {validateProductionDeepBatch,loadProductionCues} from './permanent-deep-m
 import {inspectAfterVoice} from './bfg-v5-grounded-restart.mjs';
 import {validateV5gMeasuredCues} from './v5g-production-gate.mjs';
 const fail=msg=>{throw Error('V5-G global match plan: '+msg)};
-export function validateV5gGlobalPlan({sourceSrt,englishSrt,urduSrt,preflight,input}){
+export function validateV5gGlobalPlan({sourceSrt,englishSrt,urduSrt,preflight,evidence,input}){
  if(!preflight||!Array.isArray(preflight.narrationUnits))fail('Accepted bilingual pre-TTS checkpoint missing');
+ if(!evidence||!Array.isArray(evidence.beats)||!Array.isArray(evidence.blueprint))
+  fail('Accepted source-beat blueprint checkpoint missing');
+ const sourceCues=parseMeasuredCues(sourceSrt);
+ const allBeats=new Map(evidence.beats.map(b=>[b.id,b]));
+ const anchors=new Map(evidence.blueprint.map(b=>[b.beatId,b]));
+ const allUnits=new Map(preflight.narrationUnits.map(u=>[u.language+':'+u.id,u]));
  if(typeof input==='string'){try{input=JSON.parse(input)}catch{fail('Invalid JSON payload')}}
  if(!input||!Array.isArray(input.measuredCues)||!input.decisions||
    !Array.isArray(input.decisions.english)||!Array.isArray(input.decisions.urdu))
@@ -38,6 +44,21 @@ export function validateV5gGlobalPlan({sourceSrt,englishSrt,urduSrt,preflight,in
    const d=decisions[i],c=cues[i];
    if(d?.segmentIndex!==i+1||d.unitId!==c.unitIds[0])
     fail(lang+' source decision does not match semantic unit at cue '+(i+1));
+   const unit=allUnits.get(lang+':'+d.unitId);
+   if(!unit||!Array.isArray(unit.beatIds)||!unit.beatIds.length)
+    fail(lang+' decision has no source-backed narration unit');
+   const relevant=unit.beatIds.some(id=>{
+    const anchor=anchors.get(id),beat=allBeats.get(id);
+    if(!anchor||!beat)return false;
+    const sourceTouch=Array.isArray(d.sourceCueIds)&&d.sourceCueIds.some(n=>{
+     const cue=Number.isInteger(n)?sourceCues[n-1]:null;
+     return cue&&cue.startSeconds<=anchor.endSeconds+1&&
+       cue.endSeconds>=anchor.startSeconds-1;
+    });
+    return sourceTouch&&d.sourceStartSeconds<=anchor.endSeconds+12&&
+      d.sourceEndSeconds>=anchor.startSeconds-12;
+   });
+   if(!relevant)fail(lang+' source decision is outside its narration beat blueprint at cue '+(i+1));
    if(d.qualityScore<.9||!Number.isFinite(d.qualityScore)||
       d.independentSubtitleReview!==true||
       typeof d.reviewerRef!=='string'||d.reviewerRef.trim().length<4)

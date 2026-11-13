@@ -95,3 +95,12 @@ export function validateV5gMeasuredCues(measuredSrt,cues,language){
  }
  return {count:actual.length,unitIds:[...claimed]};
 }
+
+/** Persisted new-movie routing policy. Never use a client-controlled worker label. */
+export function selectV5gWorkflow(workerLabel,{disabled=false}={}){
+ const key=String(workerLabel??'').normalize('NFKC').toLowerCase().replace(/[^a-z0-9]/g,'');
+ if(key==='int')return false;
+ if(key==='worker1')return !disabled;
+ // Unknown/new worker label: fail closed to legacy flow until explicitly assigned.
+ return false;
+}

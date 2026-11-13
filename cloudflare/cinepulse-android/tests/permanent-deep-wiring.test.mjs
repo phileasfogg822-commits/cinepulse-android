@@ -5,7 +5,8 @@ const backend=readFileSync(new URL('../src/index.mjs',import.meta.url),'utf8');
 const android=readFileSync(new URL('../../../app/src/main/java/com/cinepulse/mobile/MainActivity.java',import.meta.url),'utf8');
 test('standard movie creation uses V5 marker while historical project prompts keep V4/V3 policy',()=>{
  assert.match(backend,/const permanentDeep=prompt\.startsWith\(PERMANENT_DEEP_MARKER\)/);
- assert.match(backend,/stages:permanentDeep\?PERMANENT_DEEP_STEPS/);
+ assert.match(backend,/stages:grounded\?V5G_STEPS:permanentDeep\?PERMANENT_DEEP_STEPS/);
+ assert.match(backend,/const grounded=permanentDeep&&prompt\.includes\(V5G_MARKER\)/);
  assert.match(backend,/experiment\?EXPERIMENT_JOB_MARKER:PERMANENT_DEEP_MARKER/);
  assert.match(backend,/PERMANENT_DEEP_MATCH_EN/);
  assert.match(backend,/PERMANENT_DEEP_MATCH_UR/);

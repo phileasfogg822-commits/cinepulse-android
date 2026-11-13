@@ -234,6 +234,25 @@ public final class MainActivity extends Activity {
             row.addView(text(name,17,WHITE,true),new LinearLayout.LayoutParams(0,-2,1));
             TextView state=text(status.toUpperCase(),10,status.equals("ready")?GREEN:PURPLE,true);pad(state,8,5,8,5);
             state.setBackground(shape(0xFF242C47,0,9));row.addView(state);
+            String mode=p.optString("productionMode","unverified");
+            String routeLabel="v5_grounded_srt_only".equals(mode)?"V5-G · SOURCE-GROUNDED PIPELINE":
+                "stable".equals(mode)?"V5 · LEGACY DEEP MATCHING":"PIPELINE NOT VERIFIED";
+            int routeColor="v5_grounded_srt_only".equals(mode)?GREEN:0xFFFFC47E;
+            space(c,7);c.addView(text("MODE: "+routeLabel,13,routeColor,true));
+            String workerName="Unknown";
+            for(int k=0;k<workers.length();k++){
+                JSONObject ww=workers.optJSONObject(k);
+                if(ww!=null && p.optString("workerId").equals(ww.optString("id"))){
+                    workerName=ww.optString("label","Unknown");break;
+                }
+            }
+            c.addView(text("Assigned worker: "+workerName,12,MUTED,false));
+            String currentStep=p.optString("currentStep","");
+            if(!currentStep.isEmpty()){
+                c.addView(text("Current / latest: "+TimelineMetrics.stageLabel(currentStep)+
+                    " · "+p.optString("currentStepStatus","UNKNOWN").toUpperCase(java.util.Locale.ROOT),
+                    12,PURPLE,true));
+            }
             space(c,8);c.addView(text("#"+SecurityRules.shortId(id)+"  •  Retention "+p.optInt("retentionHours",48)+"h",12,MUTED,false));
             long started=TimelineMetrics.time(p,"createdAt","created_at");
             long finished=TimelineMetrics.time(p,"readyAt","ready_at","completedAt","finishedAt");
@@ -453,6 +472,10 @@ public final class MainActivity extends Activity {
         summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
         final boolean experimentalProject="scene_intelligence_experiment".equals(project.optString("productionMode"));
         final boolean groundedProject="v5_grounded_srt_only".equals(project.optString("productionMode"));
+        JSONObject attachedWorker=document.optJSONObject("worker");
+        String assignedWorker=attachedWorker!=null?attachedWorker.optString("label","Unverified"):
+            "Worker label not loaded";
+        summary.addView(text("Assigned worker: "+assignedWorker,12,MUTED,false));
         summary.addView(text(groundedProject?
             "MODE: V5-G · SOURCE-GROUNDED 15-STAGE PIPELINE":
             experimentalProject?"MODE: EXPERIMENTAL · SCENE INTELLIGENCE":
@@ -671,17 +694,47 @@ public final class MainActivity extends Activity {
         JSONArray planned=document.optJSONArray("pipelineStages");
         if(planned==null||planned.length()==0)return;
         JSONArray jobs=document.optJSONArray("jobs");
+        JSONArray assets=document.optJSONArray("assets");
+        JSONObject project=document.optJSONObject("project");
+        boolean grounded="v5_grounded_srt_only".equals(project==null?"":project.optString("productionMode"));
         LinearLayout box=card();content.addView(box,fullWithBottom(12));
-        box.addView(text("BACKEND VERIFIED PIPELINE ("+planned.length()+" stages)",13,GREEN,true));
+        box.addView(text("CONFIRMED "+(grounded?"V5-G GROUNDED":"V5 LEGACY")+" PIPELINE · "+planned.length()+" stages",13,GREEN,true));
         space(box,6);
+        // Stage zero is an intake receipt, not a Muse task. Never inflate
+        // the queue count or claim the source has been film/video verified.
+        boolean sourcePresent=false;long sourceBytes=0;
+        if(assets!=null)for(int i=0;i<assets.length();i++){
+            JSONObject a=assets.optJSONObject(i);
+            if(a!=null&&"source_srt".equals(a.optString("kind"))){
+                sourcePresent=true;sourceBytes=a.optLong("bytes",0);break;
+            }
+        }
+        box.addView(text("0. Original source SRT intake — "+
+            (sourcePresent?"RECEIVED"+(sourceBytes>0?" ("+sourceBytes+" bytes)":""):"NOT VERIFIED"),
+            12,sourcePresent?GREEN:MUTED,false));
+        // Report the one actual queued or working stage separately. Future
+        // stages are PLANNED, not falsely presented as already queued jobs.
+        String current="";String currentState="";
         for(int i=0;i<planned.length();i++){
-            String name=planned.optString(i,""),state="NOT QUEUED";
+            String name=planned.optString(i,""),state="NOT STARTED";
             if(jobs!=null)for(int j=0;j<jobs.length();j++){
                 JSONObject row=jobs.optJSONObject(j);
-                if(row!=null&&name.equals(row.optString("stepId")))state=row.optString("status","UNKNOWN").toUpperCase(java.util.Locale.ROOT);
+                if(row!=null&&name.equals(row.optString("stepId")))
+                    state=row.optString("status","UNKNOWN").toUpperCase(java.util.Locale.ROOT);
             }
-            box.addView(text((i+1)+". "+TimelineMetrics.stageLabel(name)+" — "+state,12,MUTED,false));
+            if("WORKING".equals(state)||"QUEUED".equals(state)){
+                current=TimelineMetrics.stageLabel(name);currentState=state;
+            }
+            String line=(i+1)+". "+TimelineMetrics.stageLabel(name)+" — "+state;
+            box.addView(text(line,12,"DONE".equals(state)?GREEN:
+                "WORKING".equals(state)?PURPLE:
+                "ERROR".equals(state)||"CANCELLED".equals(state)?0xFFFF9B9B:MUTED,
+                "WORKING".equals(state)||"QUEUED".equals(state)));
         }
+        space(box,6);
+        if(!current.isEmpty())
+            box.addView(text("ACTIVE QUEUE: "+current+" · "+currentState,13,PURPLE,true));
+        else box.addView(text("No active queued/working stage reported by Cloudflare.",12,MUTED,false));
     }
     private void renderStageTimeline(JSONArray jobs,JSONArray assets,JSONObject worker,JSONObject nudgePolicy,String projectId){
         content.addView(text("PRODUCTION TIMELINE",12,MUTED,true),fullWithBottom(12));

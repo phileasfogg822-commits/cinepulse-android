@@ -44,3 +44,11 @@ test('paused state is separate from stopped and does not leak to other movies',(
  assert.equal(controlIsPaused({control_paused:1,control_stopped:1}),false);
  assert.equal(controlIsPaused({control_paused:0,control_stopped:0}),false);
 });
+
+test('project listing includes immutable pipeline identity and backend latest queue stage, not APK guesses',()=>{
+ const src=readFileSync(new URL('../src/index.mjs',import.meta.url),'utf8');
+ assert.match(src,/AS latest_step_id/);
+ assert.match(src,/AS latest_step_status/);
+ assert.match(src,/currentStep:row\.latest_step_id\|\|null/);
+ assert.match(src,/productionMode:prompt\.includes\(V5G_MARKER\)/);
+});

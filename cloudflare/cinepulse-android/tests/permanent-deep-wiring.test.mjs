@@ -53,3 +53,14 @@ test('APK worker selector uses backend routing receipt, not hardcoded STANDARD l
  assert.match(android,/expectedMode\.equals\(returnedMode\)/);
  assert.match(android,/renderPipelineStagePlan\(document\)/);
 });
+
+test('Android shows real V5-G mode and all persisted production stages including source SRT intake',()=>{
+ assert.match(android,/V5-G · SOURCE-GROUNDED PIPELINE/);
+ assert.match(android,/CONFIRMED.*V5-G GROUNDED/);
+ assert.match(android,/Original source SRT intake/);
+ assert.match(android,/NOT STARTED/);
+ assert.match(android,/ACTIVE QUEUE:/);
+ assert.match(android,/Current \/ latest:/);
+ assert.match(android,/Assigned worker:/);
+ assert.match(android,/MODE: AUTOMATIC — V5-G GROUNDED \/ V5 LEGACY/);
+});

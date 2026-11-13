@@ -4,6 +4,7 @@
  * Subtitle gaps remain unknown context; they never prove visual action.
  */
 import {parseMeasuredCues} from './scene-lab-package.mjs';
+import {analyzeSrtUncaptionedIntervals} from './srt-interval-context.mjs';
 const okId=x=>typeof x==='string'&&/^[A-Za-z0-9][\w:.+-]{0,127}$/.test(x);
 const norm=x=>String(x??'').normalize('NFKC').toLowerCase().replace(/\s+/g,' ').trim();
 const time=(a,b)=>Number.isFinite(a)&&Number.isFinite(b)&&a>=0&&b>a;
@@ -13,13 +14,11 @@ export const BFG_PILOT={movie:'The BFG (2016)',originalProjectId:'796b9f28-9f31-
  worker:'INT',reportedSourceCues:1239,expectedSourceSha256:'c8ba15b4dd98e7d5c50266f2d01fcb689c0d5fb15fd63b240802f91bf91c9268',allowProductionMutation:false};
 export function inspectSourceIntake(srt,{expectedCues=null,gapSeconds=5}={}){
  let cues;try{cues=parseMeasuredCues(srt)}catch(e){return R(['Invalid source SRT: '+e.message],[],{sourceCueCount:0,gaps:[]})}
- const errors=[],gaps=[];
+ const errors=[];
  if(expectedCues!==null&&cues.length!==expectedCues)errors.push('Expected '+expectedCues+' original cues; got '+cues.length);
- for(let i=1;i<cues.length;i++)if(cues[i].startSeconds-cues[i-1].endSeconds>=gapSeconds)
-  gaps.push({start:cues[i-1].endSeconds,end:cues[i].startSeconds,
-   precedingCue:i,followingCue:i+1,status:'uncaptioned_interval_only',evidence:'subtitle_gap_only'});
+ const gaps=analyzeSrtUncaptionedIntervals(srt,{minGapSeconds:gapSeconds});
  return R(errors,[],{sourceCueCount:cues.length,gaps,sourceSrtLastCueEnd:cues.at(-1).endSeconds,
-  videoInputRequired:false,uncaptionedActionsInferred:false,productionProjectCreated:false});
+  videoInputRequired:false,uncaptionedActionsInferred:false,neighborDialogueCaptured:true,bracketedCaptionContextCaptured:true,productionProjectCreated:false});
 }
 /** SRT-only pre-TTS check: source cue -> digest beat -> source window -> bilingual narration. */
 export function inspectBeforeVoice({sourceSrt,beats,blueprint,narrationUnits}={}){

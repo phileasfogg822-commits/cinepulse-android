@@ -3,19 +3,22 @@
  * Operates on original source subtitles only; no movie file or frame inspection.
  */
 import {parseMeasuredCues} from './scene-lab-package.mjs';
+import {analyzeSrtUncaptionedIntervals} from './srt-interval-context.mjs';
 const id=x=>typeof x==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(x);
 const norm=x=>String(x||'').normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase();
 const interval=(a,b)=>Number.isFinite(a)&&Number.isFinite(b)&&a>=0&&b>a;
 
 /** Gaps indicate only missing subtitle captions, not proven silent scenes. */
 export function findUncaptionedIntervals(srt,seconds=4){
- if(!Number.isFinite(seconds)||seconds<=0)throw Error('Positive gap threshold required');
- const cues=parseMeasuredCues(srt),out=[];
- for(let i=1;i<cues.length;i++){
-  const a=cues[i-1].endSeconds,b=cues[i].startSeconds;
-  if(b-a>=seconds)out.push({startSeconds:a,endSeconds:b,status:'uncaptioned_interval_only',source:'subtitle_gap_only',precedingCueId:i,followingCueId:i+1});
- }
- return out;
+ return analyzeSrtUncaptionedIntervals(srt,{minGapSeconds:seconds}).map(g=>({
+  startSeconds:g.start,endSeconds:g.end,status:g.status,source:g.evidence,
+  precedingCueId:g.precedingCue,followingCueId:g.followingCue,
+  precedingDialogue:g.before,followingDialogue:g.after,
+  bracketedCaptionEvidence:g.bracketedCaptionEvidence,
+  contextPriority:g.contextPriority,
+  autoNarrateSpecificUncaptionedAction:false,
+  audioSilenceVerified:false,verifiedVisualAction:false
+ }));
 }
 
 /** Links source SRT -> digest beats -> narration units -> measured audio cues.

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {BFG_PILOT,inspectSourceIntake,inspectBeforeVoice,inspectAfterVoice,inspectGlobalSceneDryRun} from '../src/bfg-v5-grounded-restart.mjs';
+import {analyzeSrtUncaptionedIntervals,extractBracketedSrtCaptions} from '../src/srt-interval-context.mjs';
 const sourceSrt=[
 '1\n00:00:01,000 --> 00:00:02,000\nMorning, Sophie.',
 '2\n00:00:12,000 --> 00:00:13,000\nWhere are you?',
@@ -107,4 +108,46 @@ test('SRT-only pre-TTS pilot accepts source-backed narration with no video hash'
  const r=inspectBeforeVoice(data());
  assert.equal(r.ready,true,JSON.stringify(r.errors));
  assert.equal(r.videoInputRequired,false);
+});
+
+test('silent interval captures dialogue before and after and near bracketed SRT cues',()=>{
+ const s=[
+  '1\n00:00:01,000 --> 00:00:02,000\nWe need to find her.',
+  '2\n00:00:03,000 --> 00:00:04,000\n(FOOTSTEPS APPROACHING)',
+  '3\n00:00:30,000 --> 00:00:31,000\nDid you hear something?',
+  '4\n00:00:32,000 --> 00:00:33,000\n[BIRDS CHIRPING]'
+ ].join('\n\n');
+ const gaps=analyzeSrtUncaptionedIntervals(s,{minGapSeconds:5,neighborCues:2});
+ assert.equal(gaps.length,1);
+ const g=gaps[0];assert.equal(g.durationSeconds,26);
+ assert.deepEqual([g.precedingCue,g.followingCue],[2,3]);
+ assert.deepEqual(g.before.map(x=>x.cueId),[1,2]);
+ assert.deepEqual(g.after.map(x=>x.cueId),[3,4]);
+ assert.deepEqual(g.bracketedCaptionEvidence.map(x=>x.cueId),[2,4]);
+ assert.equal(g.contextPriority,'caption_context_priority');
+ assert.equal(g.audioSilenceVerified,false);
+ assert.equal(g.verifiedVisualAction,false);
+ assert.equal(g.autoNarrateSpecificUncaptionedAction,false);
+});
+test('quiet gap with no bracket caption remains dialogue-context-only, not invented action',()=>{
+ const s=[
+  '1\n00:00:01,000 --> 00:00:02,000\nAre you coming?',
+  '2\n00:00:20,000 --> 00:00:22,000\nYes.'
+ ].join('\n\n');
+ const [g]=analyzeSrtUncaptionedIntervals(s,{minGapSeconds:5});
+ assert.equal(g.contextPriority,'dialogue_context_review');
+ assert.deepEqual(g.bracketedCaptionEvidence,[]);
+ assert.equal(g.status,'uncaptioned_interval_only');
+ assert.equal(g.autoNarrateSpecificUncaptionedAction,false);
+});
+test('bracket text proves the literal caption only, never a visual event',()=>{
+ const c=extractBracketedSrtCaptions('(DINOSAUR GROWLING) then [BIRDS CHIRPING]');
+ assert.deepEqual(c.map(x=>x.captionText),['DINOSAUR GROWLING','BIRDS CHIRPING']);
+ assert.ok(c.every(x=>!x.impliesVisibleAction));
+});
+test('SRT-only intake remains usable with contextual gaps and no video',()=>{
+ const audit=inspectSourceIntake(sourceSrt,{expectedCues:3,gapSeconds:5});
+ assert.equal(audit.ready,true);
+ assert.equal(audit.neighborDialogueCaptured,true);
+ assert.ok(audit.gaps.every(g=>g.contextUsableForDraft===true&&g.autoNarrateSpecificUncaptionedAction===false));
 });

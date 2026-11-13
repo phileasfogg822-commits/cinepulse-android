@@ -25,3 +25,10 @@ The SRT has 195 intervals of at least five seconds with no subtitle captions. Su
 The offline package includes the complete 1,239-cue source inventory and 83 source-linked provisional digest beats. These must pass story and narration quality review before applying them. There is no 9/10 **visual** verification; the 9/10 standard is limited to SRT-grounded semantic matching.
 
 This code does **not** create a new live BFG movie on Worker INT and does not enable the new pipeline in the production Cloudflare backend. The existing INT BFG project `796b9f28-9f31-484f-91e2-e40a385950c6` and accepted English/Urdu decisions remain unchanged.
+
+## Context-aware uncaptioned intervals (no movie footage)
+Uncaptioned SRT intervals are **not thrown away**. `src/srt-interval-context.mjs` records their exact duration, up to three original dialogue/caption cues **before** and **after**, and literal bracketed sound/action captions nearby with original cue numbers/times. Nearby captions are labelled outside the gap; their presence does **not** assert what was visible during the gap.
+
+During the digest, Muse should examine every contextual interval, prioritize those with supported sound/action cues (e.g. footsteps, growls, sighs, chirping, explosions, fighting explicitly named by a caption) and story continuity on both sides. A suggested beat must cite the exact surrounding SRT cues. Where context is ambiguous, record it as an unverified transition rather than invent a physical action. A bracketed cue can support the event stated in its text, not an arbitrary creature, character or scene beyond that text.
+
+This improves the source-backed synopsis and future scene-choice candidates without introducing visual/video inspection, relaxing the 9/10 semantic standard, or enabling writes to the original BFG project.

@@ -1,0 +1,47 @@
+name: CinePulse Worker 1 V5-G live audit (read only)
+on:
+  push:
+    branches: [audit/v5g-worker1-live-20261114]
+    paths: ['.github/workflows/v5g-live-readonly-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      CF_TOKEN: ${{ secrets.CINEPULSE_CF_API_TOKEN }}
+      CF_ACCOUNT: ${{ secrets.CINEPULSE_CF_ACCOUNT_ID }}
+      ADMIN_TOKEN: ${{ secrets.CINEPULSE_ADMIN_TOKEN }}
+    steps:
+      - name: Probe currently deployed Worker without authenticated access
+        run: |
+          curl -fsS --max-time 25 https://cinepulse-android-bridge.maryumblog.workers.dev/health | jq -c '{status,build,v5gWorker1:.policy.v5gWorker1Only,legacyInt:.policy.v5gLegacyIntPreserved,stageCount:.policy.v5gLiveStageCount}'
+      - name: Read-only protected admin project lookup when token exists
+        shell: bash
+        run: |
+          if [ -z "$ADMIN_TOKEN" ]; then echo "ADMIN_READ=SECRET_NOT_CONFIGURED"; exit 0; fi
+          code=$(curl -sS --max-time 30 -o /tmp/projects.json -w '%{http_code}' -H "Authorization: Bearer $ADMIN_TOKEN" https://cinepulse-android-bridge.maryumblog.workers.dev/v1/projects) || code=000
+          echo "ADMIN_PROJECTS_HTTP=$code"
+          if [ "$code" != 200 ]; then exit 0; fi
+          jq -c '{count:((.projects//[])|length),bfg:((.projects//[])|map(select((.title//""|ascii_downcase)|contains("bfg")))|map({id:(.id|.[-8:]),status,mode:(.productionMode//"not_reported"),workerId:(.workerId//.worker_id//"not_reported")}))}' /tmp/projects.json
+      - name: Read-only D1 movie routing status using existing Cloudflare credentials
+        shell: bash
+        run: |
+          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then echo "D1_READ=CREDENTIALS_NOT_CONFIGURED"; exit 0; fi
+          sql="SELECT p.id,p.title,p.status,p.created_at,w.label AS worker_label,w.paused,
+            CASE WHEN instr(COALESCE(d.prompt,''),'[CINEPULSE-V5G-GROUNDED-SRT-ONLY]')>0 THEN 'V5G'
+                 WHEN instr(COALESCE(d.prompt,''),'[CINEPULSE-V5-PERMANENT-DEEP-MUSE]')=1 THEN 'V5' ELSE 'OTHER' END AS pipeline,
+            (SELECT step_id FROM jobs WHERE project_id=p.id ORDER BY created_at DESC,rowid DESC LIMIT 1) AS latest_step,
+            (SELECT status FROM jobs WHERE project_id=p.id ORDER BY created_at DESC,rowid DESC LIMIT 1) AS latest_job_status
+            FROM projects p LEFT JOIN workers w ON w.id=p.worker_id
+            LEFT JOIN jobs d ON d.id=(SELECT id FROM jobs WHERE project_id=p.id AND step_id='digest' ORDER BY created_at ASC LIMIT 1)
+            ORDER BY p.created_at DESC,p.rowid DESC LIMIT 30"
+          payload=$(jq -cn --arg sql "$sql" '{sql:$sql}')
+          code=$(curl -sS --max-time 35 -o /tmp/d1.json -w '%{http_code}' -X POST -H "Authorization: Bearer $CF_TOKEN" -H 'Content-Type: application/json' "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/d1/database/bfcb4e1e-0dab-4816-9f5a-cab22e0b69bd/query" --data "$payload") || code=000
+          echo "D1_READ_HTTP=$code"
+          if ! jq -e '.success==true' /tmp/d1.json >/dev/null; then
+            jq -c '{authorized:false,errorCodes:[.errors[]?.code]}' /tmp/d1.json || true
+            exit 0
+          fi
+          jq -c '[.result[]?.results[]?|select((.title//""|ascii_downcase)|contains("bfg"))|{id:(.id|.[-8:]),status,worker:.worker_label,pipeline,latestStep:.latest_step,latestJobStatus:.latest_job_status,paused:.paused,createdAt:.created_at}]' /tmp/d1.json

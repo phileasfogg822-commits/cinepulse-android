@@ -34,7 +34,7 @@ test('historical experiments retain read/download routes but their creation is r
 });
 test('new Android submission uses a single standard mode and never sets the retired experiment bit',()=>{
  assert.match(android,/api\.createProject\(title,worker,srt,48,target\)/);
- assert.match(android,/MODE: STANDARD — MUSE DEEP SCENE MATCHING/);
+ assert.match(android,/MODE: AUTOMATIC — V5-G GROUNDED \/ V5 LEGACY/);
  assert.doesNotMatch(android,/api\.createExperimentalProject\(title,worker,srt,48,target\)/);
  assert.doesNotMatch(android,/Experimental mode is required in this Preview app/);
  assert.match(android,/sceneMatchingMethod/);
@@ -44,4 +44,23 @@ test('admins can view deep Muse progress and resume incomplete independent batch
  assert.match(backend,/action==='deep-muse\/resume'&&method==='POST'/);
  assert.match(backend,/status IN \('queued','working'\)/);
  assert.match(backend,/No duplicate queued|no duplicate queued/);
+});
+
+test('APK worker selector uses backend routing receipt, not hardcoded STANDARD label',()=>{
+ assert.match(android,/newMovieProductionMode/);
+ assert.match(android,/v5_grounded_srt_only/);
+ assert.match(android,/routeConfirmed/);
+ assert.match(android,/expectedMode\.equals\(returnedMode\)/);
+ assert.match(android,/renderPipelineStagePlan\(document\)/);
+});
+
+test('Android shows real V5-G mode and all persisted production stages including source SRT intake',()=>{
+ assert.match(android,/V5-G · SOURCE-GROUNDED PIPELINE/);
+ assert.match(android,/CONFIRMED.*V5-G GROUNDED/);
+ assert.match(android,/Original source SRT intake/);
+ assert.match(android,/NOT STARTED/);
+ assert.match(android,/ACTIVE QUEUE:/);
+ assert.match(android,/Current \/ latest:/);
+ assert.match(android,/Assigned worker:/);
+ assert.match(android,/MODE: AUTOMATIC — V5-G GROUNDED \/ V5 LEGACY/);
 });

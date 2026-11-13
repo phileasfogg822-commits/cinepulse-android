@@ -27,6 +27,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
+import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -233,6 +234,25 @@ public final class MainActivity extends Activity {
             row.addView(text(name,17,WHITE,true),new LinearLayout.LayoutParams(0,-2,1));
             TextView state=text(status.toUpperCase(),10,status.equals("ready")?GREEN:PURPLE,true);pad(state,8,5,8,5);
             state.setBackground(shape(0xFF242C47,0,9));row.addView(state);
+            String mode=p.optString("productionMode","unverified");
+            String routeLabel="v5_grounded_srt_only".equals(mode)?"V5-G · SOURCE-GROUNDED PIPELINE":
+                "stable".equals(mode)?"V5 · LEGACY DEEP MATCHING":"PIPELINE NOT VERIFIED";
+            int routeColor="v5_grounded_srt_only".equals(mode)?GREEN:0xFFFFC47E;
+            space(c,7);c.addView(text("MODE: "+routeLabel,13,routeColor,true));
+            String workerName="Unknown";
+            for(int k=0;k<workers.length();k++){
+                JSONObject ww=workers.optJSONObject(k);
+                if(ww!=null && p.optString("workerId").equals(ww.optString("id"))){
+                    workerName=ww.optString("label","Unknown");break;
+                }
+            }
+            c.addView(text("Assigned worker: "+workerName,12,MUTED,false));
+            String currentStep=p.optString("currentStep","");
+            if(!currentStep.isEmpty()){
+                c.addView(text("Current / latest: "+TimelineMetrics.stageLabel(currentStep)+
+                    " · "+p.optString("currentStepStatus","UNKNOWN").toUpperCase(java.util.Locale.ROOT),
+                    12,PURPLE,true));
+            }
             space(c,8);c.addView(text("#"+SecurityRules.shortId(id)+"  •  Retention "+p.optInt("retentionHours",48)+"h",12,MUTED,false));
             long started=TimelineMetrics.time(p,"createdAt","created_at");
             long finished=TimelineMetrics.time(p,"readyAt","ready_at","completedAt","finishedAt");
@@ -313,23 +333,42 @@ public final class MainActivity extends Activity {
     private void submitSrt(Uri uri){
         EditText name=new EditText(this);name.setSingleLine(true);name.setHint("Movie title");
         String file=uri.getLastPathSegment();if(file!=null){String base=file.substring(file.lastIndexOf('/')+1);name.setText(base.replaceFirst("(?i)\\.srt$",""));}
-        List<String> labels=new ArrayList<>(),ids=new ArrayList<>();
+        List<String> labels=new ArrayList<>(),ids=new ArrayList<>(),workerModes=new ArrayList<>();
         for(int i=0;i<workers.length();i++){
             JSONObject w=workers.optJSONObject(i);
             if(w!=null && w.optBoolean("enabled",true) && !w.optBoolean("paused")){
-                labels.add(w.optString("label")+"  (#"+SecurityRules.shortId(w.optString("id"))+")");
+                String mode=w.optString("newMovieProductionMode","unverified");
+                String routeTag="v5_grounded_srt_only".equals(mode)?"V5-G NEW PIPELINE":
+                    "stable".equals(mode)?"V5 LEGACY":"ROUTING NOT VERIFIED";
+                labels.add(w.optString("label")+"  (#"+SecurityRules.shortId(w.optString("id"))+")  ·  "+routeTag);
                 ids.add(w.optString("id"));
+                workerModes.add(mode);
             }
         }
         if(ids.isEmpty()){showError("There are no active workers. Resume or create a worker first.");return;}
         LinearLayout form=vertical();pad(form,24,0,24,0);
         form.addView(text("Project title",13,Color.DKGRAY,true));form.addView(name);
-        form.addView(text("MODE: STANDARD — MUSE DEEP SCENE MATCHING",15,0xFF00795E,true));
-        form.addView(text("One production workflow. Muse reviews measured narration cues in English and Urdu batches, validates original movie evidence, and exports the Windows-ready project. No experimental-mode selection.",13,Color.DKGRAY,false));
+        form.addView(text("MODE: AUTOMATIC — V5-G GROUNDED / V5 LEGACY",15,0xFF00795E,true));
+        form.addView(text("Choose Worker 1 for the new V5-G grounded 15-stage pipeline or INT for the earlier V5 workflow. The server verifies the selection and records the project-specific pipeline.",13,Color.DKGRAY,false));
         form.addView(text("Processing worker (existing Muse connection)",13,Color.DKGRAY,true));
         Spinner spinner=new Spinner(this);
         ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);
         spinner.setAdapter(adapter);form.addView(spinner);
+        TextView pipelinePreview=text("Selected worker pipeline: checking...",13,0xFF00795E,true);
+        form.addView(pipelinePreview);
+        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
+            @Override public void onItemSelected(AdapterView<?> parent,View view,int position,long id){
+                if(position<0||position>=workerModes.size())return;
+                String mode=workerModes.get(position);
+                pipelinePreview.setText("v5_grounded_srt_only".equals(mode)?
+                    "V5-G: digest → grounded evidence → English/Urdu → pre-TTS → audio → global matching → cuts → Windows":
+                    "stable".equals(mode)?"Previous V5: digest → English/Urdu → MP3/SRT → deep matching":
+                    "UNVERIFIED WORKER ROUTING: cannot safely start this movie.");
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent){
+                pipelinePreview.setText("Select a worker to verify its backend pipeline.");
+            }
+        });
         EditText minutes=new EditText(this);
         minutes.setSingleLine(true);
         minutes.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -341,7 +380,7 @@ public final class MainActivity extends Activity {
         ScrollView submissionScroll=new ScrollView(this);
         submissionScroll.setFillViewport(false);
         submissionScroll.addView(form);
-        new AlertDialog.Builder(this).setTitle("NEW MOVIE · Permanent Muse Deep Matching")
+        new AlertDialog.Builder(this).setTitle("NEW MOVIE · Select verified pipeline")
             .setView(submissionScroll).setNegativeButton("Cancel",null)
             .setPositiveButton("Submit",(d,w)->{
                 String title=name.getText().toString().trim();
@@ -353,19 +392,31 @@ public final class MainActivity extends Activity {
                 int chosenWorker=spinner.getSelectedItemPosition();
                 if(chosenWorker<0||chosenWorker>=ids.size()){showError("Select an existing Muse worker.");return;}
                 String worker=ids.get(chosenWorker);
-                task("Uploading movie subtitle for Muse Deep matching",()->{
+                String expectedMode=workerModes.get(chosenWorker);
+                if(!"v5_grounded_srt_only".equals(expectedMode)&&!"stable".equals(expectedMode)){
+                    showError("Worker pipeline is not verified by Cloudflare. Refresh your workers before creating a movie.");return;
+                }
+                task("Uploading movie subtitle for verified Muse pipeline",()->{
                     String srt=readSrt(uri);
                     return api.createProject(title,worker,srt,48,target);
                 },r->{
                     int accepted=r.optInt("targetMinutes",-1);
                     JSONObject modules=r.optJSONObject("modules");
-                    boolean acceptedMode="stable".equals(r.optString("productionMode"));
+                    String returnedMode=r.optString("productionMode","unverified");
+                    boolean acceptedMode=expectedMode.equals(returnedMode)&&r.optBoolean("routeConfirmed");
                     boolean acceptedDeep=modules!=null &&
                         "muse_semantic_batches".equals(modules.optString("sceneMatchingMethod"));
-                    new AlertDialog.Builder(this).setTitle(acceptedMode&&acceptedDeep?"MUSE DEEP MOVIE QUEUED":"BACKEND MODE NOT CONFIRMED")
-                        .setMessage(acceptedMode&&acceptedDeep?
-                            "Cloudflare created one standard movie project with the permanent bilingual Muse Deep workflow. English and Urdu measured SRTs will be matched in batches of five before final 3–6-second cut plans and the eight-file Windows export. Your narration target is "+accepted+" minutes. Do not upload this movie again.":
-                            "Cloudflare accepted a response, but it did not confirm the permanent Muse Deep matching mode. Do not submit this movie again; inspect its project ID and backend status before continuing.")
+                    boolean isGrounded="v5_grounded_srt_only".equals(returnedMode);
+                    JSONArray expectedStages=r.optJSONArray("pipelineStages");
+                    boolean stagePlanValid=expectedStages!=null && expectedStages.length()==(isGrounded?15:12);
+                    boolean confirmed=acceptedMode&&acceptedDeep&&stagePlanValid;
+                    new AlertDialog.Builder(this).setTitle(confirmed?(isGrounded?"V5-G GROUNDED MOVIE QUEUED":"V5 DEEP MOVIE QUEUED"):"BACKEND PIPELINE NOT CONFIRMED")
+                        .setMessage(confirmed?
+                            "Cloudflare confirmed "+(isGrounded?"V5-G source-grounded 15-stage pipeline":"previous V5 deep matching pipeline")+
+                            ". Worker accepts only the selected movie SRT and derives every later output. Target "+accepted+" min. Project ID: "+r.optString("projectId")+
+                            ". Do not upload this movie again.":
+                            "Cloudflare returned mode '"+returnedMode+"' but the expected worker pipeline was '"+expectedMode+
+                            "'. Project: "+r.optString("projectId")+". Pause this specific project and investigate before processing or resubmitting.")
                         .setPositiveButton("View projects",(innerDialog,innerWhich)->refresh()).show();
                 });
             }).show();
@@ -420,10 +471,16 @@ public final class MainActivity extends Activity {
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
         summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
         final boolean experimentalProject="scene_intelligence_experiment".equals(project.optString("productionMode"));
-        summary.addView(text(experimentalProject?
-            "MODE: EXPERIMENTAL · Same selected Muse worker · Scene Intelligence + 11 files":
-            "MODE: STANDARD · Muse-owned long-form editing",13,
-            experimentalProject?GREEN:0xFFFFC47E,true));
+        final boolean groundedProject="v5_grounded_srt_only".equals(project.optString("productionMode"));
+        JSONObject attachedWorker=document.optJSONObject("worker");
+        String assignedWorker=attachedWorker!=null?attachedWorker.optString("label","Unverified"):
+            "Worker label not loaded";
+        summary.addView(text("Assigned worker: "+assignedWorker,12,MUTED,false));
+        summary.addView(text(groundedProject?
+            "MODE: V5-G · SOURCE-GROUNDED 15-STAGE PIPELINE":
+            experimentalProject?"MODE: EXPERIMENTAL · SCENE INTELLIGENCE":
+            "MODE: V5 · LEGACY DEEP SCENE MATCHING",13,
+            groundedProject||experimentalProject?GREEN:0xFFFFC47E,true));
         space(summary,5);
         summary.addView(text(status.equals("ready")?(experimentalProject?"Experimental eleven-file package ready: includes reusable source scene SQLite, bilingual cuts, both MP3s and measured SRTs. Original movie video is linked locally in Windows.":"Long-form export ready for checks. The eight-file Windows package requires complete English/Urdu MP3s, measured SRTs, metadata, digest and non-overlapping final cuts. No shorts or viral files are included."):
             "Muse/Cloudflare processing happens on the backend. You may close this app after successful submission, but a Muse worker must remain connected.",13,MUTED,false));
@@ -472,6 +529,7 @@ public final class MainActivity extends Activity {
         JSONObject worker=document.optJSONObject("worker");
         JSONObject nudgePolicy=document.optJSONObject("nudgePolicy");
         renderWorkerHealth(worker,nudgePolicy);
+        renderPipelineStagePlan(document);
         renderStageTimeline(jobs,document.optJSONArray("assets"),worker,nudgePolicy,id);
 
         int failures=0;
@@ -630,6 +688,53 @@ public final class MainActivity extends Activity {
         if(raw instanceof Number)return String.valueOf(((Number)raw).intValue());
         if(raw instanceof String && ((String)raw).matches("[0-9]{1,6}"))return (String)raw;
         return "Not reported by backend";
+    }
+    /** Backend-persisted project stage order; never infer new stages from APK version. */
+    private void renderPipelineStagePlan(JSONObject document){
+        JSONArray planned=document.optJSONArray("pipelineStages");
+        if(planned==null||planned.length()==0)return;
+        JSONArray jobs=document.optJSONArray("jobs");
+        JSONArray assets=document.optJSONArray("assets");
+        JSONObject project=document.optJSONObject("project");
+        boolean grounded="v5_grounded_srt_only".equals(project==null?"":project.optString("productionMode"));
+        LinearLayout box=card();content.addView(box,fullWithBottom(12));
+        box.addView(text("CONFIRMED "+(grounded?"V5-G GROUNDED":"V5 LEGACY")+" PIPELINE · "+planned.length()+" stages",13,GREEN,true));
+        space(box,6);
+        // Stage zero is an intake receipt, not a Muse task. Never inflate
+        // the queue count or claim the source has been film/video verified.
+        boolean sourcePresent=false;long sourceBytes=0;
+        if(assets!=null)for(int i=0;i<assets.length();i++){
+            JSONObject a=assets.optJSONObject(i);
+            if(a!=null&&"source_srt".equals(a.optString("kind"))){
+                sourcePresent=true;sourceBytes=a.optLong("bytes",0);break;
+            }
+        }
+        box.addView(text("0. Original source SRT intake — "+
+            (sourcePresent?"RECEIVED"+(sourceBytes>0?" ("+sourceBytes+" bytes)":""):"NOT VERIFIED"),
+            12,sourcePresent?GREEN:MUTED,false));
+        // Report the one actual queued or working stage separately. Future
+        // stages are PLANNED, not falsely presented as already queued jobs.
+        String current="";String currentState="";
+        for(int i=0;i<planned.length();i++){
+            String name=planned.optString(i,""),state="NOT STARTED";
+            if(jobs!=null)for(int j=0;j<jobs.length();j++){
+                JSONObject row=jobs.optJSONObject(j);
+                if(row!=null&&name.equals(row.optString("stepId")))
+                    state=row.optString("status","UNKNOWN").toUpperCase(java.util.Locale.ROOT);
+            }
+            if("WORKING".equals(state)||"QUEUED".equals(state)){
+                current=TimelineMetrics.stageLabel(name);currentState=state;
+            }
+            String line=(i+1)+". "+TimelineMetrics.stageLabel(name)+" — "+state;
+            box.addView(text(line,12,"DONE".equals(state)?GREEN:
+                "WORKING".equals(state)?PURPLE:
+                "ERROR".equals(state)||"CANCELLED".equals(state)?0xFFFF9B9B:MUTED,
+                "WORKING".equals(state)||"QUEUED".equals(state)));
+        }
+        space(box,6);
+        if(!current.isEmpty())
+            box.addView(text("ACTIVE QUEUE: "+current+" · "+currentState,13,PURPLE,true));
+        else box.addView(text("No active queued/working stage reported by Cloudflare.",12,MUTED,false));
     }
     private void renderStageTimeline(JSONArray jobs,JSONArray assets,JSONObject worker,JSONObject nudgePolicy,String projectId){
         content.addView(text("PRODUCTION TIMELINE",12,MUTED,true),fullWithBottom(12));

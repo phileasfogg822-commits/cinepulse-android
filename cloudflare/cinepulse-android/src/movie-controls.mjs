@@ -24,3 +24,4 @@ export function publicMovieState(p) {
   return {status:stopped?'stopped':p.status,paused:!stopped&&Number(p.control_paused||0)===1,stopped};
 }
 export function controlIsStopped(p){return Number(p?.control_stopped||0)===1;}
+export function controlIsPaused(p){return Number(p?.control_paused||0)===1&&!controlIsStopped(p);}

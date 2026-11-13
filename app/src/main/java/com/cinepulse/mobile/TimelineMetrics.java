@@ -68,6 +68,14 @@ final class TimelineMetrics {
         if(id==null||id.trim().isEmpty())return "Stage";
         switch(id) {
             case "digest": return "Story digest / movie understanding";
+            case "grounded_evidence": return "Source evidence and story-anchor blueprint";
+            case "grounded_preflight": return "Bilingual pre-TTS source validation";
+            case "grounded_match_plan": return "Global bilingual semantic matching plan";
+            case "publishing_metadata": return "Publishing metadata";
+            case "deep_match_english": return "English deep source matching";
+            case "deep_match_urdu": return "Urdu deep source matching";
+            case "deep_cut_plan": return "Verified bilingual cut plan";
+            case "windows_project": return "Windows-ready project export";
             case "narration_english": return "English narration writing";
             case "narration_urdu": return "Urdu narration writing";
             case "viral_metadata": return "Viral scenes and social metadata";

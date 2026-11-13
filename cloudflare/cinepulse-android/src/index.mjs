@@ -3,7 +3,7 @@ import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAG
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
 import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
-import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts,selectV5gWorkflow } from './v5g-production-gate.mjs';
+import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts,selectV5gWorkflow,classifyV5gWorker } from './v5g-production-gate.mjs';
 import {validateV5gGlobalPlan} from './v5g-match-plan.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
@@ -23,7 +23,7 @@ import { MUSE_V4_MARKER, MUSE_V4_STAGES, museStageInstructions, verifyMuseWindow
 import { assetRow,registerAsset,assetTableFor,allAssetKeys,allAssetMetadata,storageTotals,ensureWindowsAssets } from './asset-registry.mjs';
 import { EXPERIMENT_JOB_MARKER,EXPERIMENT_JOB_STAGES,experimentalQueuePrompt } from './experimental-muse-instructions.mjs';
 import { createExperimentIndex,experimentalSourceInfo,validateSceneIntelligenceOutput,storeExperimentAsset,experimentalAssetRow,isExperimentAssetKind,EXPERIMENT_ASSET_NAMES,ensureExperimentTables,experimentR2Key } from './experimental-bridge-runtime.mjs';
-import { ensureMovieControls, MOVIE_CONTROL_JOIN, MOVIE_CONTROL_FIELDS, ELIGIBLE_MOVIE_CONTROL, publicMovieState, controlIsStopped } from './movie-controls.mjs';
+import { ensureMovieControls, MOVIE_CONTROL_JOIN, MOVIE_CONTROL_FIELDS, ELIGIBLE_MOVIE_CONTROL, publicMovieState, controlIsStopped, controlIsPaused } from './movie-controls.mjs';
 
 // Legacy projects continue through their original stages. New projects use metadata only.
 const STAGES = ['digest','narration_english','narration_urdu','viral_metadata','mp3_english','srt_english','mp3_urdu','srt_urdu','scene_matching','cut_plan'];
@@ -637,6 +637,7 @@ async function recoverOneCompletedProject(env,workerId=null){
 }
 async function advancePipeline(env,job){
   if(controlIsStopped(await getProject(env,job.project_id)))return {status:'stopped',autoAdvanced:false};
+  if(controlIsPaused(await getProject(env,job.project_id)))return {status:'paused',autoAdvanced:false};
   const policy=await projectPolicy(env,job.project_id);
   const stages=policy.stages;
   const current=stages.indexOf(job.step_id);
@@ -1084,7 +1085,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gLiveStageCount:V5G_STEPS.length,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gAcceptingNewProjects:env.CINEPULSE_V5G_DISABLED!=='true',v5gLiveStageCount:V5G_STEPS.length,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -1715,7 +1716,11 @@ async function route(request,env){
   }
   if(method==='GET'&&url.pathname==='/v1/workers'){
     const rows=await env.DB.prepare('SELECT * FROM workers ORDER BY created_at DESC LIMIT 250').all();
-    return json({workers:(rows.results||[]).map(publicWorker)});
+    return json({workers:(rows.results||[]).map(worker=>{
+      const route=classifyV5gWorker(worker.label,{disabled:env.CINEPULSE_V5G_DISABLED==='true'});
+      return {...publicWorker(worker),newMovieProductionMode:route.productionMode,
+        newMovieRoutingStatus:route.kind};
+    })});
   }
   if(method==='POST'&&url.pathname==='/v1/workers'){
     const body=await getJson(request),id=newId(),secret=randomToken(),label=requireString(body.label||body.movieTitle||'Movie worker','label');
@@ -1770,6 +1775,11 @@ async function route(request,env){
     let requested;try{requested=isLongFormCreateRequest(body);}catch(error){fail(422,error.message);}
     const title=requireString(body.title,'movie title'),workerId=requireUUID(body.workerId),worker=await env.DB.prepare('SELECT * FROM workers WHERE id=? AND enabled=1').bind(workerId).first();
     if(!worker)fail(404,'Select an active Muse worker');
+    const routing=classifyV5gWorker(worker.label,{disabled:env.CINEPULSE_V5G_DISABLED==='true'});
+    if(routing.kind==='unrecognized')
+      fail(422,'Worker label not mapped to a production pipeline. Choose the configured Worker 1 or INT in the refreshed worker list. No new movie was created.');
+    if(routing.kind==='v5g_disabled')
+      fail(503,'Worker 1 V5-G new-movie intake is disabled. No old-pipeline fallback and no new movie created.');
     grounded=selectV5gWorkflow(worker.label,{disabled:env.CINEPULSE_V5G_DISABLED==='true'});
     if(body.v5Grounded!==undefined && body.v5Grounded!==grounded)
       fail(422,'V5-G processing is assigned to Worker 1 only; INT retains the legacy workflow. Select the correct worker.');
@@ -1797,6 +1807,7 @@ async function route(request,env){
     const taskId=await queueTask(env,{id:pid,worker_id:workerId},'digest',policyPrompt);
     return json({projectId:pid,workerId,title,firstTaskId:taskId,stage:'digest',status:'processing',retentionHours:hours,
       productionMode:experiment?'scene_intelligence_experiment':grounded?'v5_grounded_srt_only':'stable',
+      pipelineStages:grounded?V5G_STEPS:PERMANENT_DEEP_STEPS,routeConfirmed:true,workerRoute:routing.kind,
       targetMinutes:requested.targetMinutes,outputMode:requested.outputMode,
       modules:{digest:true,sourceGrounded:grounded,groundedEvidence:grounded,groundedPreTts:grounded,globalMatchPlan:grounded,englishNarration:true,urduNarration:true,metadata:true,englishMp3:true,urduMp3:true,
         englishMeasuredSrt:true,urduMeasuredSrt:true,sceneMatching:true,finalCuts:true,sceneMatchingMethod:'muse_semantic_batches',batchSize:5,eachLanguageIndependent:true,
@@ -1806,8 +1817,17 @@ async function route(request,env){
     // Admin authenticated listing is also the safe self-heal opportunity for
     // accepted final jobs stuck at storage registration. At most one per poll.
     const recovery=await recoverOneCompletedProject(env);
-    const rows=await env.DB.prepare('SELECT p.*, '+MOVIE_CONTROL_FIELDS+' FROM projects p '+MOVIE_CONTROL_JOIN+' ORDER BY p.created_at DESC LIMIT 200').all();
-    return json({projects:(rows.results||[]).map(publicProject),
+    const rows=await env.DB.prepare("SELECT p.*, "+MOVIE_CONTROL_FIELDS+", "+
+      "(SELECT prompt FROM jobs j WHERE j.project_id=p.id AND j.step_id='digest' ORDER BY j.created_at ASC LIMIT 1) AS first_digest_prompt, "+
+      "(SELECT step_id FROM jobs j WHERE j.project_id=p.id ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1) AS latest_step_id, "+
+      "(SELECT status FROM jobs j WHERE j.project_id=p.id ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1) AS latest_step_status "+
+      "FROM projects p "+MOVIE_CONTROL_JOIN+" ORDER BY p.created_at DESC LIMIT 200").all();
+    return json({projects:(rows.results||[]).map(row=>{
+      const prompt=String(row.first_digest_prompt||'');
+      return {...publicProject(row),productionMode:prompt.includes(V5G_MARKER)?'v5_grounded_srt_only':
+        prompt.startsWith(PERMANENT_DEEP_MARKER)?'stable':'legacy',
+        currentStep:row.latest_step_id||null,currentStepStatus:row.latest_step_status||null};
+    }),
       ...(recovery.attempted?{finalizationRecovery:recovery}:{})});
   }
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
@@ -1907,7 +1927,10 @@ async function route(request,env){
       const updated=recovery.attempted?await getProject(env,pid):project;
       const rows=await env.DB.prepare('SELECT * FROM jobs WHERE project_id=? ORDER BY created_at').bind(pid).all();
       const assetRows=await allAssetMetadata(env,pid);
-      return json({project:{...publicProject(updated),productionMode:(await sceneLabRow(env,pid))?'scene_matching_lab':(await projectPolicy(env,pid)).experiment?'scene_intelligence_experiment':'stable'},jobs:(rows.results||[]).map(publicJob),
+      const policy=await projectPolicy(env,pid);
+      return json({project:{...publicProject(updated),productionMode:(await sceneLabRow(env,pid))?'scene_matching_lab':policy.experiment?'scene_intelligence_experiment':policy.grounded?'v5_grounded_srt_only':policy.permanentDeep?'stable':'legacy'},
+        pipelineStages:policy.stages,stageCount:policy.stages.length,routeConfirmed:true,
+        jobs:(rows.results||[]).map(publicJob),
         assets:assetRows,...(recovery.attempted?{finalizationRecovery:recovery}:{})});
     }
     if(method==='POST'&&['pause','resume','stop'].includes(action)){
@@ -1926,10 +1949,21 @@ async function route(request,env){
       }
       if(controlIsStopped(project))fail(409,'Stopped movies cannot resume; submit again explicitly if needed');
       if(project.status!=='processing')fail(409,'Only processing movies can be paused or resumed');
-      const paused=action==='pause'?1:0;
-      await env.DB.prepare("INSERT INTO cinepulse_movie_controls(project_id,paused,stopped,updated_at) VALUES(?,?,0,?) ON CONFLICT(project_id) DO UPDATE SET paused=excluded.paused,updated_at=excluded.updated_at WHERE stopped=0").bind(pid,paused,time).run();
-      return json({projectId:pid,status:'processing',paused:!!paused,stopped:false,
-        message:paused?'This movie is paused; current task may complete but no new stages will be claimed. Other movies continue.':'Movie resumed on its original Muse worker.'});
+      if(action==='pause'){
+        // Per-movie immediate pause: atomically invalidate its current Muse
+        // lease and requeue that *unfinished* task. The currently executing
+        // external worker cannot be interrupted, but all further writes made
+        // with the revoked lease are rejected. No other worker/movie touched.
+        await env.DB.batch([
+          env.DB.prepare("INSERT INTO cinepulse_movie_controls(project_id,paused,stopped,updated_at) VALUES(?,1,0,?) ON CONFLICT(project_id) DO UPDATE SET paused=1,updated_at=excluded.updated_at WHERE stopped=0").bind(pid,time),
+          env.DB.prepare("UPDATE jobs SET status='queued',lease=NULL,lease_until=NULL WHERE project_id=? AND status='working'").bind(pid)
+        ]);
+        return json({projectId:pid,status:'processing',paused:true,stopped:false,leaseRevoked:true,
+          message:'This movie is paused. Current Muse lease revoked; unfinished task saved as queued and will be available after resume. Other movies unaffected.'});
+      }
+      await env.DB.prepare("INSERT INTO cinepulse_movie_controls(project_id,paused,stopped,updated_at) VALUES(?,0,0,?) ON CONFLICT(project_id) DO UPDATE SET paused=0,updated_at=excluded.updated_at WHERE stopped=0").bind(pid,time).run();
+      return json({projectId:pid,status:'processing',paused:false,stopped:false,
+        message:'This movie is resumed. Preserved queued stage can be claimed by its original worker.'});
     }
     if(method==='POST'&&action==='repair-finalization'){
       const result=await recoverAcceptedFinalization(env,project);

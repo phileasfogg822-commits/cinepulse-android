@@ -1,0 +1,22 @@
+{
+  "movie": "The BFG (2016)",
+  "originalProjectId": "796b9f28-9f31-484f-91e2-e40a385950c6",
+  "assignedWorker": "INT",
+  "originalSourceCueCountReported": 1239,
+  "status": "source_srt_not_yet_received_in_chat",
+  "sourceSha256": null,
+  "sourceMediaSha256": null,
+  "backendProjectCreated": false,
+  "automaticRestartEnabled": false,
+  "productionChanges": false,
+  "manualGates": [
+    "source integrity",
+    "digest/story evidence",
+    "scene blueprint",
+    "narration before voice",
+    "measured narration/semantic groups",
+    "whole-film match dry-run",
+    "staging transaction",
+    "user approval for live queue"
+  ]
+}

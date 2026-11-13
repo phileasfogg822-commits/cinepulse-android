@@ -1,0 +1,29 @@
+name: BFG V5 Grounded Restart (isolated read-only)
+on:
+  push:
+    branches: [feature/v5-story-evidence-preflight-20261113]
+    paths:
+      - 'cloudflare/cinepulse-android/src/bfg-v5-grounded-restart.mjs'
+      - 'cloudflare/cinepulse-android/tests/bfg-v5-grounded-restart.test.mjs'
+      - 'cloudflare/cinepulse-android/tools/bfg-grounded-intake.mjs'
+      - '.github/workflows/bfg-v5-grounded-restart.yml'
+  pull_request:
+    branches: [feature/scene-intelligence-v3828-staging]
+permissions:
+  contents: read
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax, isolated pilot, and regression tests
+        working-directory: cloudflare/cinepulse-android
+        run: |
+          node --check src/bfg-v5-grounded-restart.mjs
+          node --check tools/bfg-grounded-intake.mjs
+          node --test tests/bfg-v5-grounded-restart.test.mjs
+          npm test

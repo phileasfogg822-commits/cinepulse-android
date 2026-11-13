@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/cinepulse-v3828-production-gated-promotion.yml'
       - 'cloudflare/cinepulse-android/src/index.mjs'
+      - 'cloudflare/cinepulse-android/src/car-live-recovery.mjs'
+      - 'cloudflare/cinepulse-android/wrangler.json'
       - 'cloudflare/cinepulse-android/src/longform-policy.mjs'
       - 'cloudflare/cinepulse-android/src/muse-production-contract.mjs'
       - 'cloudflare/cinepulse-android/tests/cutplan-srt-diagnostics.test.mjs'
@@ -133,6 +135,7 @@ jobs:
           done
           [[ "$status" == "200" ]]
           jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.windowsAssetCount==8 and .build=="android-cloud-backend-0.4.3-v3828-cutplan-srt-diagnostics"' /tmp/cp-after-health.json >/dev/null
+          jq -e '.policy.carLiveBuild=="car-live-recovery-v1.1" and .policy.carControlledProject=="fed941ad-ff7f-4b0f-8439-25cfda24d187"' /tmp/cp-after-health.json >/dev/null
           no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects")
           test "$no_auth" = "401"
           lab_no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/scene-lab")
@@ -162,4 +165,5 @@ jobs:
           voice_auth=$(curl -sS --max-time 20 -X POST -H 'Content-Type: application/json' --data '{}' -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects/eb1333b8-ecbf-4b8a-b1f0-1a9ba75b79d6/audio/urdu-devanagari/resume")
           test "$voice_auth" = "401"
           echo 'CINEPULSE_V55_URDU_DEVANAGARI_RECOVERY_AUTH_PROTECTED'
+          jq -e '.policy.carLiveBuild=="car-live-recovery-v1.1" and .policy.carControlledProject=="fed941ad-ff7f-4b0f-8439-25cfda24d187" and .policy.carMaxTargetsPerMovie==3' /tmp/cp-after-health.json >/dev/null
           echo 'PRODUCTION_PROMOTION_VERIFIED'

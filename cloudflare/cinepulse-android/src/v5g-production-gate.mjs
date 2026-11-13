@@ -104,9 +104,16 @@ export function classifyV5gWorker(workerLabel,{disabled=false}={}){
  const label=String(workerLabel??'').normalize('NFKC').toLowerCase()
   .replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
  const hasInt=/(?:^| )int(?: |$)/.test(label);
- const isInt=(hasInt&&!/(?:^| )worker ?(?:0*1|one)(?: |$)/.test(label));
- const workerOne=/(?:^| )worker ?(?:0*1|one)(?: |$)/.test(label) && !hasInt;
- if(isInt)return {kind:'legacy_int',productionMode:'stable',recognized:true};
+ // Two established labels refer to the same Worker 1 role:
+ // "Worker 1" and the original Android Muse connection label,
+ // "CinePulse Android Muse 1" (sometimes displayed/transcribed as
+ // "CinePulse Android Views 1"). This is a server-stored label, NOT
+ // user-supplied pipeline selection. Only explicit role-1 labels match.
+ const workerOne=/(?:^| )worker ?(?:0*1|one)(?: |$)/.test(label) ||
+   /^cinepulse android (?:muse|views|news) (?:0*1|one)$/.test(label);
+ // Never silently classify a combined INT + Worker 1 label as either mode.
+ if(hasInt&&(workerOne||/(?:^| )(?:0*1|one)$/.test(label)))return {kind:'unrecognized',productionMode:'unavailable',recognized:false};
+ if(hasInt)return {kind:'legacy_int',productionMode:'stable',recognized:true};
  if(workerOne&&disabled)return {kind:'v5g_disabled',productionMode:'unavailable',recognized:true};
  if(workerOne)return {kind:'grounded_worker1',productionMode:'v5_grounded_srt_only',recognized:true};
  return {kind:'unrecognized',productionMode:'unavailable',recognized:false};

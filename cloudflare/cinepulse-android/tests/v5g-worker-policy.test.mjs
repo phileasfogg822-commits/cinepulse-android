@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {selectV5gWorkflow,classifyV5gWorker,V5G_STEPS,V5G_MARKER} from '../src/v5g-production-gate.mjs';
 const backend=readFileSync(new URL('../src/index.mjs',import.meta.url),'utf8');
 test('Worker 1 routes exclusively to new source-grounded V5-G pipeline',()=>{
- for(const label of ['Worker 1','worker1','WORKER-1','Worker_1','News Worker 1','Muse Worker #1','CinePulse Worker One'])
+ for(const label of ['Worker 1','worker1','WORKER-1','Worker_1','News Worker 1','Muse Worker #1','CinePulse Worker One','Cinepulse Android Views 1','CinePulse Android Muse 1','CinePulse Android News 1','CinePulse Android Muse 01','CinePulse Android Muse One'])
   assert.equal(selectV5gWorkflow(label),true,label);
  assert.ok(V5G_STEPS.includes('grounded_evidence'));
  assert.ok(V5G_MARKER);
@@ -47,4 +47,21 @@ test('worker listing shows authoritative next movie mode and project detail expo
  assert.match(backend,/pipelineStages:policy\.stages/);
  assert.match(backend,/policy\.grounded\?'v5_grounded_srt_only'/);
  assert.match(backend,/v5gAcceptingNewProjects:env\.CINEPULSE_V5G_DISABLED!=='true'/);
+});
+
+test('real Android Muse/Views 1 worker routes to V5-G while INT and all other connections are isolated',()=>{
+ for(const label of ['Cinepulse Android Views 1','CinePulse Android Muse 1','CinePulse Android News 1']){
+   assert.deepEqual(classifyV5gWorker(label),{
+     kind:'grounded_worker1',productionMode:'v5_grounded_srt_only',recognized:true
+   });
+   assert.equal(classifyV5gWorker(label,{disabled:true}).kind,'v5g_disabled');
+ }
+ for(const label of ['CinePulse Android Views 2','CinePulse Android Muse 2','CinePulse Android Views',
+   'CinePulse Android Muse INT 1','INT Muse 1','Other CinePulse Android Views 1']){
+   assert.equal(classifyV5gWorker(label).kind,'unrecognized',label);
+ }
+ assert.equal(classifyV5gWorker('INT').kind,'legacy_int');
+ assert.equal(classifyV5gWorker('CinePulse Android INT').kind,'legacy_int');
+ assert.match(backend,/classifyV5gWorker\(worker\.label/);
+ assert.match(backend,/newMovieProductionMode:route\.productionMode/);
 });

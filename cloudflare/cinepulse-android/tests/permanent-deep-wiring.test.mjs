@@ -45,3 +45,11 @@ test('admins can view deep Muse progress and resume incomplete independent batch
  assert.match(backend,/status IN \('queued','working'\)/);
  assert.match(backend,/No duplicate queued|no duplicate queued/);
 });
+
+test('APK worker selector uses backend routing receipt, not hardcoded STANDARD label',()=>{
+ assert.match(android,/newMovieProductionMode/);
+ assert.match(android,/v5_grounded_srt_only/);
+ assert.match(android,/routeConfirmed/);
+ assert.match(android,/expectedMode\.equals\(returnedMode\)/);
+ assert.match(android,/renderPipelineStagePlan\(document\)/);
+});

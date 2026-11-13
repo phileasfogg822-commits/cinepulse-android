@@ -32,5 +32,10 @@
   "pipelineInputMode": "original_srt_only",
   "movieFootageRequired": false,
   "visualInspectionRequired": false,
-  "qualityGoal": "9/10 SRT-semantic source relevance; no claim of visual verification"
+  "qualityGoal": "9/10 SRT-semantic source relevance; no claim of visual verification",
+  "uncaptionedIntervalsWithNearbyLiteralBrackets": 173,
+  "uncaptionedIntervalsContextOnly": 22,
+  "contextualGapCueWindow": 3,
+  "contextualGapCaptionRadiusSeconds": 30,
+  "contextBridgeReviewRequired": true
 }

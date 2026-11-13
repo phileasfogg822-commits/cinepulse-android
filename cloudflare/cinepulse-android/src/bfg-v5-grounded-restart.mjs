@@ -4,7 +4,7 @@
  * Subtitle gaps remain unknown context; they never prove visual action.
  */
 import {parseMeasuredCues} from './scene-lab-package.mjs';
-import {analyzeSrtUncaptionedIntervals} from './srt-interval-context.mjs';
+import {analyzeSrtUncaptionedIntervals,verifySrtContextBridge} from './srt-interval-context.mjs';
 const okId=x=>typeof x==='string'&&/^[A-Za-z0-9][\w:.+-]{0,127}$/.test(x);
 const norm=x=>String(x??'').normalize('NFKC').toLowerCase().replace(/\s+/g,' ').trim();
 const time=(a,b)=>Number.isFinite(a)&&Number.isFinite(b)&&a>=0&&b>a;
@@ -23,7 +23,7 @@ export function inspectSourceIntake(srt,{expectedCues=null,gapSeconds=5}={}){
 /** SRT-only pre-TTS check: source cue -> digest beat -> source window -> bilingual narration. */
 export function inspectBeforeVoice({sourceSrt,beats,blueprint,narrationUnits}={}){
  let source;try{source=parseMeasuredCues(sourceSrt)}catch(e){return R(['Invalid source SRT: '+e.message],[])};
- const errors=[],warnings=[],beatMap=new Map(),blue=new Map(),usedCue=new Map();
+ const errors=[],warnings=[],beatMap=new Map(),blue=new Map(),usedCue=new Map(),contextBridgeBeats=[];
  if(!Array.isArray(beats)||!Array.isArray(blueprint)||!Array.isArray(narrationUnits))
   return R(['beats, blueprint, narrationUnits must be arrays'],warnings);
  for(const b of beats){
@@ -42,6 +42,15 @@ export function inspectBeforeVoice({sourceSrt,beats,blueprint,narrationUnits}={}
       errors.push('Original cue '+ev.cueId+' claimed by distinct story beats');
      usedCue.set(ev.cueId,b.id);
     }
+   }else if(ev?.kind==='srt_context'){
+    const proof=verifySrtContextBridge(source,ev);
+    if(!proof.valid)errors.push('Unverified SRT contextual transition '+b.id+': '+proof.reason);
+    else{
+     contextBridgeBeats.push({beatId:b.id,startSeconds:proof.startSeconds,
+       endSeconds:proof.endSeconds,contextEvidenceRole:ev.role,requiresSemanticReview:true,
+       visualContentVerified:false});
+     warnings.push('SRT context beat '+b.id+' needs semantic editorial review; no visual assertion');
+    }
    }else if(ev?.kind==='visual'){
     errors.push('Video-derived scene evidence is excluded from the SRT-only workflow at beat '+b.id);
    }else errors.push('Unknown digest evidence type '+b.id);
@@ -56,6 +65,11 @@ export function inspectBeforeVoice({sourceSrt,beats,blueprint,narrationUnits}={}
   if(b?.evidence.some(e=>e.kind==='subtitle')&&!b.evidence.some(e=>{
     const c=source[e.cueId-1];return e.kind==='subtitle'&&c&&x.startSeconds<=c.endSeconds&&x.endSeconds>=c.startSeconds;
   }))errors.push('Blueprint misses cited SRT source cue '+x.beatId);
+  if(b?.evidence.some(e=>e.kind==='srt_context')&&!b.evidence.some(e=>{
+    if(e.kind!=='srt_context')return false;
+    const proof=verifySrtContextBridge(source,e);
+    return proof.valid&&x.startSeconds<=proof.endSeconds&&x.endSeconds>=proof.startSeconds;
+  }))errors.push('SRT context blueprint does not overlap cited gap '+x.beatId);
  }
  for(const id of beatMap.keys())if(!blue.has(id))errors.push('Missing scene blueprint '+id);
  const byLang={english:new Set(),urdu:new Set()},unitKeys=new Set();
@@ -79,7 +93,7 @@ export function inspectBeforeVoice({sourceSrt,beats,blueprint,narrationUnits}={}
  }
  if(!beatMap.size)errors.push('Empty digest');
  return R(errors,warnings,{stage:'before_voice',sourceCueCount:source.length,digestBeats:beatMap.size,
-   narrationUnitCount:unitKeys.size,sourceAnchorPlanCount:blue.size,videoInputRequired:false,
+   narrationUnitCount:unitKeys.size,sourceAnchorPlanCount:blue.size,contextBridgeBeats,videoInputRequired:false,
    allSourceAndAudioImmutable:true,productionApplyAuthorized:false});
 }
 /** Keep actual STT cue timestamps while grouping short speech as ONE semantic event. */

@@ -32,3 +32,6 @@ Uncaptioned SRT intervals are **not thrown away**. `src/srt-interval-context.mjs
 During the digest, Muse should examine every contextual interval, prioritize those with supported sound/action cues (e.g. footsteps, growls, sighs, chirping, explosions, fighting explicitly named by a caption) and story continuity on both sides. A suggested beat must cite the exact surrounding SRT cues. Where context is ambiguous, record it as an unverified transition rather than invent a physical action. A bracketed cue can support the event stated in its text, not an arbitrary creature, character or scene beyond that text.
 
 This improves the source-backed synopsis and future scene-choice candidates without introducing visual/video inspection, relaxing the 9/10 semantic standard, or enabling writes to the original BFG project.
+
+### Digest citation for important silent / uncaptioned context
+The BFG offline audit now includes a timecoded record for all 195 long SRT gaps, with the three neighboring cues before/after and bracketed captions. The digest validator supports an explicit `srt_context` beat for transitions linked to two real adjacent cues; a stronger `caption_supported_context` citation must quote a real nearby bracketed caption. Every such beat still requires semantic review and is never automatically visually verified.

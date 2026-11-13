@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {BFG_PILOT,inspectSourceIntake,inspectBeforeVoice,inspectAfterVoice,inspectGlobalSceneDryRun} from '../src/bfg-v5-grounded-restart.mjs';
-import {analyzeSrtUncaptionedIntervals,extractBracketedSrtCaptions} from '../src/srt-interval-context.mjs';
+import {analyzeSrtUncaptionedIntervals,extractBracketedSrtCaptions,verifySrtContextBridge} from '../src/srt-interval-context.mjs';
 const sourceSrt=[
 '1\n00:00:01,000 --> 00:00:02,000\nMorning, Sophie.',
 '2\n00:00:12,000 --> 00:00:13,000\nWhere are you?',
@@ -150,4 +150,36 @@ test('SRT-only intake remains usable with contextual gaps and no video',()=>{
  assert.equal(audit.ready,true);
  assert.equal(audit.neighborDialogueCaptured,true);
  assert.ok(audit.gaps.every(g=>g.contextUsableForDraft===true&&g.autoNarrateSpecificUncaptionedAction===false));
+});
+
+test('BFG source-grounded digest may cite exact SRT gap boundaries as a temporal transition',()=>{
+ const a=data();
+ a.beats.push({id:'gap-bridge',summary:'A pause separates the question from the later greeting.',
+  evidence:[{kind:'srt_context',precedingCueId:2,followingCueId:3,
+   precedingExactQuote:'Where are you?',followingExactQuote:'Morning, Sophie.',
+   role:'temporal_transition',reason:'The dialogue pause connects the two spoken story moments'}]});
+ a.blueprint.push({beatId:'gap-bridge',startSeconds:13,endSeconds:25});
+ a.narrationUnits.push({language:'english',id:'en-bridge',text:'Later, someone greets Sophie.',
+  beatIds:['gap-bridge']},{language:'urdu',id:'ur-bridge',text:'After a pause, there is another greeting.',
+  beatIds:['gap-bridge']});
+ const out=inspectBeforeVoice(a);
+ assert.equal(out.ready,true,JSON.stringify(out.errors));
+ assert.equal(out.contextBridgeBeats.length,1);
+ assert.equal(out.contextBridgeBeats[0].visualContentVerified,false);
+ assert.equal(out.contextBridgeBeats[0].requiresSemanticReview,true);
+});
+test('SRT contextual silence never authorizes invented action or false boundary quotes',()=>{
+ const source=[{startSeconds:1,endSeconds:2,text:'Where are you?'},
+  {startSeconds:13,endSeconds:14,text:'(FOOTSTEPS APPROACHING)'}];
+ const e={kind:'srt_context',precedingCueId:1,followingCueId:2,
+  precedingExactQuote:'Where are you?',followingExactQuote:'(FOOTSTEPS APPROACHING)',
+  role:'caption_supported_context',reason:'An SRT sound caption follows a long pause',
+  captionCueId:2,exactCaption:'(DINOSAUR WALKING)'};
+ assert.equal(verifySrtContextBridge(source,e).valid,false);
+ e.exactCaption='(FOOTSTEPS APPROACHING)';
+ const valid=verifySrtContextBridge(source,e);
+ assert.equal(valid.valid,true);
+ assert.equal(valid.visualContentVerified,false);
+ e.precedingExactQuote='fabricated conversation';
+ assert.equal(verifySrtContextBridge(source,e).valid,false);
 });

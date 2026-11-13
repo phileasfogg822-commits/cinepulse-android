@@ -112,7 +112,7 @@ export function classifyV5gWorker(workerLabel,{disabled=false}={}){
  const workerOne=/(?:^| )worker ?(?:0*1|one)(?: |$)/.test(label) ||
    /^cinepulse android (?:muse|views|news) (?:0*1|one)$/.test(label);
  // Never silently classify a combined INT + Worker 1 label as either mode.
- if(hasInt&&workerOne)return {kind:'unrecognized',productionMode:'unavailable',recognized:false};
+ if(hasInt&&(workerOne||/(?:^| )(?:0*1|one)$/.test(label)))return {kind:'unrecognized',productionMode:'unavailable',recognized:false};
  if(hasInt)return {kind:'legacy_int',productionMode:'stable',recognized:true};
  if(workerOne&&disabled)return {kind:'v5g_disabled',productionMode:'unavailable',recognized:true};
  if(workerOne)return {kind:'grounded_worker1',productionMode:'v5_grounded_srt_only',recognized:true};

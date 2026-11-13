@@ -8,6 +8,11 @@ const sourceSrt=[
 ].join('\n\n');
 const hash='a'.repeat(64);
 const data=()=>({sourceSrt,sourceMediaSha256:hash,
+ blueprint:[
+  {beatId:'greeting-first',startSeconds:.8,endSeconds:2.5},
+  {beatId:'greeting-second',startSeconds:24.8,endSeconds:26.5},
+  {beatId:'quiet-action',startSeconds:15,endSeconds:19}
+ ],
  beats:[
   {id:'greeting-first',summary:'First greeting',evidence:[{kind:'subtitle',cueId:1,quote:'Morning, Sophie.'}]},
   {id:'greeting-second',summary:'Another greeting at another movie time',evidence:[{kind:'subtitle',cueId:3,quote:'Morning, Sophie.'}]},

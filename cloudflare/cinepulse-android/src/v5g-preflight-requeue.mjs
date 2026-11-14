@@ -6,7 +6,7 @@
  * queue poll, and only for the exact known failed preflight job. Other movies
  * require an explicit authenticated administrator request.
  */
-export const V5G_PREFLIGHT_REQUEUE_BUILD='v5g-preflight-requeue-v1-20261114';
+export const V5G_PREFLIGHT_REQUEUE_BUILD='v5g-preflight-requeue-v2-instr-20261114';
 export const V5G_PREFLIGHT_REQUEUE_MARKER='[V5G-PREFLIGHT-RECOVERY-V1]';
 export const BFG_PREFLIGHT_PROJECT_ID='822bd90b-ad93-40be-bf0e-eae0fb4ca52c';
 export const BFG_PREFLIGHT_FAILED_JOB_ID='e543691a-f5f1-44ac-a752-88b351c7d72a';

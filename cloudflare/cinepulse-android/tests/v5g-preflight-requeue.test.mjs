@@ -161,7 +161,7 @@ test('Worker 1 queue and next return bounded recovery outcome; readonly diagnosi
  assert.match(src,/bfgRecovery=await resumeFailedGroundedPreflight/);
  assert.match(src,/inspectV5gPreflightRecoveryGuards/);
  assert.match(src,/queuedCount:waiting\?\.n\|\|0[\s\S]*?\.\.\.\(bfgRecovery\?\{bfgRecovery\}:\{\}\)/);
- assert.match(src,/tail==='\/agent\/next'/);
+ assert.match(src,/\['\/agent\/next','\/agent\/current'\]\.includes\(tail\)/);
  assert.match(src,/grounded-preflight\/recovery-diagnostic/);
  assert.match(src,/wid===BFG_PREFLIGHT_WORKER_ID/);
 });

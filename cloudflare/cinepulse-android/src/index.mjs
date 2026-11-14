@@ -5,6 +5,7 @@ import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATC
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
 import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts,extractV5gNarrationText,selectV5gWorkflow,classifyV5gWorker } from './v5g-production-gate.mjs';
 import {V5G_PREFLIGHT_REQUEUE_BUILD,V5G_PREFLIGHT_REQUEUE_MARKER,BFG_PREFLIGHT_PROJECT_ID,BFG_PREFLIGHT_FAILED_JOB_ID,BFG_PREFLIGHT_WORKER_ID,requeueFailedV5gPreflight,inspectV5gPreflightRecoveryGuards} from './v5g-preflight-requeue.mjs';
+import {REVIEW_STAGE_RETRY_BUILD,REVIEW_STAGE_RETRY_MARKER,REVIEW_STAGE_MEDIA,inspectReviewStageRetry,enqueueReviewStageRetry} from './review-stage-retry.mjs';
 import {validateV5gGlobalPlan} from './v5g-match-plan.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
@@ -604,6 +605,49 @@ async function autoFinalize(env,project){
  * recovery of an actual failed pre-TTS job. Neither this function nor the
  * guarded SQL modifies accepted stage outputs.
  */
+/**
+ * Review is an explicit failed state, not a processing pause. Inspect the
+ * last failed job and preserve all previously accepted stage outputs.
+ */
+async function reviewRetryState(env,project){
+ const [policy,worker,rows]=await Promise.all([
+  projectPolicy(env,project.id),
+  env.DB.prepare('SELECT id,enabled,paused FROM workers WHERE id=?').bind(project.worker_id).first(),
+  env.DB.prepare('SELECT id,step_id,status,prompt,created_at FROM jobs WHERE project_id=? ORDER BY created_at ASC,rowid ASC')
+    .bind(project.id).all()
+ ]);
+ return inspectReviewStageRetry({project,worker,policy,jobs:rows.results||[],now:nowSeconds()});
+}
+async function retryReviewedStage(env,project,requestBody){
+ const state=await reviewRetryState(env,project);
+ if(!state.eligible)return {...state,enqueued:false,reason:'review_retry_not_eligible'};
+ const failedJobId=requireUUID(requestBody?.failedJobId);
+ if(requestBody?.stepId!==state.step||failedJobId!==state.failedJobId)
+  return {...state,enqueued:false,reason:'failed_step_or_job_changed'};
+ if(REVIEW_STAGE_MEDIA.has(state.step)){
+  const assetKind={mp3_english:'english_mp3',mp3_urdu:'urdu_mp3',
+   srt_english:'english_srt',srt_urdu:'urdu_srt'}[state.step];
+  if(await assetByKind(env,project.id,assetKind))
+   return {...state,enqueued:false,reason:'stage_media_asset_requires_manual_reconciliation'};
+ }
+ if(!await env.FILES.get(project.source_srt_key))
+  return {...state,enqueued:false,reason:'source_srt_not_available'};
+ const marker=REVIEW_STAGE_RETRY_MARKER+failedJobId+']';
+ const policy=await projectPolicy(env,project.id);
+ const latest=await env.DB.prepare('SELECT prompt FROM jobs WHERE id=? AND project_id=?').bind(failedJobId,project.id).first();
+ const base=state.step==='digest'?String(latest?.prompt||''):promptFor(state.step);
+ if(!base.trim())return {...state,enqueued:false,reason:'retry_prompt_unavailable'};
+ const prompt=base+'\\n'+marker+
+  ' Retry only the previously failed stage with the same approved previousOutputs.'+
+  ' Preserve accepted narrations, source evidence, voice assets and scene checkpoints.'+
+  ' Return a real, validated stage output; never fabricate missing media.';
+ const result=await enqueueReviewStageRetry(env,{
+  projectId:project.id,workerId:project.worker_id,failedJobId,
+  stage:state.step,newJobId:newId(),prompt,now:nowSeconds()
+ });
+ return {...result,previousFailedJobId:failedJobId,retryStage:state.step,
+  acceptedJobsUnchanged:true};
+}
 async function resumeFailedGroundedPreflight(env,project,failedJobId){
  const policy=await projectPolicy(env,project.id);
  if(!policy.grounded)return {enqueued:false,reason:'not_grounded_v5g'};
@@ -1118,7 +1162,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gAcceptingNewProjects:env.CINEPULSE_V5G_DISABLED!=='true',v5gLiveStageCount:V5G_STEPS.length,v5gPreflightRequeueBuild:V5G_PREFLIGHT_REQUEUE_BUILD,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gAcceptingNewProjects:env.CINEPULSE_V5G_DISABLED!=='true',v5gLiveStageCount:V5G_STEPS.length,v5gPreflightRequeueBuild:V5G_PREFLIGHT_REQUEUE_BUILD,reviewStageRetryBuild:REVIEW_STAGE_RETRY_BUILD,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -1893,7 +1937,42 @@ async function route(request,env){
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
-    if(action==='grounded-preflight/requeue'&&method==='POST'){
+    if(action==='recovery'&&method==='GET'){
+      const state=await reviewRetryState(env,project);
+      const supported=!!state.eligible;
+      return json({projectId:pid,status:project.status,
+        canRetry:supported,failedStage:state.step,failedJobId:state.failedJobId,
+        workerPaused:state.reasons?.includes('worker_disabled_or_paused')||false,
+        options:supported?[{stepId:state.step,
+          label:'Retry only failed '+state.step.replace(/_/g,' ')+' stage',
+          recommended:true,
+          warning:'Preserves prior accepted checkpoints. Media stages are checked for existing assets before retry.'}]:[],
+        notice:supported?'Only the latest failed stage may be retried. Previous completed work remains accepted.':
+          state.reasons?.join('; ')||'No safe failed-stage retry is available.',
+        readOnly:true});
+     }
+     if(action==='recovery'&&method==='POST'){
+      const body=await getJson(request);
+      if(body.confirm!==true)fail(422,'Explicit confirmation required to retry a failed stage');
+      const state=await reviewRetryState(env,project);
+      const result=await retryReviewedStage(env,project,{stepId:body.stepId,failedJobId:state.failedJobId});
+      return json({projectId:pid,...result,message:result.enqueued?
+        'Failed stage queued for the original Muse worker; existing accepted work preserved.':
+        result.reason||'Retry refused by live project state'},
+        result.enqueued?201:result.idempotent?200:409);
+     }
+     if(action==='review/retry'&&method==='GET'){
+      const state=await reviewRetryState(env,project);
+      return json({projectId:pid,workerId:project.worker_id,...state,
+        mutatesAcceptedJobs:false,specializedStagesRequireSeparateRecovery:true});
+     }
+     if(action==='review/retry'&&method==='POST'){
+      const body=await getJson(request);
+      const result=await retryReviewedStage(env,project,body);
+      return json({projectId:pid,workerId:project.worker_id,...result},
+        result.enqueued?201:result.idempotent?200:409);
+     }
+     if(action==='grounded-preflight/requeue'&&method==='POST'){
        const body=await getJson(request),failedJobId=requireUUID(body.failedJobId);
        const result=await resumeFailedGroundedPreflight(env,project,failedJobId);
        return json({projectId:pid,workerId:project.worker_id,...result,

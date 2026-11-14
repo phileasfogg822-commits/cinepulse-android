@@ -275,6 +275,8 @@ public final class MainActivity extends Activity {
                 c.addView(action("🗑 Stop + permanently delete this movie",
                     ()->confirmMovieStop(id,true),false));
             }else if("needs_review".equals(status)){
+                c.addView(action("⟳ Inspect and retry failed stage",()->loadDetail(id),false));
+                space(c,5);
                 c.addView(action("⏹ Stop remaining Muse tasks",()->confirmMovieStop(id,false),false));
             }else if("stopped".equals(status)){
                 c.addView(action("🗑 Permanently delete this stopped movie",
@@ -469,7 +471,7 @@ public final class MainActivity extends Activity {
         begin("MOVIE",project.optString("title","Movie"),"Project #"+SecurityRules.shortId(id)+"  ·  "+status.toUpperCase());
         content.addView(action("← All movies",()->{openedProject=null;renderHome();},false),fullWithBottom(15));
         LinearLayout summary=card();content.addView(summary,fullWithBottom(14));
-        summary.addView(text(status.equals("ready")?"Production package ready":"Muse workflow in progress",18,WHITE,true));space(summary,6);
+        summary.addView(text(status.equals("ready")?"Production package ready":status.equals("needs_review")?"Needs review — a stage is stopped":"Muse workflow in progress",18,WHITE,true));space(summary,6);
         final boolean experimentalProject="scene_intelligence_experiment".equals(project.optString("productionMode"));
         final boolean groundedProject="v5_grounded_srt_only".equals(project.optString("productionMode"));
         JSONObject attachedWorker=document.optJSONObject("worker");
@@ -644,7 +646,7 @@ public final class MainActivity extends Activity {
         String message="Project stays the same. Recovery creates a NEW queued task under the same Muse worker. Successful earlier outputs remain intact. Historical failures remain visible.";
         if(!warning.isEmpty())message+="\n\n"+warning;
         if("mp3_english".equals(step)||"mp3_urdu".equals(step))
-            message+="\n\nThe old audio is archived on Cloudflare before it is invalidated. Wait for Muse to generate and verify the replacement MP3.";
+            message+="\n\nFor safety, recovery is refused if an existing MP3 asset needs reconciliation. The backend will not silently overwrite audio.";
         new AlertDialog.Builder(this).setTitle("Confirm: "+description)
             .setMessage(message)
             .setNegativeButton("Cancel",null)

@@ -30,12 +30,12 @@ export const V5G_PREFLIGHT_RECOVERY_INSERT_SQL=`INSERT INTO jobs
  AND w.enabled=1 AND COALESCE(w.paused,0)=0
  AND COALESCE(c.paused,0)=0 AND COALESCE(c.stopped,0)=0
  AND f.step_id='grounded_preflight' AND f.status='error'
- AND f.error LIKE '%narration text does not exactly correspond to source-linked units%'
+ AND instr(COALESCE(f.error,''),'narration text does not exactly correspond to source-linked units')>0
  AND f.id=(SELECT j.id FROM jobs j WHERE j.project_id=p.id
    AND j.step_id='grounded_preflight' ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1)
  AND EXISTS(SELECT 1 FROM jobs digest WHERE digest.project_id=p.id
    AND digest.step_id='digest' AND digest.status='done'
-   AND digest.prompt LIKE '%[CINEPULSE-V5G-GROUNDED-SRT-ONLY]%')
+   AND instr(COALESCE(digest.prompt,''),'[CINEPULSE-V5G-GROUNDED-SRT-ONLY]')>0)
  AND (SELECT COUNT(DISTINCT j.step_id) FROM jobs j WHERE j.project_id=p.id
    AND j.status='done' AND j.step_id IN
     ('digest','grounded_evidence','narration_english','narration_urdu'))=4
@@ -51,13 +51,13 @@ export const V5G_PREFLIGHT_RECOVERY_INSERT_SQL=`INSERT INTO jobs
    AND j.status IN ('queued','working'))
  AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=p.id
    AND j.step_id='grounded_preflight'
-   AND j.prompt LIKE '%[V5G-PREFLIGHT-RECOVERY-V1]%')`;
+   AND instr(COALESCE(j.prompt,''),'[V5G-PREFLIGHT-RECOVERY-V1]')>0)`;
 export const V5G_PREFLIGHT_RECOVERY_PROJECT_SQL=`UPDATE projects
  SET status='processing',updated_at=?
  WHERE id=? AND worker_id=? AND status='needs_review'
  AND EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=projects.id AND j.id=?
    AND j.step_id='grounded_preflight' AND j.status IN ('queued','working')
-   AND j.prompt LIKE '%[V5G-PREFLIGHT-RECOVERY-V1]%')`;
+   AND instr(COALESCE(j.prompt,''),'[V5G-PREFLIGHT-RECOVERY-V1]')>0)`;
 
 export async function requeueFailedV5gPreflight(env,{
  projectId,workerId,failedJobId,newJobId,prompt,now
@@ -69,7 +69,7 @@ export async function requeueFailedV5gPreflight(env,{
   return {enqueued:false,reason:'invalid_recovery_request'};
  const existing=await env.DB.prepare(
   "SELECT id,status FROM jobs WHERE project_id=? AND step_id='grounded_preflight' "+
-  "AND prompt LIKE '%[V5G-PREFLIGHT-RECOVERY-V1]%' ORDER BY created_at DESC LIMIT 1"
+  "AND instr(COALESCE(prompt,''),'[V5G-PREFLIGHT-RECOVERY-V1]')>0 ORDER BY created_at DESC LIMIT 1"
  ).bind(projectId).first();
  if(existing)return {enqueued:false,idempotent:true,jobId:existing.id,status:existing.status,
   reason:'recovery_already_issued'};
@@ -87,7 +87,7 @@ export async function requeueFailedV5gPreflight(env,{
  if(inserted!==0||activated!==0)throw Error('V5-G recovery transaction invariant violated');
  const after=await env.DB.prepare(
   "SELECT id,status FROM jobs WHERE project_id=? AND step_id='grounded_preflight' "+
-  "AND prompt LIKE '%[V5G-PREFLIGHT-RECOVERY-V1]%' ORDER BY created_at DESC LIMIT 1"
+  "AND instr(COALESCE(prompt,''),'[V5G-PREFLIGHT-RECOVERY-V1]')>0 ORDER BY created_at DESC LIMIT 1"
  ).bind(projectId).first();
  if(after)return {enqueued:false,idempotent:true,jobId:after.id,status:after.status,
   reason:'recovery_already_issued'};

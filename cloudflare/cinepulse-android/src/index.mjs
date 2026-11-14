@@ -3,7 +3,7 @@ import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAG
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
 import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
-import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts,selectV5gWorkflow,classifyV5gWorker } from './v5g-production-gate.mjs';
+import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts,extractV5gNarrationText,selectV5gWorkflow,classifyV5gWorker } from './v5g-production-gate.mjs';
 import {validateV5gGlobalPlan} from './v5g-match-plan.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
@@ -1318,7 +1318,8 @@ async function route(request,env){
               if(!outputs[V5G_EVIDENCE])fail(409,'Accepted V5-G evidence stage missing');
               checked=validateV5gPreTts({
                 sourceSrt,evidence:JSON.parse(outputs[V5G_EVIDENCE]),
-                englishScript:outputs.narration_english,urduScript:outputs.narration_urdu,input:output
+                englishScript:extractV5gNarrationText(outputs.narration_english,'english'),
+                urduScript:extractV5gNarrationText(outputs.narration_urdu,'urdu'),input:output
               });
             }else{
               if(!outputs[V5G_PREFLIGHT]||!outputs.srt_english||!outputs.srt_urdu)

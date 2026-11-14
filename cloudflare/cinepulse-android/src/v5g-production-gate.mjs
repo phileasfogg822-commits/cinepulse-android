@@ -40,6 +40,31 @@ export function validateV5gEvidence(sourceSrt,input){
    sourceAnchorPlanCount:test.sourceAnchorPlanCount,videoRequired:false,
    stage:'grounded_evidence',checked:true}};
 }
+/**
+ * Decode durable narration outputs before exact pre-TTS comparison.
+ * Existing projects store JSON envelopes {kind,format,language,text}, while
+ * older projects may store plain narration text. Never compare envelope metadata
+ * with narration units or quietly accept malformed/wrong-language envelopes.
+ */
+export function extractV5gNarrationText(value,language){
+ if(!['english','urdu'].includes(language))fail('Unsupported approved narration language');
+ let approved=value;
+ if(typeof value==='string'){
+  const trimmed=value.trim();
+  if(!trimmed)fail('Approved '+language+' narration missing');
+  if(!trimmed.startsWith('{'))return value; // Legacy plain-text checkpoint.
+  try{approved=JSON.parse(trimmed)}
+  catch{fail('Malformed approved '+language+' narration envelope')}
+ }
+ if(!isObj(approved)||typeof approved.text!=='string'||!approved.text.trim())
+  fail('Approved '+language+' narration envelope missing text');
+ if(approved.kind!==undefined&&approved.kind!=='narration_'+language)
+  fail('Approved '+language+' narration envelope kind mismatch');
+ const expectedLocale=language==='english'?'en':'ur';
+ if(approved.language!==undefined&&approved.language!==language&&approved.language!==expectedLocale)
+  fail('Approved '+language+' narration envelope language mismatch');
+ return approved.text;
+}
 export function validateV5gPreTts({sourceSrt,evidence,englishScript,urduScript,input}){
  const result=getPayload(input);
  if(!isObj(result)||!Array.isArray(result.narrationUnits))
@@ -58,10 +83,11 @@ export function validateV5gPreTts({sourceSrt,evidence,englishScript,urduScript,i
  }
  for(const [lang,script] of [['english',englishScript],['urdu',urduScript]]){
   const a=byLang[lang];
-  if(!a.length||!String(script||'').trim())fail('Approved '+lang+' narration or units missing');
+  const approvedText=extractV5gNarrationText(script,lang);
+  if(!a.length||!approvedText.trim())fail('Approved '+lang+' narration or units missing');
   const parts=a.map(u=>u.text);
   if(parts.some(p=>typeof p!=='string'||!p.trim()))fail('Empty '+lang+' narration unit');
-  if(noMarkers(parts.join(' '))!==noMarkers(script))
+  if(noMarkers(parts.join(' '))!==noMarkers(approvedText))
    fail(lang+' narration text does not exactly correspond to source-linked units');
   // Every beat must be connected to at least one unit in each approved language.
   const ids=new Set(a.flatMap(u=>u.beatIds||[]));

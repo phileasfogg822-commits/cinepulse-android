@@ -146,7 +146,7 @@ jobs:
           test "$deep_no_auth" = "401"
           deep_post_no_auth=$(curl -sS --max-time 25 -X POST -H 'Content-Type: application/json' --data '{}' -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/scene-lab/deep")
           test "$deep_post_no_auth" = "401"
-          jq -e '.policy.v5gPreflightRequeueBuild=="v5g-preflight-requeue-v1-20261114"' /tmp/cp-after-health.json >/dev/null
+          jq -e '.policy.v5gPreflightRequeueBuild=="v5g-preflight-requeue-v2-instr-20261114" and .policy.reviewStageRetryBuild=="review-stage-retry-v1-20261114"' /tmp/cp-after-health.json >/dev/null
           echo 'V5G_PREFLIGHT_ONE_SHOT_RECOVERY_VERSION_VERIFIED'
           echo 'DEEP_MUSE_BATCH_QUEUE_AUTH_PROTECTED_AND_LIVE'
           echo 'PERMANENT_DEEP_MUSE_V5_BILINGUAL_STANDARD_LIVE_HEALTH_VERIFIED'

@@ -67,11 +67,17 @@ test('long unit needs one in-blueprint source decision, not one for each of its 
  // Three actual English SRT cues cover two approved units. The second
  // decision for en1 honestly cites a source cue outside en1's blueprint.
  // Another reviewed decision for en1 cites its real in-window source cue.
- const enThree=[
-  '1\\n00:00:00,000 --> 00:00:02,000\\nFirst greeting.',
-  '2\\n00:00:02,000 --> 00:00:03,000\\nFirst passage continues.',
-  '3\\n00:00:03,000 --> 00:00:04,000\\nThen a question.'
- ].join('\\n\\n').replaceAll('\\\\n','\\n');
+ const enThree=`1
+00:00:00,000 --> 00:00:02,000
+First greeting.
+
+2
+00:00:02,000 --> 00:00:03,000
+First passage continues.
+
+3
+00:00:03,000 --> 00:00:04,000
+Then a question.`;
  const p=make();
  p.measuredCues=p.measuredCues.filter(c=>c.language==='urdu');
  const english=[

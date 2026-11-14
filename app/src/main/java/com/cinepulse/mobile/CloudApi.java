@@ -65,7 +65,7 @@ final class CloudApi {
     JSONObject nudge(String jobId) throws Exception {return call("POST","/v1/jobs/"+checked(jobId)+"/nudge",new JSONObject());}
     JSONObject recovery(String projectId) throws Exception {return call("GET","/v1/projects/"+checked(projectId)+"/recovery",null);}
     JSONObject repairStage(String projectId,String stepId) throws Exception {
-        if(!stepId.matches("mp3_english|srt_english|mp3_urdu|srt_urdu|digest|narration_english|narration_urdu|viral_metadata|scene_matching|cut_plan"))
+        if(!stepId.matches("digest|grounded_evidence|narration_english|narration_urdu|grounded_preflight|publishing_metadata|mp3_english|srt_english|mp3_urdu|srt_urdu|grounded_match_plan|viral_metadata|scene_matching|cut_plan"))
             throw new SecurityException("Unsupported stage to retry");
         return call("POST","/v1/projects/"+checked(projectId)+"/recovery",
             new JSONObject().put("stepId",stepId).put("confirm",true));

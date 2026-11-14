@@ -98,6 +98,10 @@ Then a question.`;
  const blueprint={beats:evidenceBlueprint.beats,
   blueprint:[{beatId:'b1',startSeconds:1,endSeconds:2},
    {beatId:'b2',startSeconds:25,endSeconds:26}]};
+ // The changed synthetic B2 blueprint also needs its Urdu decision anchored
+ // to the later original film cue. Do not weaken the production validator.
+ p.decisions.urdu[1]={...p.decisions.urdu[1],sourceCueIds:[3],
+  sourceStartSeconds:25,sourceEndSeconds:26,evidenceQuote:'Morning, Sophie.'};
  const input={...args(p),englishSrt:enThree,evidence:blueprint};
  const good=validateV5gGlobalPlan(input);
  assert.equal(good.validation.english.cues,3);

@@ -43,9 +43,67 @@ test('one weak 0.6 confidence cannot pass 9/10 SRT relevance gate',()=>{
  const p=make();p.decisions.english[1].qualityScore=.6;
  assert.throws(()=>validateV5gGlobalPlan(args(p)),/>=9\/10 review/);
 });
-test('long merged STT cue crossing two narration units requires targeted real alignment',()=>{
+test('one real measured cue may span two consecutive narration units without splitting accepted SRT',()=>{
  const p=make();p.measuredCues[2].unitIds=['ur1','ur2'];
- assert.throws(()=>validateV5gGlobalPlan(args(p)),/merges distinct narration units/);
+ const result=validateV5gGlobalPlan(args(p));
+ assert.equal(result.validation.urdu.cues,2);
+ assert.equal(result.validation.urdu.units,2);
+ assert.equal(result.validation.english.cues,2);
+ assert.equal(result.validation.status,'reviewed_all_units');
+});
+test('merged measured cues cannot cite nonconsecutive, reversed, repeated, unknown or cross-language units',()=>{
+ for(const unitIds of [['ur2','ur1'],['ur1','ur1'],['ur1','ur3'],['ur1','en2']]){
+  const p=make();p.measuredCues[2].unitIds=unitIds;
+  assert.throws(()=>validateV5gGlobalPlan(args(p)),
+   /merges non-consecutive or unknown narration units/,JSON.stringify(unitIds));
+ }
+});
+test('splitting a stored SRT cue into extra virtual cues remains forbidden by measured count guard',()=>{
+ const p=make();
+ p.measuredCues.push({...p.measuredCues[3],index:3});
+ assert.throws(()=>validateV5gGlobalPlan(args(p)),/Measured cue count mismatch/);
+});
+test('long unit needs one in-blueprint source decision, not one for each of its measured fragments',()=>{
+ // Three actual English SRT cues cover two approved units. The second
+ // decision for en1 honestly cites a source cue outside en1's blueprint.
+ // Another reviewed decision for en1 cites its real in-window source cue.
+ const enThree=[
+  '1\\n00:00:00,000 --> 00:00:02,000\\nFirst greeting.',
+  '2\\n00:00:02,000 --> 00:00:03,000\\nFirst passage continues.',
+  '3\\n00:00:03,000 --> 00:00:04,000\\nThen a question.'
+ ].join('\\n\\n').replaceAll('\\\\n','\\n');
+ const p=make();
+ p.measuredCues=p.measuredCues.filter(c=>c.language==='urdu');
+ const english=[
+  {language:'english',index:1,startSeconds:0,endSeconds:2,text:'First greeting.',unitIds:['en1']},
+  {language:'english',index:2,startSeconds:2,endSeconds:3,text:'First passage continues.',unitIds:['en1']},
+  {language:'english',index:3,startSeconds:3,endSeconds:4,text:'Then a question.',unitIds:['en2']}
+ ];
+ p.measuredCues.unshift(...english);
+ const template=p.decisions.english[0];
+ p.decisions.english=[
+  {...template,segmentIndex:1,unitId:'en1',sourceCueIds:[1],
+   sourceStartSeconds:1,sourceEndSeconds:2,evidenceQuote:'Morning, Sophie.'},
+  {...template,segmentIndex:2,unitId:'en1',sourceCueIds:[2],
+   sourceStartSeconds:12,sourceEndSeconds:13,evidenceQuote:'Where are you?'},
+  {...template,segmentIndex:3,unitId:'en2',sourceCueIds:[3],
+   sourceStartSeconds:25,sourceEndSeconds:26,evidenceQuote:'Morning, Sophie.'}
+ ];
+ const blueprint={beats:evidenceBlueprint.beats,
+  blueprint:[{beatId:'b1',startSeconds:1,endSeconds:2},
+   {beatId:'b2',startSeconds:25,endSeconds:26}]};
+ const input={...args(p),englishSrt:enThree,evidence:blueprint};
+ const good=validateV5gGlobalPlan(input);
+ assert.equal(good.validation.english.cues,3);
+ assert.equal(good.validation.english.units,2);
+ // All en1 source decisions are now outside b1's blueprint.
+ const broken=structuredClone(p);
+ broken.decisions.english[0]={
+  ...broken.decisions.english[0],sourceCueIds:[4],
+  sourceStartSeconds:32,sourceEndSeconds:33,evidenceQuote:'Listen to me.'
+ };
+ assert.throws(()=>validateV5gGlobalPlan({...input,input:broken}),
+  /outside its narration beat blueprint for unit en1/);
 });
 test('global plan rejects reused film source time in one language',()=>{
  const p=make();p.decisions.english[1].sourceStartSeconds=1;p.decisions.english[1].sourceEndSeconds=2;

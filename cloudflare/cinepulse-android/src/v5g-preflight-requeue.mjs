@@ -93,3 +93,68 @@ export async function requeueFailedV5gPreflight(env,{
   reason:'recovery_already_issued'};
  return {enqueued:false,reason:'state_or_evidence_guard_rejected'};
 }
+
+/**
+ * Read-only reason codes for a failed V5-G preflight that did not requeue.
+ * Returns booleans/counts, never narration, SRT content, auth or worker tokens.
+ * Use only behind an authenticated, matching Worker 1 or administrator route.
+ */
+export async function inspectV5gPreflightRecoveryGuards(env,{projectId,workerId,failedJobId,now}={}){
+ if(![projectId,workerId,failedJobId].every(uuid)||!Number.isInteger(now))
+  return {eligible:false,blockingReasons:['invalid_identifiers']};
+ const [project,failed,rows]=await Promise.all([
+  env.DB.prepare(`SELECT p.id,p.status,p.worker_id,p.expires_at,
+      COALESCE(c.paused,0) AS movie_paused,COALESCE(c.stopped,0) AS movie_stopped,
+      w.enabled AS worker_enabled,w.paused AS worker_paused
+    FROM projects p LEFT JOIN workers w ON w.id=p.worker_id
+    LEFT JOIN cinepulse_movie_controls c ON c.project_id=p.id
+    WHERE p.id=?`).bind(projectId).first(),
+  env.DB.prepare(`SELECT id,status,step_id,error FROM jobs WHERE id=? AND project_id=?`)
+    .bind(failedJobId,projectId).first(),
+  env.DB.prepare(`SELECT id,step_id,status,prompt FROM jobs WHERE project_id=?
+    ORDER BY created_at ASC,rowid ASC`).bind(projectId).all()
+ ]);
+ const jobs=rows?.results||[];
+ const latestPreflight=jobs.filter(j=>j.step_id==='grounded_preflight').at(-1);
+ const prerequisites=['digest','grounded_evidence','narration_english','narration_urdu'];
+ const prereqCounts=Object.fromEntries(prerequisites.map(step=>[
+  step,jobs.filter(j=>j.step_id===step&&j.status==='done').length
+ ]));
+ const downstream=new Set(['grounded_preflight','publishing_metadata','mp3_english',
+  'srt_english','mp3_urdu','srt_urdu','grounded_match_plan','deep_match_english',
+  'deep_match_urdu','deep_cut_plan','windows_project']);
+ const blockingReasons=[];
+ const check=(ok,code)=>{if(!ok)blockingReasons.push(code);};
+ check(!!project,'project_missing');
+ if(project){
+  check(project.worker_id===workerId,'worker_mismatch');
+  check(project.status==='needs_review','project_not_needs_review');
+  check(project.expires_at===null||project.expires_at>now,'project_expired');
+  check(Number(project.worker_enabled)===1,'worker_disabled');
+  check(Number(project.worker_paused||0)===0,'worker_paused');
+  check(Number(project.movie_paused||0)===0,'movie_paused');
+  check(Number(project.movie_stopped||0)===0,'movie_stopped');
+ }
+ check(!!failed,'failed_job_missing');
+ if(failed){
+  check(failed.step_id==='grounded_preflight','wrong_failed_step');
+  check(failed.status==='error','failed_job_not_error');
+  check(String(failed.error||'').includes('narration text does not exactly correspond to source-linked units'),
+   'failed_error_not_envelope_mismatch');
+ }
+ check(latestPreflight?.id===failedJobId,'different_latest_preflight');
+ const digest=jobs.find(j=>j.step_id==='digest'&&j.status==='done');
+ check(!!digest&&String(digest.prompt||'').includes('[CINEPULSE-V5G-GROUNDED-SRT-ONLY]'),
+  'not_v5g_digest_checkpoint');
+ check(Object.values(prereqCounts).every(n=>n===1),'accepted_prerequisites_not_exactly_once');
+ check(!jobs.some(j=>j.status==='done'&&downstream.has(j.step_id)),
+  'later_stage_already_accepted');
+ check(!jobs.some(j=>['queued','working'].includes(j.status)),'active_or_queued_task_exists');
+ check(!jobs.some(j=>j.step_id==='grounded_preflight'&&
+  String(j.prompt||'').includes(V5G_PREFLIGHT_REQUEUE_MARKER)),
+  'recovery_already_issued');
+ return {projectId,workerId,failedJobId,eligible:blockingReasons.length===0,
+  blockingReasons,acceptedPrerequisiteCounts:prereqCounts,
+  failedJobStatus:failed?.status||null,latestPreflightJobId:latestPreflight?.id||null,
+  projectStatus:project?.status||null,readOnly:true};
+}

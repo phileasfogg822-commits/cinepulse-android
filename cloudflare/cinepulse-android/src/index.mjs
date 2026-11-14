@@ -4,7 +4,7 @@ import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasure
 import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
 import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts,extractV5gNarrationText,selectV5gWorkflow,classifyV5gWorker } from './v5g-production-gate.mjs';
-import {V5G_PREFLIGHT_REQUEUE_BUILD,V5G_PREFLIGHT_REQUEUE_MARKER,BFG_PREFLIGHT_PROJECT_ID,BFG_PREFLIGHT_FAILED_JOB_ID,BFG_PREFLIGHT_WORKER_ID,requeueFailedV5gPreflight} from './v5g-preflight-requeue.mjs';
+import {V5G_PREFLIGHT_REQUEUE_BUILD,V5G_PREFLIGHT_REQUEUE_MARKER,BFG_PREFLIGHT_PROJECT_ID,BFG_PREFLIGHT_FAILED_JOB_ID,BFG_PREFLIGHT_WORKER_ID,requeueFailedV5gPreflight,inspectV5gPreflightRecoveryGuards} from './v5g-preflight-requeue.mjs';
 import {validateV5gGlobalPlan} from './v5g-match-plan.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
@@ -1126,6 +1126,7 @@ async function route(request,env){
   if(parts[1]==='w'&&parts.length>=4){
     const wid=parts[2],worker=await authWorker(request,env,wid);
     const tail='/'+parts.slice(3).join('/');
+    let bfgRecovery=null;
     // CAR worker audit: existing worker token, own movie only, D1/R2 through
     // backend bindings. No Cloudflare D1 REST token or mutation authorization.
     const carWorkerParts=tail.split('/');
@@ -1167,15 +1168,30 @@ async function route(request,env){
     const urduVoiceRescue=/^\/projects\/([a-f0-9-]{36})\/audio\/urdu-devanagari\/resume$/.exec(tail);
     if(method==='POST'&&urduVoiceRescue)
       return json(await resumeControlledUrduPronunciation(env,requireUUID(urduVoiceRescue[1]),wid),201);
+    if(method==='GET'&&tail==='/projects/'+BFG_PREFLIGHT_PROJECT_ID+'/grounded-preflight/recovery-diagnostic'&&wid===BFG_PREFLIGHT_WORKER_ID){
+      return json(await inspectV5gPreflightRecoveryGuards(env,{
+        projectId:BFG_PREFLIGHT_PROJECT_ID,workerId:wid,failedJobId:BFG_PREFLIGHT_FAILED_JOB_ID,now:nowSeconds()}));
+    }
     if(method==='GET'&&['/agent/queue','/agent/next'].includes(tail)&&wid===BFG_PREFLIGHT_WORKER_ID){
-      // Operator-authorized BFG-only recovery; first authenticated Worker 1
-      // queue poll may atomically create one missing preflight task. Never INT.
+      // One-shot, exactly identified BFG recovery. Do not conceal a failed
+      // or skipped requeue: return safe reason codes to this worker only.
       const bfg=await env.DB.prepare("SELECT id FROM projects WHERE id=? AND worker_id=? AND status='needs_review'")
         .bind(BFG_PREFLIGHT_PROJECT_ID,wid).first();
       if(bfg){
-        try{await resumeFailedGroundedPreflight(env,await getProject(env,BFG_PREFLIGHT_PROJECT_ID),BFG_PREFLIGHT_FAILED_JOB_ID);}
-        catch(error){console.error('BFG scoped preflight recovery guard rejected',String(error?.message||error));}
-      }
+        try{
+          bfgRecovery=await resumeFailedGroundedPreflight(env,await getProject(env,BFG_PREFLIGHT_PROJECT_ID),BFG_PREFLIGHT_FAILED_JOB_ID);
+        }catch(error){
+          const diagnosticCode=String(error?.message||error).slice(0,280);
+          console.error('BFG scoped preflight recovery failed',diagnosticCode);
+          bfgRecovery={enqueued:false,reason:'recovery_exception',detail:diagnosticCode};
+        }
+        if(!bfgRecovery?.enqueued){
+          try{
+            bfgRecovery={...bfgRecovery,diagnostic:await inspectV5gPreflightRecoveryGuards(env,{
+              projectId:BFG_PREFLIGHT_PROJECT_ID,workerId:wid,failedJobId:BFG_PREFLIGHT_FAILED_JOB_ID,now:nowSeconds()})};
+          }catch(error){bfgRecovery={...bfgRecovery,diagnosticUnavailable:true};}
+        }
+      }else bfgRecovery={enqueued:false,reason:'project_not_eligible_or_worker_mismatch'};
     }
     if(method==='GET'&&['/agent/queue','/agent/next','/agent/current'].includes(tail)){
       // Requeue only expired leases; a crash cannot permanently strand this task.
@@ -1187,17 +1203,17 @@ async function route(request,env){
         env.DB.prepare("SELECT COUNT(*) AS n FROM jobs j LEFT JOIN cinepulse_movie_controls c ON c.project_id=j.project_id WHERE j.worker_id=? AND j.status='queued' AND "+ELIGIBLE_MOVIE_CONTROL).bind(wid).first(),
         env.DB.prepare("SELECT * FROM jobs WHERE worker_id=? AND status='working' ORDER BY created_at LIMIT 1").bind(wid).first()
       ]);
-      return json({queuedCount:waiting?.n||0,paused:!!worker.paused,activeTask:active?publicJob(active):null,notice:(waiting?.n||0)>0?'Waiting tasks available':'No waiting tasks.',nextEndpoint:'/agent/next'});
+      return json({queuedCount:waiting?.n||0,paused:!!worker.paused,activeTask:active?publicJob(active):null,notice:(waiting?.n||0)>0?'Waiting tasks available':'No waiting tasks.',nextEndpoint:'/agent/next',...(bfgRecovery?{bfgRecovery}:{})});
     }
     if(method==='GET'&&['/agent/next','/agent/current'].includes(tail)){
       let job=await env.DB.prepare("SELECT * FROM jobs WHERE worker_id=? AND status='working' AND lease_until>? ORDER BY created_at LIMIT 1").bind(wid,nowSeconds()).first();
-      if(job)return json({task:await taskDetail(env,job),paused:!!worker.paused,nextEndpoint:'/agent/next'});
-      if(worker.paused||tail==='/agent/current')return json({task:null,paused:!!worker.paused});
+      if(job)return json({task:await taskDetail(env,job),paused:!!worker.paused,nextEndpoint:'/agent/next',...(bfgRecovery?{bfgRecovery}:{})});
+      if(worker.paused||tail==='/agent/current')return json({task:null,paused:!!worker.paused,...(bfgRecovery?{bfgRecovery}:{})});
       const time=nowSeconds(),id=newId(),expire=time+LEASE_SECONDS;
       // Atomic conditional claim; prevents two parallel Muse polls from taking the same job.
       job=await env.DB.prepare("UPDATE jobs SET status='working',lease=?,lease_until=? WHERE id=(SELECT j.id FROM jobs j LEFT JOIN cinepulse_movie_controls c ON c.project_id=j.project_id WHERE j.worker_id=? AND j.status='queued' AND "+ELIGIBLE_MOVIE_CONTROL+" ORDER BY j.created_at LIMIT 1) AND NOT EXISTS (SELECT 1 FROM jobs WHERE worker_id=? AND status='working' AND lease_until>?) RETURNING *").bind(id,expire,wid,wid,time).first();
-      if(!job)return json({task:null,paused:false,notice:'No waiting tasks.'});
-      return json({task:await taskDetail(env,job),paused:false,nextEndpoint:'/agent/next'});
+      if(!job)return json({task:null,paused:false,notice:'No waiting tasks.',...(bfgRecovery?{bfgRecovery}:{})});
+      return json({task:await taskDetail(env,job),paused:false,nextEndpoint:'/agent/next',...(bfgRecovery?{bfgRecovery}:{})});
     }
     const taskMatch=/^\/tasks\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(tail);
     if(taskMatch){

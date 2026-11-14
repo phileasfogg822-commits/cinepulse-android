@@ -6,7 +6,7 @@ import {
  BFG_PREFLIGHT_PROJECT_ID as pid,BFG_PREFLIGHT_WORKER_ID as wid,
  BFG_PREFLIGHT_FAILED_JOB_ID as fid,V5G_PREFLIGHT_REQUEUE_MARKER as marker,
  V5G_PREFLIGHT_RECOVERY_INSERT_SQL,V5G_PREFLIGHT_RECOVERY_PROJECT_SQL,
- requeueFailedV5gPreflight
+ requeueFailedV5gPreflight,inspectV5gPreflightRecoveryGuards
 } from '../src/v5g-preflight-requeue.mjs';
 const original='V5-G PRE-TTS HARD GATE. Copy previously accepted narration units.';
 const prompt=original+'\n'+marker+' Approved one-time retry.';
@@ -116,4 +116,52 @@ test('backend worker recovery is explicitly BFG-only; admin path is separately a
  assert.match(src,/v5gPreflightRequeueBuild:V5G_PREFLIGHT_REQUEUE_BUILD/);
  assert.match(V5G_PREFLIGHT_RECOVERY_INSERT_SQL,/NOT EXISTS/);
  assert.match(V5G_PREFLIGHT_RECOVERY_PROJECT_SQL,/status='processing'/);
+});
+
+test('read-only authenticated diagnostic reports eligible BFG without mutation',async()=>{
+ const f=fixture();try{
+  const before=f.db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n;
+  const r=await inspectV5gPreflightRecoveryGuards(f.env,{
+   projectId:pid,workerId:wid,failedJobId:fid,now});
+  assert.equal(r.eligible,true);
+  assert.deepEqual(r.blockingReasons,[]);
+  assert.equal(r.projectStatus,'needs_review');
+  assert.equal(r.failedJobStatus,'error');
+  assert.equal(r.latestPreflightJobId,fid);
+  assert.equal(r.acceptedPrerequisiteCounts.narration_english,1);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n,before);
+ }finally{f.close();}
+});
+test('diagnostics identify exactly why a previously blocked recovery did not enqueue',async()=>{
+ const cases=[
+  ['worker_paused',db=>db.exec('UPDATE workers SET paused=1')],
+  ['movie_stopped',db=>db.exec('UPDATE cinepulse_movie_controls SET stopped=1')],
+  ['failed_job_not_error',db=>db.exec("UPDATE jobs SET status='cancelled' WHERE id='"+fid+"'")],
+  ['accepted_prerequisites_not_exactly_once',db=>db.exec("DELETE FROM jobs WHERE step_id='narration_english'")],
+  ['not_v5g_digest_checkpoint',db=>db.exec("UPDATE jobs SET prompt='old V5' WHERE step_id='digest'")],
+  ['failed_error_not_envelope_mismatch',db=>db.exec("UPDATE jobs SET error='another issue' WHERE id='"+fid+"'")],
+  ['active_or_queued_task_exists',db=>db.exec("INSERT INTO jobs VALUES('another','"+pid+"','"+wid+"','publishing_metadata','queued','',10,NULL,NULL)")],
+  ['different_latest_preflight',db=>db.exec("INSERT INTO jobs VALUES('new-failure','"+pid+"','"+wid+"','grounded_preflight','error','',10,'another issue',NULL)")]
+ ];
+ for(const [reason,change] of cases){
+  const f=fixture(change);
+  try{
+   const before=f.db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n;
+   const r=await inspectV5gPreflightRecoveryGuards(f.env,{
+    projectId:pid,workerId:wid,failedJobId:fid,now});
+   assert.equal(r.eligible,false,reason);
+   assert.ok(r.blockingReasons.includes(reason),JSON.stringify({reason,actual:r.blockingReasons}));
+   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n,before);
+  }finally{f.close();}
+ }
+});
+test('Worker 1 queue and next return bounded recovery outcome; readonly diagnosis cannot accept results',()=>{
+ const src=readFileSync(new URL('../src/index.mjs',import.meta.url),'utf8');
+ assert.match(src,/let bfgRecovery=null/);
+ assert.match(src,/bfgRecovery=await resumeFailedGroundedPreflight/);
+ assert.match(src,/inspectV5gPreflightRecoveryGuards/);
+ assert.match(src,/queuedCount:waiting\?\.n\|\|0[\s\S]*?\.\.\.\(bfgRecovery\?\{bfgRecovery\}:\{\}\)/);
+ assert.match(src,/\['\/agent\/next','\/agent\/current'\]\.includes\(tail\)/);
+ assert.match(src,/grounded-preflight\/recovery-diagnostic/);
+ assert.match(src,/wid===BFG_PREFLIGHT_WORKER_ID/);
 });

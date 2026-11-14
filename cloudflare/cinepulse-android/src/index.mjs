@@ -1937,7 +1937,31 @@ async function route(request,env){
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
-    if(action==='review/retry'&&method==='GET'){
+    if(action==='recovery'&&method==='GET'){
+      const state=await reviewRetryState(env,project);
+      const supported=!!state.eligible;
+      return json({projectId:pid,status:project.status,
+        canRetry:supported,failedStage:state.step,failedJobId:state.failedJobId,
+        workerPaused:state.reasons?.includes('worker_disabled_or_paused')||false,
+        options:supported?[{stepId:state.step,
+          label:'Retry only failed '+state.step.replace(/_/g,' ')+' stage',
+          recommended:true,
+          warning:'Preserves prior accepted checkpoints. Media stages are checked for existing assets before retry.'}]:[],
+        notice:supported?'Only the latest failed stage may be retried. Previous completed work remains accepted.':
+          state.reasons?.join('; ')||'No safe failed-stage retry is available.',
+        readOnly:true});
+     }
+     if(action==='recovery'&&method==='POST'){
+      const body=await getJson(request);
+      if(body.confirm!==true)fail(422,'Explicit confirmation required to retry a failed stage');
+      const state=await reviewRetryState(env,project);
+      const result=await retryReviewedStage(env,project,{stepId:body.stepId,failedJobId:state.failedJobId});
+      return json({projectId:pid,...result,message:result.enqueued?
+        'Failed stage queued for the original Muse worker; existing accepted work preserved.':
+        result.reason||'Retry refused by live project state'},
+        result.enqueued?201:result.idempotent?200:409);
+     }
+     if(action==='review/retry'&&method==='GET'){
       const state=await reviewRetryState(env,project);
       return json({projectId:pid,workerId:project.worker_id,...state,
         mutatesAcceptedJobs:false,specializedStagesRequireSeparateRecovery:true});

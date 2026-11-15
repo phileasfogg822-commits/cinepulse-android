@@ -101,3 +101,46 @@ test('rejects incomplete Muse SRT timeline and changed English narration',()=>{
   f.mockMuseResponse.analysis.narrations.english='Changed';
   assert.throws(()=>verifyMuseWindowsProject(f.mockMuseResponse,approved(f)),/analysis\.narrations\.english: exact previous Muse stage text mismatch/);
 });
+
+test('Windows project accepts equivalent SRT timecode or numeric segment end without changing duration',()=>{
+ const f=fixture();
+ const lane=f.mockMuseResponse.tracks.english;
+ const actual=lane.segments.at(-1).end;
+ assert.equal(typeof actual,'number');
+ lane.segments.at(-1).end=fmt(actual);
+ assert.strictEqual(verifyMuseWindowsProject(f.mockMuseResponse,approved(f)),f.mockMuseResponse);
+ const urdu=f.mockMuseResponse.tracks.hindiUrdu;
+ const urduEnd=urdu.segments.at(-1).end;
+ urdu.segments.at(-1).end=stamp(urduEnd);
+ assert.strictEqual(verifyMuseWindowsProject(f.mockMuseResponse,approved(f)),f.mockMuseResponse);
+ assert.equal(lane.audioDurationSeconds,60);
+ assert.equal(urdu.audioDurationSeconds,65);
+});
+test('Windows project still rejects truncated and malformed timecoded segment ends',()=>{
+ for(const end of [fmt(59.6),'00:01:XX,000','00:01:00,ZZZ','00:01:00',null,Infinity]){
+  const f=fixture();
+  f.mockMuseResponse.tracks.english.segments.at(-1).end=end;
+  assert.throws(()=>verifyMuseWindowsProject(f.mockMuseResponse,approved(f)),
+   /segments do not cover entire narration SRT/,String(end));
+ }
+});
+test('timecode support does not relax audio-duration, cut, manifest or canonical analysis guards',()=>{
+ const f=fixture();
+ f.mockMuseResponse.tracks.english.segments.at(-1).end=fmt(60);
+ f.mockMuseResponse.tracks.hindiUrdu.segments.at(-1).end=fmt(65);
+ assert.strictEqual(verifyMuseWindowsProject(f.mockMuseResponse,approved(f)),f.mockMuseResponse);
+ const invalidDuration=structuredClone(f.mockMuseResponse);
+ invalidDuration.tracks.english.audioDurationSeconds=60.36;
+ assert.throws(()=>verifyMuseWindowsProject(invalidDuration,approved(f)),
+  /audio duration not aligned/);
+ const invalidCut=structuredClone(f.mockMuseResponse);
+ invalidCut.tracks.english.cuts[0].movieStart=stamp(999);
+ assert.throws(()=>verifyMuseWindowsProject(invalidCut,approved(f)),/shot .* differs/);
+ const invalidMp3=structuredClone(f.mockMuseResponse);
+ invalidMp3.cloudImport.mp3s.english.sha256='0'.repeat(64);
+ assert.throws(()=>verifyMuseWindowsProject(invalidMp3,approved(f)),/MP3 manifest hash\/size mismatch/);
+ const invalidNarration=structuredClone(f.mockMuseResponse);
+ invalidNarration.analysis.narrations.english+=' BAD';
+ assert.throws(()=>verifyMuseWindowsProject(invalidNarration,approved(f)),
+  /exact previous Muse stage text mismatch/);
+});

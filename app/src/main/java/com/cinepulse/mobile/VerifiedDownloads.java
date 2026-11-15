@@ -467,9 +467,9 @@ final class VerifiedDownloads {
     private File[] verifySceneLabAssets(String projectId,JSONObject detail,JSONObject links,Progress progress) throws Exception {
         JSONObject project=detail.getJSONObject("project");
         String mode=project.optString("productionMode");
-        if(!projectId.equals(project.optString("id"))||!"ready".equals(project.optString("status"))||
-           !("stable".equals(mode)||"scene_matching_lab".equals(mode)))
-            throw new SecurityException("This movie is not a completed standard/Scene Lab Windows project");
+        // All three production modes export the same eight native Windows assets.
+        // V5-G was previously rejected locally before the first signed download.
+        NativeWindowsAssets.requireReadyEightFileProject(project,projectId);
         NativeWindowsAssets.validateServerManifest(links);
         JSONObject files=links.getJSONObject("files");
         File[] verified=new File[SCENE_LAB_KINDS.length];
@@ -499,7 +499,14 @@ final class VerifiedDownloads {
                 java.nio.file.Files.readAllBytes(verified[0].toPath()),StandardCharsets.UTF_8));
             JSONObject cloudImport=nativeProject.optJSONObject("cloudImport");
             if(cloudImport==null||!projectId.equals(cloudImport.optString("cloudProjectId")))
-                throw new SecurityException("Windows project JSON does not match the experimental movie");
+                throw new SecurityException("Windows project JSON does not match this movie");
+            // Preserve existing legacy mode support. New V5-G movies must also
+            // prove the signed JSON references the same two measured SRT files,
+            // carries both final scene tracks and has the native Muse V4 schema.
+            if("v5_grounded_srt_only".equals(mode))
+                NativeWindowsAssets.verifyWindowsProject(nativeProject,projectId,
+                    new String(java.nio.file.Files.readAllBytes(verified[4].toPath()),StandardCharsets.UTF_8),
+                    new String(java.nio.file.Files.readAllBytes(verified[5].toPath()),StandardCharsets.UTF_8));
             return verified;
         }catch(Exception error){
             for(File file:verified)if(file!=null)file.delete();

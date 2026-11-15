@@ -63,4 +63,43 @@ public class NativeWindowsAssetsTest {
         assertEquals("urdu_srt",NativeWindowsAssets.KINDS[5]);
         assertEquals("CinePulse_Urdu.srt",NativeWindowsAssets.NAMES[5]);
     }
+
+    private JSONObject readyMovie(String mode) throws Exception {
+        return new JSONObject().put("id",ID).put("status","ready").put("productionMode",mode);
+    }
+    @Test public void completedV5GroundedMovieCanDownloadTheSameEightSignedWindowsFiles() throws Exception {
+        NativeWindowsAssets.requireReadyEightFileProject(readyMovie("v5_grounded_srt_only"),ID);
+        NativeWindowsAssets.validateServerManifest(manifest());
+        NativeWindowsAssets.verifyWindowsProject(nativeProject(),ID,EN,UR);
+        NativeWindowsAssets.requireReadyEightFileProject(readyMovie("stable"),ID);
+        NativeWindowsAssets.requireReadyEightFileProject(readyMovie("scene_matching_lab"),ID);
+    }
+    @Test public void downloadNeverTreatsUnfinishedWrongMovieOrUnknownModeAsReady() throws Exception {
+        for(String mode:new String[]{"v5_grounded_srt_only","stable","scene_matching_lab"}) {
+            JSONObject unfinished=readyMovie(mode).put("status","processing");
+            try {NativeWindowsAssets.requireReadyEightFileProject(unfinished,ID);fail("Unfinished "+mode+" accepted");}
+            catch(java.io.IOException ok){assertTrue(ok.getMessage().contains("not ready"));}
+            JSONObject reviewing=readyMovie(mode).put("status","needs_review");
+            try {NativeWindowsAssets.requireReadyEightFileProject(reviewing,ID);fail("Reviewing "+mode+" accepted");}
+            catch(java.io.IOException ok){assertTrue(ok.getMessage().contains("not ready"));}
+        }
+        try{NativeWindowsAssets.requireReadyEightFileProject(readyMovie("v5_grounded_srt_only"),
+                "123e4567-e89b-42d3-a456-426614174001");fail("Wrong UUID accepted");}
+        catch(java.io.IOException ok){assertTrue(ok.getMessage().contains("identity mismatch"));}
+        for(String mode:new String[]{"","legacy","scene_intelligence_experiment","v5_grounded", "V5_GROUNDED_SRT_ONLY"}) {
+            try{NativeWindowsAssets.requireReadyEightFileProject(readyMovie(mode),ID);
+                fail("Unrecognized mode accepted: "+mode);}
+            catch(java.io.IOException ok){assertTrue(ok.getMessage().contains("Unsupported"));}
+        }
+    }
+    @Test public void V5GroundedReadyModeDoesNotBypassSignedAssetOrCrossMovieVerification() throws Exception {
+        NativeWindowsAssets.requireReadyEightFileProject(readyMovie("v5_grounded_srt_only"),ID);
+        JSONObject broken=manifest();
+        broken.getJSONObject("files").remove("english_mp3");
+        try{NativeWindowsAssets.validateServerManifest(broken);fail("Incomplete manifest accepted");}
+        catch(java.io.IOException ok){assertTrue(ok.getMessage().contains("incomplete"));}
+        try{NativeWindowsAssets.verifyWindowsProject(nativeProject(),ID,UR,EN);
+            fail("Cross-language media accepted");}
+        catch(java.io.IOException ok){assertTrue(ok.getMessage().contains("differs"));}
+    }
 }

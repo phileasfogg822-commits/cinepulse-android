@@ -23,6 +23,21 @@ final class NativeWindowsAssets {
     private static final Pattern TIMECODE=Pattern.compile(
         "(?m)\\b\\d{2}:\\d{2}:\\d{2}[,.]\\d{3}\\s*-->\\s*\\d{2}:\\d{2}:\\d{2}[,.]\\d{3}"
     );
+    /** Exact server production-mode gate for the same eight signed Windows assets.
+     * V5-G runs extra source-grounded stages but exports the native V4 format.
+     * Readiness and project identity remain mandatory; reject unknown modes.
+     */
+    static void requireReadyEightFileProject(JSONObject project,String projectId) throws IOException {
+        if(project==null||!SecurityRules.validUuid(projectId)||
+           !projectId.equals(project.optString("id")))
+            throw new IOException("Windows download project identity mismatch");
+        if(!"ready".equals(project.optString("status")))
+            throw new IOException("Windows project is not ready for download");
+        String mode=project.optString("productionMode");
+        if(!("stable".equals(mode)||"scene_matching_lab".equals(mode)||
+             "v5_grounded_srt_only".equals(mode)))
+            throw new IOException("Unsupported native Windows project mode: "+mode);
+    }
     static void validateServerManifest(JSONObject links) throws IOException {
         if(!"windows_eight_verified".equals(links.optString("format")))
             throw new IOException("Cloudflare has not confirmed a complete eight-file Windows package. Wait for windows_project export to finish.");

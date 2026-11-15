@@ -150,7 +150,7 @@ export function verifyMuseWindowsProject(candidate,{
     if(!Array.isArray(lane.segments)||lane.segments.length<1)
       throw Error('Muse Windows '+language+' measured SRT segments missing');
     const lastSegment=lane.segments[lane.segments.length-1];
-    if(!n(lastSegment.end)||Math.abs(lastSegment.end-target)>.15)
+    if(!n(seconds(lastSegment.end))||Math.abs(seconds(lastSegment.end)-target)>.15)
       throw Error('Muse Windows '+language+' segments do not cover entire narration SRT');
     if(lane.sceneMatch?.status!=='complete'||
        lane.sceneMatch?.completedSegments!==lane.segments.length)

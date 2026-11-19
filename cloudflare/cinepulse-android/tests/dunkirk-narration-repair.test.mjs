@@ -160,3 +160,17 @@ test('dispatcher and V5-G hard gate are retained, latest narration outputs overr
  for(const sql of [DUNKIRK_START_SQL,DUNKIRK_URDU_SQL,DUNKIRK_PREFLIGHT_SQL,DUNKIRK_REVIEW_SQL])
   assert.doesNotMatch(sql,/\bLIKE\b|\bGLOB\b/i);
 });
+
+
+// Exercise the real Worker handler so the deploy health marker is not only
+// static-source tested. This request never reads or mutates D1/R2.
+test('live Worker fetch /health exposes the exact Dunkirk repair build marker',async()=>{
+ const worker=(await import('../src/index.mjs')).default;
+ const env={DB:{},FILES:{},ADMIN_TOKEN:'a'.repeat(40),
+  DOWNLOAD_SIGNING_KEY:'0'.repeat(64)};
+ const response=await worker.fetch(new Request('https://example.org/health'),env,{});
+ assert.equal(response.status,200);
+ const body=await response.json();
+ assert.equal(body.status,'online');
+ assert.equal(body.policy.dunkirkNarrationRepairBuild,DUNKIRK_REPAIR_BUILD);
+});

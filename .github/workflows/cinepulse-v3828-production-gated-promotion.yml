@@ -152,7 +152,10 @@ jobs:
           deep_post_no_auth=$(curl -sS --max-time 25 -X POST -H 'Content-Type: application/json' --data '{}' -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/scene-lab/deep")
           echo "NO_AUTH_DEEPMUSE_POST_HTTP=$deep_post_no_auth"
           test "$deep_post_no_auth" = "401"
-          jq -e '.policy.v5gPreflightRequeueBuild=="v5g-preflight-requeue-v2-instr-20261114" and .policy.reviewStageRetryBuild=="review-stage-retry-v1-20261114" and .policy.v5gMatchPlanBuild=="v5g-match-plan-consecutive-units-20261114" and .policy.dunkirkNarrationRepairBuild=="dunkirk-pretts-two-language-repair-v1-20261119"' /tmp/cp-after-health.json >/dev/null
+          br_audio_repair_no_auth=$(curl -sS --max-time 25 -X POST -H 'Content-Type: application/json' --data '{}' -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects/2f037c09-81af-4c8c-a909-9f54900cb402/audio/english-loop-repair")
+          echo "NO_AUTH_BR_AUDIO_REPAIR_HTTP=$br_audio_repair_no_auth"
+          test "$br_audio_repair_no_auth" = "401"
+          jq -e '.policy.v5gPreflightRequeueBuild=="v5g-preflight-requeue-v2-instr-20261114" and .policy.reviewStageRetryBuild=="review-stage-retry-v1-20261114" and .policy.v5gMatchPlanBuild=="v5g-match-plan-consecutive-units-20261114" and .policy.dunkirkNarrationRepairBuild=="dunkirk-pretts-two-language-repair-v1-20261119" and .policy.bladeRunnerAudioRepairBuild=="blade-runner-v5g-english-audio-repair-v1-20261120"' /tmp/cp-after-health.json >/dev/null
           echo 'V5G_PREFLIGHT_ONE_SHOT_RECOVERY_VERSION_VERIFIED'
           echo 'DEEP_MUSE_BATCH_QUEUE_AUTH_PROTECTED_AND_LIVE'
           echo 'PERMANENT_DEEP_MUSE_V5_BILINGUAL_STANDARD_LIVE_HEALTH_VERIFIED'

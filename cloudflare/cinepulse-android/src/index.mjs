@@ -7,6 +7,7 @@ import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validate
 import {V5G_PREFLIGHT_REQUEUE_BUILD,V5G_PREFLIGHT_REQUEUE_MARKER,BFG_PREFLIGHT_PROJECT_ID,BFG_PREFLIGHT_FAILED_JOB_ID,BFG_PREFLIGHT_WORKER_ID,requeueFailedV5gPreflight,inspectV5gPreflightRecoveryGuards} from './v5g-preflight-requeue.mjs';
 import {REVIEW_STAGE_RETRY_BUILD,REVIEW_STAGE_RETRY_MARKER,REVIEW_STAGE_MEDIA,inspectReviewStageRetry,enqueueReviewStageRetry} from './review-stage-retry.mjs';
 import {DUNKIRK_REPAIR_BUILD,DUNKIRK_REPAIR_PROJECT,DUNKIRK_REPAIR_WORKER,DUNKIRK_REPAIR_FAILED,DUNKIRK_REPAIR_SOURCE_SHA,DUNKIRK_REPAIR_MARKER,DUNKIRK_REPAIR_BEATS,isDunkirkNarrationRepairJob,validateDunkirkRepairNarrationText,inspectDunkirkNarrationRepair,queueDunkirkRepairStage,markDunkirkNarrationsReady} from './dunkirk-narration-repair.mjs';
+import {BR_AUDIO_REPAIR_BUILD,BR_PROJECT,BR_WORKER,BR_FAILED_SRT,BR_ORIGINAL_SHA,BR_ORIGINAL_BYTES,BR_REPAIR_MARKER,BR_RETRY_SRT_MARKER,isBladeRunnerAudioRepairJob,stagedBladeRunnerAudioKey,inspectBladeRunnerAudioRepair,queueBladeRunnerAudioRepair,validateBladeRunnerAudioReceipt,promoteBladeRunnerAudioRepair} from './blade-runner-audio-repair.mjs';
 import {validateV5gGlobalPlan,V5G_MATCH_PLAN_BUILD} from './v5g-match-plan.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
@@ -198,6 +199,98 @@ async function dunkirkRepairState(env,project){
    ['mp3_english','srt_english','mp3_urdu','srt_urdu'].some(step=>outputs[step])),
   now:nowSeconds()});
 }
+async function bladeRunnerAudioRepairState(env,project){
+ if(project.id!==BR_PROJECT)return {eligible:false,readOnly:true,reasons:['wrong_project']};
+ const [policy,worker,rows,audio]=await Promise.all([
+  projectPolicy(env,project.id),
+  env.DB.prepare('SELECT id,enabled,paused FROM workers WHERE id=?').bind(project.worker_id).first(),
+  env.DB.prepare('SELECT id,project_id,worker_id,step_id,status,prompt,created_at,rowid FROM jobs WHERE project_id=? ORDER BY created_at ASC,rowid ASC').bind(project.id).all(),
+  assetByKind(env,project.id,'english_mp3')
+ ]);
+ const state=inspectBladeRunnerAudioRepair({project,worker,policy,jobs:rows.results||[],
+   audio,now:nowSeconds()});
+ // Verify actual original R2 asset is still accessible before enabling the repair.
+ if(state.canStart){
+  const original=await env.FILES.get(audio.r2_key);
+  if(!original||Number(original.size)!==BR_ORIGINAL_BYTES)
+   return {...state,canStart:false,eligible:false,reasons:['original_R2_MP3_missing_or_size_changed']};
+  const observedSha=await sha256(new Uint8Array(await original.arrayBuffer()));
+  if(observedSha!==BR_ORIGINAL_SHA)
+   return {...state,canStart:false,eligible:false,reasons:['original_R2_MP3_byte_hash_mismatch']};
+ }
+ return state;
+}
+async function stageBladeRunnerAudioUpload(request,env,job){
+ const original=await assetByKind(env,job.project_id,'english_mp3');
+ if(!original||original.sha256!==BR_ORIGINAL_SHA||
+  Number(original.bytes)!==BR_ORIGINAL_BYTES||
+  original.r2_key!==objectKey(BR_PROJECT,'english_mp3'))
+  fail(409,'Original Blade Runner MP3 was replaced or is not the approved defective recording');
+ const length=Number(request.headers.get('content-length'));
+ if(!Number.isInteger(length)||length<2048||length>12*1024*1024)
+  fail(413,'Repaired English MP3 must be 2 KiB–12 MiB with exact Content-Length');
+ const claimed=(request.headers.get('X-CinePulse-SHA256')||'').toLowerCase();
+ if(!/^[0-9a-f]{64}$/.test(claimed))fail(422,'SHA-256 header required');
+ const bytes=new Uint8Array(await request.arrayBuffer());
+ if(bytes.byteLength!==length||!isProbablyMp3(bytes))
+  fail(422,'Repaired MP3 size/header invalid');
+ const hash=await sha256(bytes);
+ if(hash!==claimed||hash===BR_ORIGINAL_SHA)
+  fail(422,'Actual repaired MP3 digest mismatch or original defective recording resubmitted');
+ // Ensure the task is still valid *after* receiving and hashing the full body.
+ const fresh=await getJob(env,job.id);
+ if(fresh.status!=='working'||fresh.lease_until<=nowSeconds()||fresh.lease!==job.lease)
+  fail(409,'Repair upload lease expired; no asset modified');
+ const key=stagedBladeRunnerAudioKey(job.id);
+ await env.FILES.put(key,bytes,{httpMetadata:{contentType:'audio/mpeg'},
+  customMetadata:{projectId:BR_PROJECT,repairJobId:job.id,sha256:hash,
+   originalSha256:BR_ORIGINAL_SHA}});
+ await logDaily(env,{uploaded_bytes:bytes.byteLength});
+ return {kind:'english_mp3',staged:true,jobId:job.id,bytes:bytes.byteLength,
+  sha256:hash,originalRecordingPreserved:true,
+  notice:'Staged only. Submit independent audio QA receipt to promote. Old original MP3 is untouched.'};
+}
+async function acceptBladeRunnerAudioResult(env,job,body){
+ if(body.error){
+  const reason=requireString(String(body.error),'Audio repair unresolved failure',1200);
+  const completed=await env.DB.prepare(
+   "UPDATE jobs SET status='error',error=?,finished_at=?,lease=NULL,lease_until=NULL "+
+   "WHERE id=? AND lease=? AND status='working' RETURNING id"
+  ).bind(reason,nowSeconds(),job.id,job.lease).first();
+  if(!completed)fail(409,'Repair lease changed');
+  await env.DB.prepare('UPDATE projects SET status=\'needs_review\',updated_at=? WHERE id=?')
+    .bind(nowSeconds(),BR_PROJECT).run();
+  return {id:job.id,status:'needs_review',reason,originalMp3Preserved:true};
+ }
+ const bodyOutput=typeof body.output==='string'?(()=>{try{return JSON.parse(body.output)}catch{return null}})():body.output;
+ if(!bodyOutput||typeof bodyOutput!=='object')fail(422,'Audio repair QA receipt JSON required');
+ const stored=await env.FILES.get(stagedBladeRunnerAudioKey(job.id));
+ if(!stored)fail(409,'No repaired MP3 staged for this repair job');
+ const bytes=new Uint8Array(await stored.arrayBuffer());
+ const hash=await sha256(bytes);
+ const narration=(await priorOutputs(env,BR_PROJECT)).narration_english;
+ const script=extractV5gNarrationText(narration,'english');
+ try{validateBladeRunnerAudioReceipt(bodyOutput,{
+   stagedHash:hash,stagedBytes:bytes.byteLength,approvedTextHash:await sha256(script)});
+ }catch(error){fail(422,'Repaired MP3 QA evidence rejected: '+String(error.message||error));}
+ const current=await assetByKind(env,BR_PROJECT,'english_mp3');
+ if(current?.sha256!==BR_ORIGINAL_SHA)fail(409,'Old audio reference changed; no repair promotion');
+ const after=await getJob(env,job.id);
+ if(after.status!=='working'||after.lease!==job.lease||after.lease_until<=nowSeconds())
+  fail(409,'Repair lease changed before MP3 promotion');
+ try{
+  const result=await promoteBladeRunnerAudioRepair(env,{
+   job:after,lease:body.lease,output:bodyOutput,
+   stagedHash:hash,stagedBytes:bytes.byteLength,
+   approvedTextHash:await sha256(script),originalNarration:script,
+   now:nowSeconds(),newSrtJobId:newId()
+  });
+  await logDaily(env,{jobs_completed:1,jobs_created:1});
+  await env.DB.prepare('UPDATE projects SET updated_at=? WHERE id=?')
+   .bind(nowSeconds(),BR_PROJECT).run();
+  return result;
+ }catch(error){fail(409,'Audio repair promotion could not complete safely: '+String(error.message||error));}
+}
 async function taskDetail(env,job) {
   if(job.step_id===URDU_REPAIR_STAGE){
     const policy=await projectPolicy(env,job.project_id);
@@ -383,7 +476,7 @@ async function taskDetail(env,job) {
 
   return {...publicJob(job),lease:job.lease,
     prompt:policy.museOwnsCuts?((policy.grounded&&[V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN].includes(job.step_id)?(job.prompt?.startsWith('RETRY REQUIRED:')?promptFor(job.step_id)+'\n'+job.prompt:job.prompt):museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes}))+(policy.grounded&&['digest','narration_english','narration_urdu'].includes(job.step_id)?'\nV5-G GROUNDED POLICY: Use original SRT and previously accepted source-backed evidence; avoid unsupported story detail, preserve distinct source cue/beat context and full scripts. There is a mandatory pre-TTS checkpoint before audio.':'')+(controlledUrduTask&&job.step_id==='mp3_urdu'?'\n'+urduDevanagariInstructions({rescue:String(job.prompt||'').includes(URDU_DEVANAGARI_RESCUE_MARKER)}):'')+(controlledUrduTask&&job.step_id==='srt_urdu'?'\n'+urduDevanagariSrtInstructions:'')+(controlledUrduTask&&job.step_id==='narration_urdu'?'\nAPPROVED CANONICAL NARRATION IS PAKISTANI URDU SCRIPT. The later Devanagari TTS transport MUST NOT alter this text.':'')+(policy.audioLanguageQa&&!((controlledUrduTask)&&['narration_urdu','mp3_urdu','srt_urdu'].includes(job.step_id))&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?
-      '\nCINEPULSE V5.4 AUDIO QA (NEW MOVIES ONLY): Reject filler or repeated 5- to 8-word phrases and repeated TTS chunks. Before MP3, compare the exact script against all previous chunks and check chunk joins with overlap-free sample playback. Never restart, duplicate or loop a previously synthesized chunk. After MP3, use speech-to-text aligned to REAL audio and compare each transcript region with the approved script; never hallucinate transcription or fake cues. For URDU ONLY: write natural idiomatic Pakistani Urdu (Nastaliq/Arabic-derived script) with Pakistani vocabulary, not Hindi or awkward literal translation; read Urdu text aloud in a genuine ur-PK-capable voice and do not transliterate to Devanagari or use a hi-IN Hindi voice. If ur-PK TTS unavailable, return a clear unresolved stage error; never silently substitute Hindi. The mp3_urdu result output MUST be JSON {"provider":"actual provider","voiceName":"actual voice id","voiceLocale":"ur-PK","inputScript":"Urdu","transliterated":false,"hindiFallback":false} after uploading the real MP3. The SRT must be plain timed Urdu (or a JSON envelope with format=srt, text=timed Urdu), without Cyrillic, Chinese, Korean, Devanagari or repeated hallucinated segments. QA failures mean repair THIS stage; never advance to Deep matching with bad audio.': '')+(policy.strictNarrationDuration&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?'\nHARD CAP FOR THIS NEW MOVIE: '+policy.targetMinutes+' minutes per language. Narration must stay under the word cap and measured MP3-aligned SRT MUST end no later than '+(policy.targetMinutes*60)+'s. Shorten script before TTS to prevent overlong audio. Do not slow down or stretch narration.':'')+(policy.permanentDeep&&job.step_id==='windows_project'?'\nPERMANENT DEEP MUSE V5: use priorOutputs.cut_plan derived from the validated 5-cue semantic batches for BOTH languages; preserve all cut values and sourceEvidence; do not repeat matching or alter narration/audio. Include method/provenance in cloudImport if supported.':'')+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')||isDunkirkNarrationRepairJob(job)?'\n'+job.prompt:'')):
+      '\nCINEPULSE V5.4 AUDIO QA (NEW MOVIES ONLY): Reject filler or repeated 5- to 8-word phrases and repeated TTS chunks. Before MP3, compare the exact script against all previous chunks and check chunk joins with overlap-free sample playback. Never restart, duplicate or loop a previously synthesized chunk. After MP3, use speech-to-text aligned to REAL audio and compare each transcript region with the approved script; never hallucinate transcription or fake cues. For URDU ONLY: write natural idiomatic Pakistani Urdu (Nastaliq/Arabic-derived script) with Pakistani vocabulary, not Hindi or awkward literal translation; read Urdu text aloud in a genuine ur-PK-capable voice and do not transliterate to Devanagari or use a hi-IN Hindi voice. If ur-PK TTS unavailable, return a clear unresolved stage error; never silently substitute Hindi. The mp3_urdu result output MUST be JSON {"provider":"actual provider","voiceName":"actual voice id","voiceLocale":"ur-PK","inputScript":"Urdu","transliterated":false,"hindiFallback":false} after uploading the real MP3. The SRT must be plain timed Urdu (or a JSON envelope with format=srt, text=timed Urdu), without Cyrillic, Chinese, Korean, Devanagari or repeated hallucinated segments. QA failures mean repair THIS stage; never advance to Deep matching with bad audio.': '')+(policy.strictNarrationDuration&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?'\nHARD CAP FOR THIS NEW MOVIE: '+policy.targetMinutes+' minutes per language. Narration must stay under the word cap and measured MP3-aligned SRT MUST end no later than '+(policy.targetMinutes*60)+'s. Shorten script before TTS to prevent overlong audio. Do not slow down or stretch narration.':'')+(policy.permanentDeep&&job.step_id==='windows_project'?'\nPERMANENT DEEP MUSE V5: use priorOutputs.cut_plan derived from the validated 5-cue semantic batches for BOTH languages; preserve all cut values and sourceEvidence; do not repeat matching or alter narration/audio. Include method/provenance in cloudImport if supported.':'')+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')||isDunkirkNarrationRepairJob(job)||isBladeRunnerAudioRepairJob(job)||String(job.prompt||'').includes(BR_RETRY_SRT_MARKER)?'\n'+job.prompt:'')):
       policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
     movie:policy.museOwnsCuts?{id:movie.id,title:movie.title,targetMinutes:policy.targetMinutes,workerId:movie.worker_id}:undefined,
     sourceSrtAsset:policy.museOwnsCuts?{path:assetPath+'/source_srt',mime:ASSET_TYPES.source_srt,name:'CinePulse_Source.srt'}:undefined,
@@ -397,6 +490,16 @@ async function taskDetail(env,job) {
     }:undefined,
     analysisReference,
     repairOriginalNarration,
+    bladeRunnerAudioRepair:isBladeRunnerAudioRepairJob(job)?{
+      originalSha256:BR_ORIGINAL_SHA,originalBytes:BR_ORIGINAL_BYTES,
+      defectiveRegionSeconds:{start:356,end:435},
+      sourceNarration:extractV5gNarrationText(outputs.narration_english,'english'),
+      approvedTextSha256:await sha256(extractV5gNarrationText(outputs.narration_english,'english')),
+      uploadKind:'english_mp3',stagedOnly:true,
+      previousSrtFailedJobId:BR_FAILED_SRT,
+      originalAudioReadPath:'/tasks/'+job.id+'/asset/english_mp3',
+      stageNotice:'New MP3 is written to a private R2 staging key. Original remains until all quality evidence passes.'
+    }:undefined,
     repairMissingBeatIds:isDunkirkNarrationRepairJob(job)?
       DUNKIRK_REPAIR_BEATS[job.step_id==='narration_english'?'english':'urdu']:undefined,
     repairScope:isDunkirkNarrationRepairJob(job)?
@@ -658,6 +761,12 @@ async function reviewRetryState(env,project){
  return inspectReviewStageRetry({project,worker,policy,jobs:rows.results||[],now:nowSeconds()});
 }
 async function retryReviewedStage(env,project,requestBody){
+ if(project.id===BR_PROJECT&&project.status==='needs_review'){
+  const audio=await assetByKind(env,project.id,'english_mp3');
+  const state=await reviewRetryState(env,project);
+  if(audio?.sha256===BR_ORIGINAL_SHA&&state.step==='srt_english')
+   return {enqueued:false,reason:'Blade Runner has verified defective MP3. Use scoped audio/english-loop-repair, not srt_english retry.'};
+ }
  const state=await reviewRetryState(env,project);
  if(!state.eligible)return {...state,enqueued:false,reason:'review_retry_not_eligible'};
  const failedJobId=requireUUID(requestBody?.failedJobId);
@@ -827,6 +936,16 @@ async function removeProject(env,pid){
   const busy=await env.DB.prepare("SELECT id FROM jobs WHERE project_id=? AND status='working' LIMIT 1").bind(pid).first();
   if(busy)fail(409,'Project has an active Muse lease; wait until it completes or expires');
   const rows=await allAssetKeys(env,pid);
+  // The original Blade Runner MP3 is deliberately retained after a successful
+  // staged pointer switch; include it and any unpromoted repair upload in cleanup.
+  if(pid===BR_PROJECT){
+    rows.push({r2_key:objectKey(pid,'english_mp3')});
+    const repairRows=await env.DB.prepare(
+      "SELECT id FROM jobs WHERE project_id=? AND step_id='mp3_english' "+
+      "AND instr(COALESCE(prompt,''),?)>0"
+    ).bind(pid,BR_REPAIR_MARKER).all();
+    for(const j of repairRows.results||[])rows.push({r2_key:stagedBladeRunnerAudioKey(j.id)});
+  }
   const experimental=(await projectPolicy(env,pid)).experiment;
   if(experimental){
     await ensureExperimentTables(env);
@@ -1216,7 +1335,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gAcceptingNewProjects:env.CINEPULSE_V5G_DISABLED!=='true',v5gLiveStageCount:V5G_STEPS.length,v5gPreflightRequeueBuild:V5G_PREFLIGHT_REQUEUE_BUILD,dunkirkNarrationRepairBuild:DUNKIRK_REPAIR_BUILD,v5gMatchPlanBuild:V5G_MATCH_PLAN_BUILD,reviewStageRetryBuild:REVIEW_STAGE_RETRY_BUILD,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gAcceptingNewProjects:env.CINEPULSE_V5G_DISABLED!=='true',v5gLiveStageCount:V5G_STEPS.length,v5gPreflightRequeueBuild:V5G_PREFLIGHT_REQUEUE_BUILD,dunkirkNarrationRepairBuild:DUNKIRK_REPAIR_BUILD,bladeRunnerAudioRepairBuild:BR_AUDIO_REPAIR_BUILD,v5gMatchPlanBuild:V5G_MATCH_PLAN_BUILD,reviewStageRetryBuild:REVIEW_STAGE_RETRY_BUILD,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -1343,6 +1462,10 @@ async function route(request,env){
           const binary=await request.arrayBuffer();
           try{return json(await storeExperimentAsset(env,{projectId:job.project_id,kind,bytes:binary}),201);}catch(error){fail(422,String(error.message));}
         }
+        if(isBladeRunnerAudioRepairJob(job)){
+          if(kind!=='english_mp3')fail(403,'Blade Runner repair only accepts English MP3');
+          return json(await stageBladeRunnerAudioUpload(request,env,job),201);
+        }
         if(!['english_mp3','urdu_mp3'].includes(kind))fail(400,'Only MP3 and authorized scene SQLite uploads supported');
         if((job.step_id==='mp3_english'&&kind!=='english_mp3')||(job.step_id==='mp3_urdu'&&kind!=='urdu_mp3'))fail(403,'Audio asset does not match this stage');
         if(!['mp3_english','mp3_urdu',SCENE_LAB_STAGE,DEEP_PREPARE].includes(job.step_id))fail(403,'Only authorized audio-preparation stages may upload MP3');
@@ -1361,6 +1484,12 @@ async function route(request,env){
         return json(await beginTargetedUrduRematch(env,job,body.indices,body.lease),201);
       }
       if(method==='POST'&&action==='result'){
+        if(isBladeRunnerAudioRepairJob(job)){
+          const body=await getJson(request,MAX_JSON);
+          if(!validLease||body.lease!==job.lease)
+            fail(409,'Blade Runner repair result requires fresh active lease');
+          return json(await acceptBladeRunnerAudioResult(env,job,body),201);
+        }
         if(job.step_id===URDU_REPAIR_STAGE){
           if(job.status!=='working'||job.lease_until<=nowSeconds())
             fail(409,'Targeted Muse lease expired or not active');
@@ -2003,6 +2132,21 @@ async function route(request,env){
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
+    if(action==='audio/english-loop-repair'&&method==='GET'){
+      if(pid!==BR_PROJECT)fail(404,'No scoped English MP3 repair for this movie');
+      return json(await bladeRunnerAudioRepairState(env,project));
+    }
+    if(action==='audio/english-loop-repair'&&method==='POST'){
+      if(pid!==BR_PROJECT)fail(404,'No scoped English MP3 repair for this movie');
+      const body=await getJson(request);
+      if(body.confirm!==true||body.failedJobId!==BR_FAILED_SRT)
+       fail(422,'Confirm exact failed Blade Runner SRT job before audio repair');
+      const state=await bladeRunnerAudioRepairState(env,project);
+      if(!state.canStart)
+       return json({...state,enqueued:false,notice:'Audio repair not eligible; no checkpoints modified.'},409);
+      const result=await queueBladeRunnerAudioRepair(env,{jobId:newId(),now:nowSeconds()});
+      return json({projectId:pid,...result},result.enqueued?201:result.idempotent?200:409);
+    }
     if(action==='narration-coverage-repair'&&method==='GET'){
       if(pid!==DUNKIRK_REPAIR_PROJECT)fail(404,'No scoped narration repair for this movie');
       return json(await dunkirkRepairState(env,project));
@@ -2031,6 +2175,14 @@ async function route(request,env){
        notice:'Repair cannot be started or duplicated in the current state.'},409);
     }
     if(action==='recovery'&&method==='GET'){
+      if(pid===BR_PROJECT&&project.status==='needs_review'&&
+        (await assetByKind(env,pid,'english_mp3'))?.sha256===BR_ORIGINAL_SHA){
+        const repaired=await bladeRunnerAudioRepairState(env,project);
+        return json({projectId:pid,status:project.status,canRetry:false,
+          failedStage:'srt_english',failedJobId:BR_FAILED_SRT,
+          options:[],readOnly:true,scopedAudioRepair:true,repairState:repaired,
+          notice:'Do not retry srt_english against defective English MP3. First repair audio using audio/english-loop-repair.'});
+      }
       const dunkirk=pid===DUNKIRK_REPAIR_PROJECT?
        await dunkirkRepairState(env,project):null;
       if(dunkirk)
@@ -2060,6 +2212,9 @@ async function route(request,env){
         readOnly:true});
      }
      if(action==='recovery'&&method==='POST'){
+      if(pid===BR_PROJECT&&project.status==='needs_review'&&
+        (await assetByKind(env,pid,'english_mp3'))?.sha256===BR_ORIGINAL_SHA)
+        fail(409,'Blade Runner English MP3 loop is verified. Use audio/english-loop-repair before srt_english.');
       const body=await getJson(request);
       if(body.confirm!==true)fail(422,'Explicit confirmation required to retry a failed stage');
       if(pid===DUNKIRK_REPAIR_PROJECT&&body.stepId==='grounded_preflight'){
@@ -2082,6 +2237,10 @@ async function route(request,env){
         result.enqueued?201:result.idempotent?200:409);
      }
      if(action==='review/retry'&&method==='GET'){
+      if(pid===BR_PROJECT&&project.status==='needs_review'&&
+        (await assetByKind(env,pid,'english_mp3'))?.sha256===BR_ORIGINAL_SHA)
+        return json({projectId:pid,canRetry:false,readOnly:true,
+         reason:'Verified defective English MP3; use scoped audio/english-loop-repair'});
       const state=await reviewRetryState(env,project);
       return json({projectId:pid,workerId:project.worker_id,...state,
         mutatesAcceptedJobs:false,specializedStagesRequireSeparateRecovery:true});

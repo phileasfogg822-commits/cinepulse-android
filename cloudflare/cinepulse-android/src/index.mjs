@@ -761,8 +761,12 @@ async function reviewRetryState(env,project){
  return inspectReviewStageRetry({project,worker,policy,jobs:rows.results||[],now:nowSeconds()});
 }
 async function retryReviewedStage(env,project,requestBody){
- if(project.id===BR_PROJECT)
-  return {enqueued:false,reason:'Blade Runner has verified defective MP3. Use scoped audio/english-loop-repair, not srt_english retry.'};
+ if(project.id===BR_PROJECT&&project.status==='needs_review'){
+  const audio=await assetByKind(env,project.id,'english_mp3');
+  const state=await reviewRetryState(env,project);
+  if(audio?.sha256===BR_ORIGINAL_SHA&&state.step==='srt_english')
+   return {enqueued:false,reason:'Blade Runner has verified defective MP3. Use scoped audio/english-loop-repair, not srt_english retry.'};
+ }
  const state=await reviewRetryState(env,project);
  if(!state.eligible)return {...state,enqueued:false,reason:'review_retry_not_eligible'};
  const failedJobId=requireUUID(requestBody?.failedJobId);
@@ -2171,7 +2175,8 @@ async function route(request,env){
        notice:'Repair cannot be started or duplicated in the current state.'},409);
     }
     if(action==='recovery'&&method==='GET'){
-      if(pid===BR_PROJECT){
+      if(pid===BR_PROJECT&&project.status==='needs_review'&&
+        (await assetByKind(env,pid,'english_mp3'))?.sha256===BR_ORIGINAL_SHA){
         const repaired=await bladeRunnerAudioRepairState(env,project);
         return json({projectId:pid,status:project.status,canRetry:false,
           failedStage:'srt_english',failedJobId:BR_FAILED_SRT,
@@ -2207,7 +2212,8 @@ async function route(request,env){
         readOnly:true});
      }
      if(action==='recovery'&&method==='POST'){
-      if(pid===BR_PROJECT)
+      if(pid===BR_PROJECT&&project.status==='needs_review'&&
+        (await assetByKind(env,pid,'english_mp3'))?.sha256===BR_ORIGINAL_SHA)
         fail(409,'Blade Runner English MP3 loop is verified. Use audio/english-loop-repair before srt_english.');
       const body=await getJson(request);
       if(body.confirm!==true)fail(422,'Explicit confirmation required to retry a failed stage');
@@ -2231,8 +2237,10 @@ async function route(request,env){
         result.enqueued?201:result.idempotent?200:409);
      }
      if(action==='review/retry'&&method==='GET'){
-      if(pid===BR_PROJECT)return json({projectId:pid,canRetry:false,readOnly:true,
-       reason:'Verified defective English MP3; use scoped audio/english-loop-repair'});
+      if(pid===BR_PROJECT&&project.status==='needs_review'&&
+        (await assetByKind(env,pid,'english_mp3'))?.sha256===BR_ORIGINAL_SHA)
+        return json({projectId:pid,canRetry:false,readOnly:true,
+         reason:'Verified defective English MP3; use scoped audio/english-loop-repair'});
       const state=await reviewRetryState(env,project);
       return json({projectId:pid,workerId:project.worker_id,...state,
         mutatesAcceptedJobs:false,specializedStagesRequireSeparateRecovery:true});

@@ -208,6 +208,10 @@ test('backend routes and health advertise scoped MP3 repair; previous audio chec
  assert.match(src,/validateMeasuredSubtitleQuality\(/);
  assert.match(src,/validateNarrationScriptCap\(/);
  assert.match(src,/BR_AUDIO_REPAIR_BUILD/);
+ assert.match(src,/includes\(BR_RETRY_SRT_MARKER\)/);
+ assert.match(src,/audio\?\.sha256===BR_ORIGINAL_SHA&&state\.step==='srt_english'/);
+ assert.match(BR_NEW_SRT_PROMPT,/V5\.4/);
+
  assert.ok(src.indexOf('await administrator(request,env)')<
   src.indexOf("action==='audio/english-loop-repair'&&method==='POST'"));
  for(const sql of [BR_ENQUEUE_SQL,BR_PROJECT_RESUME_SQL,

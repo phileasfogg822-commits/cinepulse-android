@@ -136,15 +136,21 @@ jobs:
             if [[ "$status" == "200" ]] && jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.museOwnsCuts==true and .policy.sceneLabIsolatedQueue==true and .policy.sceneLabMuseV4Export==true and .policy.sceneLabBuild=="cinepulse-scene-lab-v1" and .policy.deepMuseBatches==true and .policy.deepMuseSourceEvidence==true and .policy.deepMuseCheckpoints==true and .policy.deepMuseBuild=="cinepulse-scene-lab-deep-muse-v1" and .policy.deepMuseWindowCandidateBudget==22000 and .policy.permanentDeepMuseDefault==true and .policy.urduAnchorWindowSeconds==25 and .policy.englishAnchorWindowSeconds==12 and .policy.urduTargetedRematchEnabled==true and .policy.audioLanguageQualityForNewProjects==true and .policy.audioLanguageQualityBuild=="cinepulse-v5.4-audio-urdu-qa" and .policy.urduTtsLocaleRequired=="hi-IN" and .policy.urduTtsControlledDevanagari==true and .policy.urduPronunciationBuild=="cinepulse-v5.5-urdu-pronunciation" and .policy.urduCanonicalScript=="Urdu" and .policy.urduTargetedRematchBuild=="cinepulse-urdu-targeted-rematch-v5.2" and .policy.narrationDurationPolicy=="v5.1-strict-for-new-projects" and .policy.productionDeepMuseBuild=="cinepulse-production-muse-deep-v5.0" and .policy.productionDeepMuseBatchSize==5 and .policy.legacySceneLabCreationRetired==true' /tmp/cp-after-health.json >/dev/null; then break; fi
             sleep 3
           done
+          echo "LIVE_HEALTH_HTTP=$status"
+          jq -c '{status,build,error,cloudOrigin,policy:{dunkirkNarrationRepairBuild:.policy.dunkirkNarrationRepairBuild,v5gPreflightRequeueBuild:.policy.v5gPreflightRequeueBuild,v5gMatchPlanBuild:.policy.v5gMatchPlanBuild,reviewStageRetryBuild:.policy.reviewStageRetryBuild,v5gLiveStageCount:.policy.v5gLiveStageCount}}' /tmp/cp-after-health.json || true
           [[ "$status" == "200" ]]
           jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.windowsAssetCount==8 and .build=="android-cloud-backend-0.4.3-v3828-cutplan-srt-diagnostics" and .policy.v5gWorker1Only==true and .policy.v5gLegacyIntPreserved==true and .policy.v5gLiveStageCount==15' /tmp/cp-after-health.json >/dev/null
           no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects")
+          echo "NO_AUTH_PROJECTS_HTTP=$no_auth"
           test "$no_auth" = "401"
           lab_no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/scene-lab")
+          echo "NO_AUTH_SCENELAB_HTTP=$lab_no_auth"
           test "$lab_no_auth" = "401"
           deep_no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/scene-lab/deep")
+          echo "NO_AUTH_DEEPMUSE_HTTP=$deep_no_auth"
           test "$deep_no_auth" = "401"
           deep_post_no_auth=$(curl -sS --max-time 25 -X POST -H 'Content-Type: application/json' --data '{}' -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/scene-lab/deep")
+          echo "NO_AUTH_DEEPMUSE_POST_HTTP=$deep_post_no_auth"
           test "$deep_post_no_auth" = "401"
           jq -e '.policy.v5gPreflightRequeueBuild=="v5g-preflight-requeue-v2-instr-20261114" and .policy.reviewStageRetryBuild=="review-stage-retry-v1-20261114" and .policy.v5gMatchPlanBuild=="v5g-match-plan-consecutive-units-20261114" and .policy.dunkirkNarrationRepairBuild=="dunkirk-pretts-two-language-repair-v1-20261119"' /tmp/cp-after-health.json >/dev/null
           echo 'V5G_PREFLIGHT_ONE_SHOT_RECOVERY_VERSION_VERIFIED'

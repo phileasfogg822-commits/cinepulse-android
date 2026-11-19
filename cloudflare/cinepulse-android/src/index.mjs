@@ -6,6 +6,7 @@ import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurat
 import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts,extractV5gNarrationText,selectV5gWorkflow,classifyV5gWorker } from './v5g-production-gate.mjs';
 import {V5G_PREFLIGHT_REQUEUE_BUILD,V5G_PREFLIGHT_REQUEUE_MARKER,BFG_PREFLIGHT_PROJECT_ID,BFG_PREFLIGHT_FAILED_JOB_ID,BFG_PREFLIGHT_WORKER_ID,requeueFailedV5gPreflight,inspectV5gPreflightRecoveryGuards} from './v5g-preflight-requeue.mjs';
 import {REVIEW_STAGE_RETRY_BUILD,REVIEW_STAGE_RETRY_MARKER,REVIEW_STAGE_MEDIA,inspectReviewStageRetry,enqueueReviewStageRetry} from './review-stage-retry.mjs';
+import {DUNKIRK_REPAIR_BUILD,DUNKIRK_REPAIR_PROJECT,DUNKIRK_REPAIR_WORKER,DUNKIRK_REPAIR_FAILED,DUNKIRK_REPAIR_SOURCE_SHA,DUNKIRK_REPAIR_MARKER,DUNKIRK_REPAIR_BEATS,isDunkirkNarrationRepairJob,validateDunkirkRepairNarrationText,inspectDunkirkNarrationRepair,queueDunkirkRepairStage,markDunkirkNarrationsReady} from './dunkirk-narration-repair.mjs';
 import {validateV5gGlobalPlan,V5G_MATCH_PLAN_BUILD} from './v5g-match-plan.mjs';
 import { PERMANENT_DEEP_MARKER,PERMANENT_DEEP_BUILD,PERMANENT_DEEP_STEPS,PERMANENT_DEEP_MATCH_STEPS,PERMANENT_DEEP_MATCH_EN,PERMANENT_DEEP_MATCH_UR,PERMANENT_DEEP_CUTS,deepLanguage,isProductionDeepStage,loadProductionCues,deepProductionProgress,productionDeepPrompt,validateProductionDeepBatch,combineProductionDeepCuts,summariseProductionDeepMatches } from './permanent-deep-muse.mjs';
 import { rankDeepMuseCandidates } from './scene-lab-deep-candidates.mjs';
@@ -174,6 +175,29 @@ async function priorOutputs(env,projectId) {
  }
  return outputs;
 }
+/**
+ * Read-only, project-ID-locked source and checkpoint inspection for Dunkirk.
+ * Admin may start repair, the worker can only complete its two leased jobs.
+ */
+async function dunkirkRepairState(env,project){
+ if(project.id!==DUNKIRK_REPAIR_PROJECT)return {
+  eligible:false,reasons:['wrong_project'],readOnly:true};
+ const [policy,worker,rows,outputs,source,audioEnglish,audioUrdu]=await Promise.all([
+  projectPolicy(env,project.id),
+  env.DB.prepare('SELECT id,enabled,paused FROM workers WHERE id=?').bind(project.worker_id).first(),
+  env.DB.prepare('SELECT id,project_id,worker_id,step_id,status,prompt,created_at,rowid FROM jobs WHERE project_id=? ORDER BY created_at ASC,rowid ASC').bind(project.id).all(),
+  priorOutputs(env,project.id),env.FILES.get(project.source_srt_key),
+  assetByKind(env,project.id,'english_mp3'),assetByKind(env,project.id,'urdu_mp3')
+ ]);
+ const sourceSha=source?await sha256(new Uint8Array(await source.arrayBuffer())):'';
+ let groundedBeats=null;
+ try{groundedBeats=JSON.parse(outputs.grounded_evidence||'null')?.beats||null}catch{}
+ return inspectDunkirkNarrationRepair({project,worker,policy,
+  jobs:rows.results||[],groundedBeats,sourceSha,
+  hasAudio:!!(audioEnglish||audioUrdu||
+   ['mp3_english','srt_english','mp3_urdu','srt_urdu'].some(step=>outputs[step])),
+  now:nowSeconds()});
+}
 async function taskDetail(env,job) {
   if(job.step_id===URDU_REPAIR_STAGE){
     const policy=await projectPolicy(env,job.project_id);
@@ -315,6 +339,16 @@ async function taskDetail(env,job) {
       notice:'Muse is responsible for final cut decisions; Cloudflare only validates and stores.'};
   }
   const outputs=await priorOutputs(env,job.project_id);
+  let repairOriginalNarration;
+  if(isDunkirkNarrationRepairJob(job)){
+   const original=await env.DB.prepare(
+    "SELECT output FROM jobs WHERE project_id=? AND step_id=? AND status='done' "+
+    "AND instr(COALESCE(prompt,''),?)=0 ORDER BY created_at ASC,rowid ASC LIMIT 1"
+   ).bind(job.project_id,job.step_id,DUNKIRK_REPAIR_MARKER).first();
+   if(!original?.output)fail(409,'Original Dunkirk accepted narration missing for controlled revision');
+   repairOriginalNarration=extractV5gNarrationText(original.output,
+     job.step_id==='narration_english'?'english':'urdu');
+  }
   // Context only for the current project and its own worker. Never mixes movies.
   const policy=await projectPolicy(env,job.project_id);
   const stages=policy.stages;
@@ -349,7 +383,7 @@ async function taskDetail(env,job) {
 
   return {...publicJob(job),lease:job.lease,
     prompt:policy.museOwnsCuts?((policy.grounded&&[V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN].includes(job.step_id)?(job.prompt?.startsWith('RETRY REQUIRED:')?promptFor(job.step_id)+'\n'+job.prompt:job.prompt):museStageInstructions(job.step_id,{movieTitle:movie.title,projectId:movie.id,targetMinutes:policy.targetMinutes}))+(policy.grounded&&['digest','narration_english','narration_urdu'].includes(job.step_id)?'\nV5-G GROUNDED POLICY: Use original SRT and previously accepted source-backed evidence; avoid unsupported story detail, preserve distinct source cue/beat context and full scripts. There is a mandatory pre-TTS checkpoint before audio.':'')+(controlledUrduTask&&job.step_id==='mp3_urdu'?'\n'+urduDevanagariInstructions({rescue:String(job.prompt||'').includes(URDU_DEVANAGARI_RESCUE_MARKER)}):'')+(controlledUrduTask&&job.step_id==='srt_urdu'?'\n'+urduDevanagariSrtInstructions:'')+(controlledUrduTask&&job.step_id==='narration_urdu'?'\nAPPROVED CANONICAL NARRATION IS PAKISTANI URDU SCRIPT. The later Devanagari TTS transport MUST NOT alter this text.':'')+(policy.audioLanguageQa&&!((controlledUrduTask)&&['narration_urdu','mp3_urdu','srt_urdu'].includes(job.step_id))&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?
-      '\nCINEPULSE V5.4 AUDIO QA (NEW MOVIES ONLY): Reject filler or repeated 5- to 8-word phrases and repeated TTS chunks. Before MP3, compare the exact script against all previous chunks and check chunk joins with overlap-free sample playback. Never restart, duplicate or loop a previously synthesized chunk. After MP3, use speech-to-text aligned to REAL audio and compare each transcript region with the approved script; never hallucinate transcription or fake cues. For URDU ONLY: write natural idiomatic Pakistani Urdu (Nastaliq/Arabic-derived script) with Pakistani vocabulary, not Hindi or awkward literal translation; read Urdu text aloud in a genuine ur-PK-capable voice and do not transliterate to Devanagari or use a hi-IN Hindi voice. If ur-PK TTS unavailable, return a clear unresolved stage error; never silently substitute Hindi. The mp3_urdu result output MUST be JSON {"provider":"actual provider","voiceName":"actual voice id","voiceLocale":"ur-PK","inputScript":"Urdu","transliterated":false,"hindiFallback":false} after uploading the real MP3. The SRT must be plain timed Urdu (or a JSON envelope with format=srt, text=timed Urdu), without Cyrillic, Chinese, Korean, Devanagari or repeated hallucinated segments. QA failures mean repair THIS stage; never advance to Deep matching with bad audio.': '')+(policy.strictNarrationDuration&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?'\nHARD CAP FOR THIS NEW MOVIE: '+policy.targetMinutes+' minutes per language. Narration must stay under the word cap and measured MP3-aligned SRT MUST end no later than '+(policy.targetMinutes*60)+'s. Shorten script before TTS to prevent overlong audio. Do not slow down or stretch narration.':'')+(policy.permanentDeep&&job.step_id==='windows_project'?'\nPERMANENT DEEP MUSE V5: use priorOutputs.cut_plan derived from the validated 5-cue semantic batches for BOTH languages; preserve all cut values and sourceEvidence; do not repeat matching or alter narration/audio. Include method/provenance in cloudImport if supported.':'')+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')?'\n'+job.prompt:'')):
+      '\nCINEPULSE V5.4 AUDIO QA (NEW MOVIES ONLY): Reject filler or repeated 5- to 8-word phrases and repeated TTS chunks. Before MP3, compare the exact script against all previous chunks and check chunk joins with overlap-free sample playback. Never restart, duplicate or loop a previously synthesized chunk. After MP3, use speech-to-text aligned to REAL audio and compare each transcript region with the approved script; never hallucinate transcription or fake cues. For URDU ONLY: write natural idiomatic Pakistani Urdu (Nastaliq/Arabic-derived script) with Pakistani vocabulary, not Hindi or awkward literal translation; read Urdu text aloud in a genuine ur-PK-capable voice and do not transliterate to Devanagari or use a hi-IN Hindi voice. If ur-PK TTS unavailable, return a clear unresolved stage error; never silently substitute Hindi. The mp3_urdu result output MUST be JSON {"provider":"actual provider","voiceName":"actual voice id","voiceLocale":"ur-PK","inputScript":"Urdu","transliterated":false,"hindiFallback":false} after uploading the real MP3. The SRT must be plain timed Urdu (or a JSON envelope with format=srt, text=timed Urdu), without Cyrillic, Chinese, Korean, Devanagari or repeated hallucinated segments. QA failures mean repair THIS stage; never advance to Deep matching with bad audio.': '')+(policy.strictNarrationDuration&&['narration_english','narration_urdu','mp3_english','mp3_urdu','srt_english','srt_urdu'].includes(job.step_id)?'\nHARD CAP FOR THIS NEW MOVIE: '+policy.targetMinutes+' minutes per language. Narration must stay under the word cap and measured MP3-aligned SRT MUST end no later than '+(policy.targetMinutes*60)+'s. Shorten script before TTS to prevent overlong audio. Do not slow down or stretch narration.':'')+(policy.permanentDeep&&job.step_id==='windows_project'?'\nPERMANENT DEEP MUSE V5: use priorOutputs.cut_plan derived from the validated 5-cue semantic batches for BOTH languages; preserve all cut values and sourceEvidence; do not repeat matching or alter narration/audio. Include method/provenance in cloudImport if supported.':'')+(experimentPrompt?'\nEXPERIMENTAL ADDENDUM:\n'+experimentPrompt:'')+(job.prompt?.includes('RETRY REQUIRED:')||isDunkirkNarrationRepairJob(job)?'\n'+job.prompt:'')):
       policy.longForm&&job.step_id==='cut_plan'?promptFor('cut_plan'):job.prompt,
     movie:policy.museOwnsCuts?{id:movie.id,title:movie.title,targetMinutes:policy.targetMinutes,workerId:movie.worker_id}:undefined,
     sourceSrtAsset:policy.museOwnsCuts?{path:assetPath+'/source_srt',mime:ASSET_TYPES.source_srt,name:'CinePulse_Source.srt'}:undefined,
@@ -362,6 +396,11 @@ async function taskDetail(env,job) {
       readerLocale:'hi-IN',finalSrtScript:'Urdu',voiceAccentVerified:false
     }:undefined,
     analysisReference,
+    repairOriginalNarration,
+    repairMissingBeatIds:isDunkirkNarrationRepairJob(job)?
+      DUNKIRK_REPAIR_BEATS[job.step_id==='narration_english'?'english':'urdu']:undefined,
+    repairScope:isDunkirkNarrationRepairJob(job)?
+      'Dunkirk 48-beat narration only. No digest/source/evidence/audio changes.':undefined,
     analysisFieldPaths:analysisReference?{
       'analysis.narrations.english':'analysisReference.narrations.english',
       'analysis.narrations.hindiUrdu':'analysisReference.narrations.hindiUrdu',
@@ -715,6 +754,21 @@ async function recoverOneCompletedProject(env,workerId=null){
 async function advancePipeline(env,job){
   if(controlIsStopped(await getProject(env,job.project_id)))return {status:'stopped',autoAdvanced:false};
   if(controlIsPaused(await getProject(env,job.project_id)))return {status:'paused',autoAdvanced:false};
+  if(isDunkirkNarrationRepairJob(job)){
+   if(job.step_id==='narration_english'){
+    const next=await queueDunkirkRepairStage(env,{stage:'narration_urdu',
+      newJobId:newId(),now:nowSeconds()});
+    if(!next.enqueued&&!next.idempotent)
+     fail(409,'Dunkirk English revision accepted but Urdu requeue guard refused: '+next.reason);
+    return {status:'processing',nextStep:'narration_urdu',nextJobId:next.jobId,
+      checkpointRepair:true,originalAcceptedNarrationPreserved:true};
+   }
+   const end=await markDunkirkNarrationsReady(env,nowSeconds());
+   if(!end.ready)fail(409,'Dunkirk revised narrations accepted but safe preflight authorization state was not reached');
+   return {status:'needs_review',nextStep:'grounded_preflight',
+     checkpointRepair:true,awaitingAdminPreflightConfirmation:true,
+     message:'Both revised narrations accepted. Recheck 48 grounded beats and authorize preflight with POST /v1/projects/'+DUNKIRK_REPAIR_PROJECT+'/recovery.'};
+  }
   const policy=await projectPolicy(env,job.project_id);
   const stages=policy.stages;
   const current=stages.indexOf(job.step_id);
@@ -1162,7 +1216,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gAcceptingNewProjects:env.CINEPULSE_V5G_DISABLED!=='true',v5gLiveStageCount:V5G_STEPS.length,v5gPreflightRequeueBuild:V5G_PREFLIGHT_REQUEUE_BUILD,v5gMatchPlanBuild:V5G_MATCH_PLAN_BUILD,reviewStageRetryBuild:REVIEW_STAGE_RETRY_BUILD,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gAcceptingNewProjects:env.CINEPULSE_V5G_DISABLED!=='true',v5gLiveStageCount:V5G_STEPS.length,v5gPreflightRequeueBuild:V5G_PREFLIGHT_REQUEUE_BUILD,dunkirkNarrationRepairBuild:DUNKIRK_REPAIR_BUILD,v5gMatchPlanBuild:V5G_MATCH_PLAN_BUILD,reviewStageRetryBuild:REVIEW_STAGE_RETRY_BUILD,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -1442,6 +1496,18 @@ async function route(request,env){
         if(job.step_id==='mp3_english'&&!await assetByKind(env,job.project_id,'english_mp3'))fail(409,'Real English MP3 upload required');
         if(job.step_id==='mp3_urdu'&&!await assetByKind(env,job.project_id,'urdu_mp3'))fail(409,'Real Urdu MP3 upload required');
         if(['narration_english','narration_urdu'].includes(job.step_id)){
+          if(isDunkirkNarrationRepairJob(job)){
+            const original=await env.DB.prepare(
+              "SELECT output FROM jobs WHERE project_id=? AND step_id=? AND status='done' "+
+              "AND instr(COALESCE(prompt,''),?)=0 ORDER BY created_at ASC,rowid ASC LIMIT 1"
+            ).bind(job.project_id,job.step_id,DUNKIRK_REPAIR_MARKER).first();
+            if(!original?.output)fail(409,'Dunkirk original approved narration unavailable');
+            const lang=job.step_id==='narration_english'?'english':'urdu';
+            try{validateDunkirkRepairNarrationText(
+              extractV5gNarrationText(output,lang),lang,
+              extractV5gNarrationText(original.output,lang));
+            }catch(error){fail(422,'Dunkirk source-grounded narration revision: '+error.message);}
+          }
           const pp=await projectPolicy(env,job.project_id);
           const language=job.step_id==='narration_english'?'english':'urdu';
           if(pp.strictNarrationDuration){
@@ -1937,7 +2003,49 @@ async function route(request,env){
   match=/^\/v1\/projects\/([a-f0-9-]{36})(?:\/(.*))?$/.exec(url.pathname);
   if(match){
     const pid=requireUUID(match[1]),action=match[2]||'',project=await getProject(env,pid);
+    if(action==='narration-coverage-repair'&&method==='GET'){
+      if(pid!==DUNKIRK_REPAIR_PROJECT)fail(404,'No scoped narration repair for this movie');
+      return json(await dunkirkRepairState(env,project));
+    }
+    if(action==='narration-coverage-repair'&&method==='POST'){
+      if(pid!==DUNKIRK_REPAIR_PROJECT)fail(404,'No scoped narration repair for this movie');
+      const body=await getJson(request);
+      if(body.confirm!==true||body.failedJobId!==DUNKIRK_REPAIR_FAILED)
+       fail(422,'Confirm the exact failed Dunkirk preflight job before repairing narrations');
+      const state=await dunkirkRepairState(env,project);
+      if(state.canStart||state.canQueueUrdu){
+       const target=state.canStart?'narration_english':'narration_urdu';
+       const result=await queueDunkirkRepairStage(env,{
+        stage:target,newJobId:newId(),now:nowSeconds()});
+       return json({projectId:pid,...result,
+        notice:'Only the requested narration revision is queued; accepted checkpoints and media remain untouched.'},
+        result.enqueued?201:result.idempotent?200:409);
+      }
+      if(state.phase==='urdu_done'&&project.status==='processing'&&state.eligible){
+       const ready=await markDunkirkNarrationsReady(env,nowSeconds());
+       return json({projectId:pid,...ready,nextStep:'grounded_preflight',
+        notice:'Revised narrations accepted; explicit preflight retry can now be authorized.'},
+        ready.ready?200:409);
+      }
+      return json({...state,enqueued:false,
+       notice:'Repair cannot be started or duplicated in the current state.'},409);
+    }
     if(action==='recovery'&&method==='GET'){
+      const dunkirk=pid===DUNKIRK_REPAIR_PROJECT?
+       await dunkirkRepairState(env,project):null;
+      if(dunkirk)
+       return json({projectId:pid,status:project.status,
+        canRetry:dunkirk.canRetryPreflight,
+        failedStage:'grounded_preflight',failedJobId:DUNKIRK_REPAIR_FAILED,
+        workerPaused:dunkirk.reasons.includes('worker_unavailable'),
+        options:dunkirk.canRetryPreflight?[{stepId:'grounded_preflight',recommended:true,
+         label:'Retry grounded preflight after accepted EN+UR revisions',
+         warning:'Both revised scripts already accepted; original 48 beats remain unchanged.'}]:[],
+        notice:dunkirk.canRetryPreflight?
+         'Dunkirk narrations repaired; preflight may now restart against both revised scripts.':
+         'DO NOT RETRY PREFLIGHT: original narrations omit 5 beat-slots. Use scoped narration-coverage-repair to regenerate English B22 and Urdu B07/B22/B32/B45 first. '+dunkirk.phase,
+        readOnly:true,checkpointRepair:true,repairPhase:dunkirk.phase,
+        repairReasons:dunkirk.reasons});
       const state=await reviewRetryState(env,project);
       const supported=!!state.eligible;
       return json({projectId:pid,status:project.status,
@@ -1954,6 +2062,18 @@ async function route(request,env){
      if(action==='recovery'&&method==='POST'){
       const body=await getJson(request);
       if(body.confirm!==true)fail(422,'Explicit confirmation required to retry a failed stage');
+      if(pid===DUNKIRK_REPAIR_PROJECT&&body.stepId==='grounded_preflight'){
+       const repaired=await dunkirkRepairState(env,project);
+       if(repaired.canRetryPreflight){
+        const result=await queueDunkirkRepairStage(env,{
+         stage:'grounded_preflight',newJobId:newId(),now:nowSeconds()});
+        return json({projectId:pid,...result,
+         notice:'Both revised narrations accepted before targeted preflight; original 48-beat evidence preserved.'},
+         result.enqueued?201:result.idempotent?200:409);
+       }
+       // Never retry old scripts via the ordinary failed-stage endpoint.
+       fail(409,'Dunkirk preflight retry blocked: first re-run English and Urdu narrations through narration-coverage-repair. '+repaired.reasons.join('; '));
+      }
       const state=await reviewRetryState(env,project);
       const result=await retryReviewedStage(env,project,{stepId:body.stepId,failedJobId:state.failedJobId});
       return json({projectId:pid,...result,message:result.enqueued?

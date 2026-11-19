@@ -2033,15 +2033,19 @@ async function route(request,env){
     if(action==='recovery'&&method==='GET'){
       const dunkirk=pid===DUNKIRK_REPAIR_PROJECT?
        await dunkirkRepairState(env,project):null;
-      if(dunkirk?.canRetryPreflight)
-       return json({projectId:pid,status:project.status,canRetry:true,
+      if(dunkirk)
+       return json({projectId:pid,status:project.status,
+        canRetry:dunkirk.canRetryPreflight,
         failedStage:'grounded_preflight',failedJobId:DUNKIRK_REPAIR_FAILED,
-        workerPaused:false,
-        options:[{stepId:'grounded_preflight',recommended:true,
+        workerPaused:dunkirk.reasons.includes('worker_unavailable'),
+        options:dunkirk.canRetryPreflight?[{stepId:'grounded_preflight',recommended:true,
          label:'Retry grounded preflight after accepted EN+UR revisions',
-         warning:'Both revised scripts already accepted; original 48 beats remain unchanged.'}],
-        notice:'Dunkirk narrations repaired; now and only now can preflight restart.',
-        readOnly:true,checkpointRepair:true});
+         warning:'Both revised scripts already accepted; original 48 beats remain unchanged.'}]:[],
+        notice:dunkirk.canRetryPreflight?
+         'Dunkirk narrations repaired; preflight may now restart against both revised scripts.':
+         'DO NOT RETRY PREFLIGHT: original narrations omit 5 beat-slots. Use scoped narration-coverage-repair to regenerate English B22 and Urdu B07/B22/B32/B45 first. '+dunkirk.phase,
+        readOnly:true,checkpointRepair:true,repairPhase:dunkirk.phase,
+        repairReasons:dunkirk.reasons});
       const state=await reviewRetryState(env,project);
       const supported=!!state.eligible;
       return json({projectId:pid,status:project.status,

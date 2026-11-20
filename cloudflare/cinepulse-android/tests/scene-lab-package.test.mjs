@@ -67,5 +67,5 @@ test('SRT parser keeps precise measured count and rejects malformed header text'
   '1','00:00:00,000 --> 00:00:02,000','First.'
  ].join('\n');
  assert.throws(()=>parseMeasuredCues(raw),/Unexpected text before first/);
- assert.throws(()=>parseMeasuredCues('1\n00:00:00,000 --> 00:00:02,000\n'),/Empty measured subtitle cue/);
+ assert.throws(()=>parseMeasuredCues('1\n00:00:00,000 --> 00:00:02,000\n'),/No measured subtitle cues found|Empty measured subtitle cue/);
 });

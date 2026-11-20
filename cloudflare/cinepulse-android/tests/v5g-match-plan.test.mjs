@@ -130,3 +130,65 @@ test('global semantic source decision must belong to narration digest blueprint'
  p.decisions.english[0].evidenceQuote='Morning, Sophie.';
  assert.throws(()=>validateV5gGlobalPlan(args(p)),/outside its narration beat blueprint/);
 });
+
+
+test('one measured English cue can carry two genuinely consecutive approved units with one reviewed source scene',()=>{
+ const p=make();
+ p.measuredCues=p.measuredCues.filter(c=>c.language==='urdu');
+ p.measuredCues.unshift({language:'english',index:1,startSeconds:0,endSeconds:4,
+  text:'First greeting. Then a question.',unitIds:['en1','en2']});
+ p.decisions.english=[p.decisions.english[0]];
+ const combined='1\n00:00:00,000 --> 00:00:04,000\nFirst greeting. Then a question.';
+ const result=validateV5gGlobalPlan({...args(p),englishSrt:combined});
+ assert.equal(result.validation.english.cues,1);
+ assert.equal(result.validation.english.units,2);
+ assert.deepEqual(result.validation.english.mergedAudioOnlyUnits,['en2']);
+ assert.equal(result.validation.english.mergedAudioOnlyNotIndependentlyVisualVerified,true);
+});
+test('merged cue may choose the second consecutive units own independently reviewed source scene',()=>{
+ const p=make();
+ p.measuredCues=p.measuredCues.filter(c=>c.language==='urdu');
+ p.measuredCues.unshift({language:'english',index:1,startSeconds:0,endSeconds:4,
+  text:'First greeting. Then a question.',unitIds:['en1','en2']});
+ p.decisions.english=[p.decisions.english[1]];
+ p.decisions.english[0].segmentIndex=1;
+ const combined='1\n00:00:00,000 --> 00:00:04,000\nFirst greeting. Then a question.';
+ const result=validateV5gGlobalPlan({...args(p),englishSrt:combined});
+ assert.deepEqual(result.validation.english.mergedAudioOnlyUnits,['en1']);
+});
+test('unrelated cited source cannot pass the merged cue audio-coverage exception',()=>{
+ const p=make();
+ p.measuredCues=p.measuredCues.filter(c=>c.language==='urdu');
+ p.measuredCues.unshift({language:'english',index:1,startSeconds:0,endSeconds:4,
+  text:'First greeting. Then a question.',unitIds:['en1','en2']});
+ p.decisions.english=[{...p.decisions.english[0],sourceCueIds:[4],
+  sourceStartSeconds:32,sourceEndSeconds:33,evidenceQuote:'Listen to me.'}];
+ assert.throws(()=>validateV5gGlobalPlan({...args(p),
+  englishSrt:'1\n00:00:00,000 --> 00:00:04,000\nFirst greeting. Then a question.'}),
+  /outside its narration beat blueprint/);
+});
+test('a unit with its own standalone measured cue retains individual source relevance',()=>{
+ const p=make();
+ p.measuredCues[0].unitIds=['en1','en2'];
+ p.decisions.english[1]={...p.decisions.english[1],
+  sourceCueIds:[4],sourceStartSeconds:32,sourceEndSeconds:33,evidenceQuote:'Listen to me.'};
+ assert.throws(()=>validateV5gGlobalPlan(args(p)),
+  /outside its narration beat blueprint for unit en2/);
+});
+test('cross-language reuse of the SAME genuinely relevant source moment is allowed, not fabricated',()=>{
+ const p=make();
+ assert.equal(p.decisions.english[0].sourceCueIds[0],p.decisions.urdu[0].sourceCueIds[0]);
+ assert.equal(p.decisions.english[0].sourceStartSeconds,p.decisions.urdu[0].sourceStartSeconds);
+ const result=validateV5gGlobalPlan(args(p));
+ assert.equal(result.validation.status,'reviewed_all_units');
+});
+test('merged audio exception does not lower independent 9/10 review threshold',()=>{
+ const p=make();
+ p.measuredCues=p.measuredCues.filter(c=>c.language==='urdu');
+ p.measuredCues.unshift({language:'english',index:1,startSeconds:0,endSeconds:4,
+  text:'First greeting. Then a question.',unitIds:['en1','en2']});
+ p.decisions.english=[{...p.decisions.english[0],independentSubtitleReview:false}];
+ assert.throws(()=>validateV5gGlobalPlan({...args(p),
+  englishSrt:'1\n00:00:00,000 --> 00:00:04,000\nFirst greeting. Then a question.'}),
+  />=9\/10 review/);
+});

@@ -37,3 +37,35 @@ test('Muse subtitle parser rejects malformed envelopes and empty cue streams',()
  assert.throws(()=>parseMeasuredCues('not an srt'),/No measured subtitle cues found/);
  assert.throws(()=>parseMeasuredCues(JSON.stringify({format:'not-srt',text:'1 --> 2'})),/SRT envelope missing measured text/);
 });
+
+
+test('stored Urdu SRT with embedded blank text lines retains every word and exact two cue headers',()=>{
+ const raw=[
+  '61','00:01:00,000 --> 00:01:02,000','پہلے الفاظ','','',
+  '62','00:01:02,000 --> 00:01:05,000','پھر پہلا جملہ۔','','پھر ڈیلیا اپنا قدم اٹھاتی ہے۔','',
+  '63','00:01:05,000 --> 00:01:07,000','اگلا جملہ۔',''
+ ].join('\n');
+ const cues=parseMeasuredCues(raw);
+ assert.equal(cues.length,3);
+ assert.equal(cues[1].startSeconds,62);
+ assert.equal(cues[1].endSeconds,65);
+ assert.equal(cues[1].text,'پھر پہلا جملہ۔\n\nپھر ڈیلیا اپنا قدم اٹھاتی ہے۔');
+ assert.equal(cues[2].text,'اگلا جملہ۔');
+});
+test('SRT parser does not invent a new cue from a blank line and ordinary number',()=>{
+ const raw=[
+  '1','00:00:00,000 --> 00:00:04,000','Beginning of phrase.','','42','continuation is part of same cue.',
+  '','2','00:00:04,000 --> 00:00:08,000','Last phrase.'
+ ].join('\n');
+ const cues=parseMeasuredCues(raw);
+ assert.equal(cues.length,2);
+ assert.match(cues[0].text,/continuation is part/);
+});
+test('SRT parser keeps precise measured count and rejects malformed header text',()=>{
+ const raw=[
+  'Garbage before first cue','',
+  '1','00:00:00,000 --> 00:00:02,000','First.'
+ ].join('\n');
+ assert.throws(()=>parseMeasuredCues(raw),/Unexpected text before first/);
+ assert.throws(()=>parseMeasuredCues('1\n00:00:00,000 --> 00:00:02,000\n'),/No measured subtitle cues found|Empty measured subtitle cue/);
+});

@@ -7,7 +7,7 @@ import {parseMeasuredCues} from './scene-lab-package.mjs';
 import {validateProductionDeepBatch,loadProductionCues} from './permanent-deep-muse.mjs';
 import {inspectAfterVoice} from './bfg-v5-grounded-restart.mjs';
 import {validateV5gMeasuredCues} from './v5g-production-gate.mjs';
-export const V5G_MATCH_PLAN_BUILD='v5g-match-plan-consecutive-units-20261114';
+export const V5G_MATCH_PLAN_BUILD='v5g-match-plan-merged-cue-relevance-20261120';
 const fail=msg=>{throw Error('V5-G global match plan: '+msg)};
 export function validateV5gGlobalPlan({sourceSrt,englishSrt,urduSrt,preflight,evidence,input}){
  if(!preflight||!Array.isArray(preflight.narrationUnits))fail('Accepted bilingual pre-TTS checkpoint missing');
@@ -47,43 +47,65 @@ export function validateV5gGlobalPlan({sourceSrt,englishSrt,urduSrt,preflight,ev
  }
  const grouping=inspectAfterVoice({units:preflight.narrationUnits,measuredCues:input.measuredCues});
  if(!grouping.ready)fail('Measured SRT semantic lineage invalid: '+grouping.errors.slice(0,6).join('; '));
+ const touchesBeat=(decision,unit)=>{
+  if(!unit||!Array.isArray(unit.beatIds)||!unit.beatIds.length)return false;
+  return unit.beatIds.some(id=>{
+   const anchor=anchors.get(id),beat=allBeats.get(id);
+   if(!anchor||!beat)return false;
+   const sourceTouch=Array.isArray(decision.sourceCueIds)&&decision.sourceCueIds.some(n=>{
+    const cue=Number.isInteger(n)?sourceCues[n-1]:null;
+    return cue&&cue.startSeconds<=anchor.endSeconds+1&&
+      cue.endSeconds>=anchor.startSeconds-1;
+   });
+   return sourceTouch&&decision.sourceStartSeconds<=anchor.endSeconds+12&&
+     decision.sourceEndSeconds>=anchor.startSeconds-12;
+  });
+ };
  const review={};
  for(const [lang,srt,cues] of [['english',englishSrt,english],['urdu',urduSrt,urdu]]){
-  const decisions=input.decisions[lang],accepted=[],relevantUnits=new Set();
+  const decisions=input.decisions[lang],accepted=[],relevantUnits=new Set(),mergedAudioUnits=new Set();
   if(decisions.length!==cues.length)fail(lang+' planned decision count does not match measured SRT');
-  for(let i=0;i<decisions.length;i++){
-   const d=decisions[i],c=cues[i];
-   if(d?.segmentIndex!==i+1||d.unitId!==c.unitIds[0])
+  const supportsCue=decisions.map((d,i)=>{
+   const c=cues[i];
+   if(d?.segmentIndex!==i+1||!c.unitIds.includes(d.unitId))
     fail(lang+' source decision does not match semantic unit at cue '+(i+1));
    const unit=allUnits.get(lang+':'+d.unitId);
    if(!unit||!Array.isArray(unit.beatIds)||!unit.beatIds.length)
     fail(lang+' decision has no source-backed narration unit');
-   const relevant=unit.beatIds.some(id=>{
-    const anchor=anchors.get(id),beat=allBeats.get(id);
-    if(!anchor||!beat)return false;
-    const sourceTouch=Array.isArray(d.sourceCueIds)&&d.sourceCueIds.some(n=>{
-     const cue=Number.isInteger(n)?sourceCues[n-1]:null;
-     return cue&&cue.startSeconds<=anchor.endSeconds+1&&
-       cue.endSeconds>=anchor.startSeconds-1;
-    });
-    return sourceTouch&&d.sourceStartSeconds<=anchor.endSeconds+12&&
-      d.sourceEndSeconds>=anchor.startSeconds-12;
-   });
-   // For a narration unit spanning several real STT cues, at least one
-   // independently reviewed decision must touch the unit's own beat window.
-   // Every decision still faces the existing source quote, score, uniqueness
-   // and non-overlap checks below; we do not invent wider source anchors.
+   const relevant=touchesBeat(d,unit);
+   // An STT cue can contain two or more consecutive preflight-approved
+   // narration units while the movie decision can select only ONE scene.
+   // The decision's scene must be grounded in a unit the cue really speaks.
+   // For a single-unit voice passage spanning many cues, retain the prior
+   // "one reviewed in-window source decision per unit" allowance.
+   const cueGrounded=relevant||c.unitIds.some(id=>
+    touchesBeat(d,allUnits.get(lang+':'+id)));
    if(relevant)relevantUnits.add(d.unitId);
    if(d.qualityScore<.9||!Number.isFinite(d.qualityScore)||
       d.independentSubtitleReview!==true||
       typeof d.reviewerRef!=='string'||d.reviewerRef.trim().length<4)
     fail(lang+' source decision requires independent SRT-semantic >=9/10 review at cue '+(i+1));
-  }
-  // The accepted preflight/after-voice grouping is the authoritative set:
-  // do not let a unit pass merely because a neighboring unit is relevant.
+   return cueGrounded;
+  });
+  // Separate *audible unit* coverage (measured SRT lineage + approved
+  // preflight) from one selected visual scene per actual STT cue.
+  // A unit occurring ONLY inside multi-unit cues cannot have a distinct
+  // scene decision without fabricating additional subtitle boundaries.
+  // Such units may be carried by the existing independently-reviewed
+  // source decision if it touches another real beat in that same cue.
+  // Units with any standalone measured cue must still have their OWN
+  // in-blueprint source decision, just as before.
   for(const group of grouping.groups.filter(g=>g.language===lang)){
-   if(!relevantUnits.has(group.unitId))
-    fail(lang+' source decision is outside its narration beat blueprint for unit '+group.unitId);
+   if(relevantUnits.has(group.unitId))continue;
+   const positions=group.cueIndices.map(idx=>idx-1);
+   const onlyMerged=positions.length>0&&positions.every(i=>
+    cues[i]?.unitIds.length>1);
+   const anchoredMerged=positions.some(i=>supportsCue[i]===true);
+   if(onlyMerged&&anchoredMerged){
+    mergedAudioUnits.add(group.unitId);
+    continue;
+   }
+   fail(lang+' source decision is outside its narration beat blueprint for unit '+group.unitId);
   }
   // Reuse the exact live production semantic-batch and non-overlap validator,
   // rehearsing all batches BEFORE any job writes can occur.
@@ -97,7 +119,9 @@ export function validateV5gGlobalPlan({sourceSrt,englishSrt,urduSrt,preflight,ev
   review[lang]={cues:measured.length,units:grouping.groups.filter(x=>x.language===lang).length,
    batches:accepted.length,decisionCount:decisions.length,qualityFloor:.9,
    maxSourceEvidenceCorridorSeconds:maxWindow,
-   sourceCues:source.length};
+   sourceCues:source.length,
+   mergedAudioOnlyUnits:[...mergedAudioUnits],
+   mergedAudioOnlyNotIndependentlyVisualVerified:true};
  }
  return {measuredCues:input.measuredCues,decisions:input.decisions,
   validation:{stage:'grounded_match_plan',status:'reviewed_all_units',globalCoverage:true,

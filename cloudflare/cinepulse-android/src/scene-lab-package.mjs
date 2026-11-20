@@ -19,18 +19,23 @@ export function parseMeasuredCues(value){
  const raw=unwrapMeasuredSrt(value).replace(/\r\n?/g,'\n');
  const seconds=x=>{const m=/^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$/.exec(x);if(!m)throw Error('Invalid SRT timestamp');return +m[1]*3600 + +m[2]*60 + +m[3] + +m[4]/1000};
  const cues=[];
- for(const block of raw.trim().split(/\n\s*\n/)){
-  const lines=block.trim().split('\n');
-  if(/^\d+$/.test(lines[0]?.trim()))lines.shift();
-  const match=/^(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})(?:\s+.*)?$/.exec(lines.shift()?.trim()||'');
-  if(!match)continue;
-  const text=lines.join('\n').trim();
+ const input=raw.replace(/^\uFEFF/,'').trim();
+ // A cue may contain a blank line inside its spoken text. Only a new
+ // timed header (with optional cue index) starts a different measured cue.
+ // Preserve the stored SRT's exact timing and do not drop Urdu words.
+ const header=/(?:^|\n[ \t]*\n)(?:[ \t]*\d+[ \t]*\n)?(\d{2}:\d{2}:\d{2}[,.]\d{3})[ \t]*-->[ \t]*(\d{2}:\d{2}:\d{2}[,.]\d{3})(?:[ \t]+[^\n]*)?\n/g;
+ const found=[...input.matchAll(header)];
+ if(!found.length)throw Error('No measured subtitle cues found');
+ if(input.slice(0,found[0].index).trim())
+  throw Error('Unexpected text before first measured subtitle cue');
+ for(let i=0;i<found.length;i++){
+  const match=found[i],end=i+1<found.length?found[i+1].index:input.length;
+  const text=input.slice(match.index+match[0].length,end).trim();
   if(!text)throw Error('Empty measured subtitle cue');
   const startSeconds=seconds(match[1]),endSeconds=seconds(match[2]);
   if(endSeconds<=startSeconds)throw Error('Invalid measured subtitle duration');
   cues.push({startSeconds,endSeconds,text});
  }
- if(!cues.length)throw Error('No measured subtitle cues found');
  return cues;
 }
 export function renderMeasuredSrt(cues){

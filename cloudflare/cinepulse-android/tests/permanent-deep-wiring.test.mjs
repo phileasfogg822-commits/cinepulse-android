@@ -34,7 +34,7 @@ test('historical experiments retain read/download routes but their creation is r
 });
 test('new Android submission uses a single standard mode and never sets the retired experiment bit',()=>{
  assert.match(android,/api\.createProject\(title,worker,srt,48,target\)/);
- assert.match(android,/MODE: AUTOMATIC — V5-G GROUNDED \/ V5 LEGACY/);
+ assert.match(android,/MODE: AUTOMATIC — V5-G GROUNDED \(WORKER 1 \+ INT\)/);
  assert.doesNotMatch(android,/api\.createExperimentalProject\(title,worker,srt,48,target\)/);
  assert.doesNotMatch(android,/Experimental mode is required in this Preview app/);
  assert.match(android,/sceneMatchingMethod/);
@@ -62,5 +62,5 @@ test('Android shows real V5-G mode and all persisted production stages including
  assert.match(android,/ACTIVE QUEUE:/);
  assert.match(android,/Current \/ latest:/);
  assert.match(android,/Assigned worker:/);
- assert.match(android,/MODE: AUTOMATIC — V5-G GROUNDED \/ V5 LEGACY/);
+ assert.match(android,/MODE: AUTOMATIC — V5-G GROUNDED \(WORKER 1 \+ INT\)/);
 });

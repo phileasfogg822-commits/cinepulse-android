@@ -139,7 +139,7 @@ jobs:
           echo "LIVE_HEALTH_HTTP=$status"
           jq -c '{status,build,error,cloudOrigin,policy:{dunkirkNarrationRepairBuild:.policy.dunkirkNarrationRepairBuild,v5gPreflightRequeueBuild:.policy.v5gPreflightRequeueBuild,v5gMatchPlanBuild:.policy.v5gMatchPlanBuild,reviewStageRetryBuild:.policy.reviewStageRetryBuild,v5gLiveStageCount:.policy.v5gLiveStageCount}}' /tmp/cp-after-health.json || true
           [[ "$status" == "200" ]]
-          jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.windowsAssetCount==8 and .build=="android-cloud-backend-0.4.3-v3828-cutplan-srt-diagnostics" and .policy.v5gWorker1Only==true and .policy.v5gLegacyIntPreserved==true and .policy.v5gLiveStageCount==15' /tmp/cp-after-health.json >/dev/null
+          jq -e '.status=="online" and .policy.experimentalSceneIntelligenceOptIn==true and .policy.experimentalWindowsAssets==11 and .policy.perMoviePauseStopDelete==true and .policy.windowsAssetCount==8 and .build=="android-cloud-backend-0.4.3-v3828-cutplan-srt-diagnostics" and .policy.v5gWorker1Only==false and .policy.v5gIntGroundedEnabled==true and .policy.v5gLegacyIntProjectsPreserved==true and .policy.v5gDualWorkerRoutingBuild=="v5g-worker1-int-grounded-parity-20261123" and .policy.v5gLiveStageCount==15' /tmp/cp-after-health.json >/dev/null
           no_auth=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PROD_ORIGIN/v1/projects")
           echo "NO_AUTH_PROJECTS_HTTP=$no_auth"
           test "$no_auth" = "401"

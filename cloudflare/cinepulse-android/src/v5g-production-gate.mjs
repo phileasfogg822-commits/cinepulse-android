@@ -122,28 +122,32 @@ export function validateV5gMeasuredCues(measuredSrt,cues,language){
  return {count:actual.length,unitIds:[...claimed]};
 }
 
-/** Only the server-stored worker label controls NEW movie routing.
- * A label not demonstrably Worker 1 or INT is rejected at intake, never
- * silently mapped to old V5. Durable digest markers preserve old projects.
+/** New movies from BOTH established worker identities use identical V5-G.
+ * Routing is derived exclusively from the authenticated database worker label,
+ * not a user-provided productionMode flag. Existing INT/Worker 1 movies retain
+ * the pipeline pinned in their original durable digest prompt.
  */
+export const V5G_DUAL_WORKER_ROUTING_BUILD='v5g-worker1-int-grounded-parity-20261123';
 export function classifyV5gWorker(workerLabel,{disabled=false}={}){
  const label=String(workerLabel??'').normalize('NFKC').toLowerCase()
   .replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
  const hasInt=/(?:^| )int(?: |$)/.test(label);
- // Two established labels refer to the same Worker 1 role:
- // "Worker 1" and the original Android Muse connection label,
- // "CinePulse Android Muse 1" (sometimes displayed/transcribed as
- // "CinePulse Android Views 1"). This is a server-stored label, NOT
- // user-supplied pipeline selection. Only explicit role-1 labels match.
+ // Accept only the established INT label family, not any unknown label
+ // containing "int" (such as "International") or a hybrid Worker 1 label.
+ const intWorker=label==='int'||label==='cinepulse android int'||
+   label==='cinepulse int'||label==='int worker';
+ // Two established labels refer to Worker 1: "Worker 1" and the original
+ // Android Muse/Views/News 1 connection. Distinct worker IDs, leases and queues
+ // remain strictly separate even though their stage policy is the same.
  const workerOne=/(?:^| )worker ?(?:0*1|one)(?: |$)/.test(label) ||
    /^cinepulse android (?:muse|views|news) (?:0*1|one)$/.test(label);
- // Never silently classify a combined INT + Worker 1 label as either mode.
- if(hasInt&&(workerOne||/(?:^| )(?:0*1|one)$/.test(label)))return {kind:'unrecognized',productionMode:'unavailable',recognized:false};
- if(hasInt)return {kind:'legacy_int',productionMode:'stable',recognized:true};
- if(workerOne&&disabled)return {kind:'v5g_disabled',productionMode:'unavailable',recognized:true};
+ if(hasInt&&!intWorker)return {kind:'unrecognized',productionMode:'unavailable',recognized:false};
+ if(intWorker&&workerOne)return {kind:'unrecognized',productionMode:'unavailable',recognized:false};
+ if((intWorker||workerOne)&&disabled)return {kind:'v5g_disabled',productionMode:'unavailable',recognized:true};
+ if(intWorker)return {kind:'grounded_int',productionMode:'v5_grounded_srt_only',recognized:true};
  if(workerOne)return {kind:'grounded_worker1',productionMode:'v5_grounded_srt_only',recognized:true};
  return {kind:'unrecognized',productionMode:'unavailable',recognized:false};
 }
 export function selectV5gWorkflow(workerLabel,options={}){
- return classifyV5gWorker(workerLabel,options).kind==='grounded_worker1';
+ return ['grounded_worker1','grounded_int'].includes(classifyV5gWorker(workerLabel,options).kind);
 }

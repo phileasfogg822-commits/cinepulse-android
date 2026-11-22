@@ -3,7 +3,7 @@ import {URDU_DEVANAGARI_POLICY_MARKER,URDU_DEVANAGARI_RESCUE_MARKER,URDU_DEVANAG
 import { AUDIO_QA_MARKER,AUDIO_QA_BUILD,validateNarrationContent,validateMeasuredSubtitleQuality,validateUrduVoiceReceipt } from './audio-urdu-quality.mjs';
 import { URDU_REPAIR_STAGE,URDU_REPAIR_MARKER,URDU_REPAIR_BUILD,URDU_REPAIR_BATCH_MAX,LOST_WORLD_URDU_REPAIR_INDICES,parseUrduRepairPrompt,makeUrduRepairPrompt,applyAcceptedUrduRepairs,UrduRepairTaskEvidence,validateTargetedUrduRematch } from './permanent-deep-rematch.mjs';
 import { STRICT_DURATION_MARKER,validateNarrationScriptCap,validateMeasuredDurationCap } from './narration-duration-policy.mjs';
-import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts,extractV5gNarrationText,selectV5gWorkflow,classifyV5gWorker } from './v5g-production-gate.mjs';
+import { V5G_MARKER,V5G_STEPS,V5G_EVIDENCE,V5G_PREFLIGHT,V5G_MATCH_PLAN,validateV5gEvidence,validateV5gPreTts,extractV5gNarrationText,selectV5gWorkflow,classifyV5gWorker,V5G_DUAL_WORKER_ROUTING_BUILD } from './v5g-production-gate.mjs';
 import {V5G_PREFLIGHT_REQUEUE_BUILD,V5G_PREFLIGHT_REQUEUE_MARKER,BFG_PREFLIGHT_PROJECT_ID,BFG_PREFLIGHT_FAILED_JOB_ID,BFG_PREFLIGHT_WORKER_ID,requeueFailedV5gPreflight,inspectV5gPreflightRecoveryGuards} from './v5g-preflight-requeue.mjs';
 import {REVIEW_STAGE_RETRY_BUILD,REVIEW_STAGE_RETRY_MARKER,REVIEW_STAGE_MEDIA,inspectReviewStageRetry,enqueueReviewStageRetry} from './review-stage-retry.mjs';
 import {DUNKIRK_REPAIR_BUILD,DUNKIRK_REPAIR_PROJECT,DUNKIRK_REPAIR_WORKER,DUNKIRK_REPAIR_FAILED,DUNKIRK_REPAIR_SOURCE_SHA,DUNKIRK_REPAIR_MARKER,DUNKIRK_REPAIR_BEATS,isDunkirkNarrationRepairJob,validateDunkirkRepairNarrationText,inspectDunkirkNarrationRepair,queueDunkirkRepairStage,markDunkirkNarrationsReady} from './dunkirk-narration-repair.mjs';
@@ -1335,7 +1335,7 @@ async function route(request,env){
   requireEnv(env);
   const url=new URL(request.url),parts=url.pathname.split('/'),method=request.method;
   if(method==='GET'&&url.pathname==='/health')return json({service:'cinepulse-android-cloud-bridge',build:LONGFORM_BUILD,status:'online',cloudOrigin:true,
-    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,v5gWorker1Only:true,v5gLegacyIntPreserved:true,v5gAcceptingNewProjects:env.CINEPULSE_V5G_DISABLED!=='true',v5gLiveStageCount:V5G_STEPS.length,v5gPreflightRequeueBuild:V5G_PREFLIGHT_REQUEUE_BUILD,dunkirkNarrationRepairBuild:DUNKIRK_REPAIR_BUILD,bladeRunnerAudioRepairBuild:BR_AUDIO_REPAIR_BUILD,v5gMatchPlanBuild:V5G_MATCH_PLAN_BUILD,reviewStageRetryBuild:REVIEW_STAGE_RETRY_BUILD,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
+    policy:{newMovies:'long_form_only',perMoviePauseStopDelete:true,experimentalSceneIntelligenceOptIn:true,experimentalWindowsAssets:11,sceneLabBuild:SCENE_LAB_BUILD,sceneLabIsolatedQueue:true,sceneLabMuseV4Export:true,productionDeepMuseBuild:PERMANENT_DEEP_BUILD,permanentDeepMuseDefault:true,v5gWorker1Only:false,v5gIntGroundedEnabled:true,v5gLegacyIntProjectsPreserved:true,v5gDualWorkerRoutingBuild:V5G_DUAL_WORKER_ROUTING_BUILD,v5gAcceptingNewProjects:env.CINEPULSE_V5G_DISABLED!=='true',v5gLiveStageCount:V5G_STEPS.length,v5gPreflightRequeueBuild:V5G_PREFLIGHT_REQUEUE_BUILD,dunkirkNarrationRepairBuild:DUNKIRK_REPAIR_BUILD,bladeRunnerAudioRepairBuild:BR_AUDIO_REPAIR_BUILD,v5gMatchPlanBuild:V5G_MATCH_PLAN_BUILD,reviewStageRetryBuild:REVIEW_STAGE_RETRY_BUILD,productionDeepMuseBatchSize:5,urduTargetedRematchBuild:URDU_REPAIR_BUILD,urduTargetedRematchEnabled:true,audioLanguageQualityBuild:AUDIO_QA_BUILD,audioLanguageQualityForNewProjects:true,urduTtsControlledDevanagari:true,urduPronunciationBuild:URDU_DEVANAGARI_BUILD,urduTtsLocaleRequired:'hi-IN',urduCanonicalScript:'Urdu',narrationDurationPolicy:'v5.1-strict-for-new-projects',urduAnchorWindowSeconds:25,englishAnchorWindowSeconds:12,legacySceneLabCreationRetired:true,deepMuseBuild:DEEP_BUILD,deepMuseBatches:true,deepMuseSourceEvidence:true,deepMuseCheckpoints:true,deepMuseWindowCandidateBudget:22000,shorts:false,virals:false,metadata:true,cutMinSeconds:3,cutMaxSeconds:6,serverCutAllocator:false,museOwnsCuts:true,museAuthorsWindowsProject:true,windowsAssetCount:8,
       analysisReferenceOnWindowsTask:true,museFailureDiagnostics:'exact_field_and_first_difference',
       d1WindowsAssetTable:'windows_assets',legacyAssetSchemaPreserved:true,completedJobRepair:true,validation:'narration SRT and source SRT numeric timecodes; no video frame analysis',legacyJobsPreserved:true}});
   await ensureMovieControls(env);
@@ -2065,9 +2065,10 @@ async function route(request,env){
   if(method==='POST'&&url.pathname==='/v1/projects'){
     const body=await getJson(request);
     const experiment=body.productionMode==='scene_intelligence_experiment';
-    // Worker 1 alone uses the new V5-G queue; INT is always on its existing V5 path.
-    // Operator/Android cannot force another worker into V5-G with a request flag.
-    // Resolve routing from the authenticated DB worker row below.
+    // New movies on either established worker (Worker 1 or INT) use V5-G.
+    // Existing projects remain pinned to their original digest policy.
+    // Operator/Android cannot override the mode from the request body.
+    // Resolve routing from the server-stored worker row below.
     let grounded=false;
     if(experiment)fail(410,'Experimental scene intelligence is retired for NEW movies; permanent Muse Deep V5 is now the standard. Existing projects remain downloadable.');
     if(body.productionMode && body.productionMode!=='stable' && !experiment)fail(422,'Unknown CinePulse production mode');
@@ -2078,10 +2079,10 @@ async function route(request,env){
     if(routing.kind==='unrecognized')
       fail(422,'Worker label not mapped to a production pipeline. Choose the configured Worker 1 or INT in the refreshed worker list. No new movie was created.');
     if(routing.kind==='v5g_disabled')
-      fail(503,'Worker 1 V5-G new-movie intake is disabled. No old-pipeline fallback and no new movie created.');
+      fail(503,'V5-G new-movie intake is disabled for Worker 1 and INT. No old-pipeline fallback and no new movie created.');
     grounded=selectV5gWorkflow(worker.label,{disabled:env.CINEPULSE_V5G_DISABLED==='true'});
     if(body.v5Grounded!==undefined && body.v5Grounded!==grounded)
-      fail(422,'V5-G processing is assigned to Worker 1 only; INT retains the legacy workflow. Select the correct worker.');
+      fail(422,'V5-G mode is automatically assigned to configured Worker 1 and INT; refresh the verified worker list.');
     const srt=normalizeSrt(body.sourceSrt);
     const hours=body.retentionHours===24?24:body.retentionHours===48||body.retentionHours===undefined?48:null;
     if(!hours)fail(422,'retentionHours must be 24 or 48');

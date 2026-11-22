@@ -350,8 +350,8 @@ public final class MainActivity extends Activity {
         if(ids.isEmpty()){showError("There are no active workers. Resume or create a worker first.");return;}
         LinearLayout form=vertical();pad(form,24,0,24,0);
         form.addView(text("Project title",13,Color.DKGRAY,true));form.addView(name);
-        form.addView(text("MODE: AUTOMATIC — V5-G GROUNDED / V5 LEGACY",15,0xFF00795E,true));
-        form.addView(text("Choose Worker 1 for the new V5-G grounded 15-stage pipeline or INT for the earlier V5 workflow. The server verifies the selection and records the project-specific pipeline.",13,Color.DKGRAY,false));
+        form.addView(text("MODE: AUTOMATIC — V5-G GROUNDED (WORKER 1 + INT)",15,0xFF00795E,true));
+        form.addView(text("Both configured workers, Muse Worker 1 and INT, use the same V5-G grounded 15-stage pipeline for NEW movies. Their queues and credentials remain separate. Existing projects keep their original processing policy. Refresh workers to confirm the server routing before selecting one.",13,Color.DKGRAY,false));
         form.addView(text("Processing worker (existing Muse connection)",13,Color.DKGRAY,true));
         Spinner spinner=new Spinner(this);
         ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);
